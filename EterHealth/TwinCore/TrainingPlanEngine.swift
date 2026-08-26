@@ -604,6 +604,17 @@ enum TrainingPlanEngine {
             tomorrowIsLateWeek: tomorrowLateWeek, qualityDeficit: max(0, targetQuality - quality),
             goalFocus: goalFocus
         )
+        // PR3e: interferencia concurrente. Sólo salta si el canal aeróbico
+        // pide absorber Y el día pediría fuerza de pierna; el objetivo decide
+        // a quién se protege. protectAerobic se canaliza por el mecanismo que
+        // ya existía —quitar la pierna del patrón de fuerza— y no por una vía
+        // paralela.
+        let interference = concurrentInterference(
+            aerobicRatio: loadSummary.dual.aerobicRatio,
+            legStrengthLikely: legStrengthLikely(muscles: muscles, avoidLegs: avoidLegsTomorrow),
+            goalFocus: goalFocus
+        )
+        let avoidLegsToday = avoidLegsTomorrow || interference == .protectAerobic
         // Same ~30% reduction deloadAdjustment already applies to running/
         // strength, mirrored here rather than folded into that shared
         // function so its own existing tests (fixed field names, no swim/
@@ -754,7 +765,7 @@ enum TrainingPlanEngine {
                 hoursSinceLong: hoursSinceLong, hoursSinceQuality: hoursSinceQuality,
                 trackedLiftDaysSince: trackedLiftDaysSince,
                 recentHardPercentage: recentHardPercentage,
-                avoidLegsTomorrow: avoidLegsTomorrow,
+                avoidLegsTomorrow: avoidLegsToday, interference: interference,
                 lateWeek: lateWeek, readiness: readiness, muscles: muscles,
                 block: block, goalFocus: goalFocus
             )
@@ -785,7 +796,7 @@ enum TrainingPlanEngine {
         let event = nextEvent(after: now, profile: profile)
         let recommendation = prescription(
             for: next, block: block, readiness: readiness, muscles: muscles,
-            volumeFactor: adjustedTargets.volumeFactor, avoidLegsTomorrow: avoidLegsTomorrow
+            volumeFactor: adjustedTargets.volumeFactor, avoidLegsTomorrow: avoidLegsToday
         )
         if isDeload {
             rationale += next == .recovery
@@ -922,6 +933,8 @@ enum TrainingPlanEngine {
         let calibration: TwinCalibration
         // La misma y única definición que usa DualLoadSummary para hoy.
         var governingRatio: Double { DualLoad.governingRatio(acute: acute, habitual: chronic) }
+        // El canal aeróbico solo, que es lo que mira la interferencia.
+        var aerobicRatio: Double { DualLoad.ratio(acute: acute.aerobic, habitual: chronic.aerobic) }
         var runs: Int
         var strength: Int
         var quality: Int
@@ -1286,6 +1299,12 @@ enum TrainingPlanEngine {
                 tomorrowIsLateWeek: tomorrowLateWeek, qualityDeficit: max(0, real.targetQuality - state.quality),
                 goalFocus: goalFocus
             )
+            let dayInterference = concurrentInterference(
+                aerobicRatio: state.aerobicRatio,
+                legStrengthLikely: legStrengthLikely(muscles: simulatedMuscles(), avoidLegs: avoidLegsTomorrow),
+                goalFocus: goalFocus
+            )
+            let avoidLegsThisDay = avoidLegsTomorrow || dayInterference == .protectAerobic
 
             let kind: PlannedSessionKind
             let rationale: String
@@ -1333,7 +1352,7 @@ enum TrainingPlanEngine {
                     hoursSinceLong: state.hoursSinceLong, hoursSinceQuality: state.hoursSinceQuality,
                     trackedLiftDaysSince: state.trackedLiftDaysSince,
                     recentHardPercentage: recentHardPercentage,
-                    avoidLegsTomorrow: avoidLegsTomorrow,
+                    avoidLegsTomorrow: avoidLegsThisDay, interference: dayInterference,
                     lateWeek: lateWeek, readiness: state.readiness, muscles: simulatedMuscles(),
                     block: block, goalFocus: goalFocus
                 )
@@ -1341,7 +1360,7 @@ enum TrainingPlanEngine {
                 rationale = decision.rationale
             }
 
-            applyMuscleLoad(kind, on: date, phase: block.phase, avoidLegs: avoidLegsTomorrow)
+            applyMuscleLoad(kind, on: date, phase: block.phase, avoidLegs: avoidLegsThisDay)
             applyDoseProgress(kind, phase: block.phase)
             state.apply(kind, on: date, load: DualLoad.ratioLoad(kind), muscleFatigue: muscleFatigue)
             // Same informed-not-hidden disclosure status() applies to
@@ -1509,6 +1528,44 @@ enum TrainingPlanEngine {
         let hybridPlausible = goalFocus.hybrid >= 0.22 && tomorrowHoursSinceQuality >= 48
         return qualityRunPlausible || longRunPlausible || hybridPlausible
     }
+
+    // PR3e. Interferencia concurrente: el caso que una sola carga EWMA no
+    // podía ni plantear, porque no sabía qué parte del pico era fondo y qué
+    // parte era hierro. Deliberadamente pequeña — dos condiciones que se
+    // tienen que dar A LA VEZ, y el objetivo decide a quién se protege.
+    enum ConcurrentInterference: Equatable {
+        case none
+        // El fondo manda (Hyrox, carrera, triatlón): se quita carga de pierna.
+        case protectAerobic
+        // La fuerza manda (hipertrofia): se protege el MEV de pierna quitando
+        // puntos a la calidad de carrera, no prohibiéndola.
+        case protectLegStrength
+    }
+
+    // El umbral 1.30 no es nuevo: es la misma línea de "conviene absorber"
+    // que loadGuidance ya usa. Y el ratio es el del canal aeróbico, que es
+    // precisamente lo que el modelo de carga única no podía aislar.
+    static func concurrentInterference(aerobicRatio: Double, legStrengthLikely: Bool,
+                                       goalFocus: GoalTrainingFocus) -> ConcurrentInterference {
+        guard legStrengthLikely, aerobicRatio >= 1.30 else { return .none }
+        let aerobicDemand = goalFocus.running + goalFocus.hybrid + goalFocus.triathlon
+        return aerobicDemand >= goalFocus.strength ? .protectAerobic : .protectLegStrength
+    }
+
+    // "Sesión de fuerza de pierna hoy" se resuelve con bestStrengthPattern,
+    // que ya es la única definición de qué patrón toca — no una segunda
+    // heurística de "esto parece día de pierna".
+    static func legStrengthLikely(muscles: [MuscleReadiness], avoidLegs: Bool) -> Bool {
+        bestStrengthPattern(muscles, avoidLegs: avoidLegs) == "pierna"
+    }
+
+    // Cuánto pierde la calidad de carrera cuando la hipertrofia manda. El
+    // número sale de los scores que de verdad compiten, no de una intuición:
+    // la calidad le gana al rodaje suave por exactamente `8 + 6 × déficit`
+    // (mismo baseRunScore los dos). Con 16, un déficit de UNA sesión de
+    // calidad cede (margen 14 - 16 = -2) y uno de dos o más sigue ganando
+    // (20 - 16 = +4). Penalizar, no prohibir, que es lo que pide el brief.
+    static let legStrengthProtectionPenalty = 16.0
 
     // The one real connection between "Tres futuros, 8 semanas" and the
     // actual day-to-day plan — see ProgressionPace's own comment for what
@@ -1740,6 +1797,10 @@ enum TrainingPlanEngine {
         // Only ever reaches bestStrengthPattern through this fallback
         // branch's own strength-pattern text below.
         avoidLegsTomorrow: Bool = false,
+        // .protectLegStrength resta puntos a calidad/tirada larga; el caso
+        // .protectAerobic no llega aquí, actúa quitando la pierna del patrón
+        // de fuerza (avoidLegs), que es el mecanismo que ya existía.
+        interference: ConcurrentInterference = .none,
         lateWeek: Bool, readiness: Int, muscles: [MuscleReadiness],
         block: TrainingBlock? = nil, goalFocus: GoalTrainingFocus
     ) -> (kind: PlannedSessionKind, rationale: String) {
@@ -1757,6 +1818,7 @@ enum TrainingPlanEngine {
         let effectiveLegReadiness = legReadiness == 0 ? 50 : legReadiness
         let legPenalty = max(0, 75 - effectiveLegReadiness) * 1.35
         let readinessAdjustment = Double(readiness - 65) * 0.15
+        let interferencePenalty = interference == .protectLegStrength ? legStrengthProtectionPenalty : 0
         var candidates: [Candidate] = []
 
         // trackedLiftDaysSince deliberately never resets within weekAhead's
@@ -1822,14 +1884,14 @@ enum TrainingPlanEngine {
            effectiveLegReadiness >= 62,
            !alreadyOverHardTarget {
             candidates.append(Candidate(kind: .qualityRun,
-                score: baseRunScore + 8 + Double(qualityDeficit) * 6))
+                score: baseRunScore + 8 + Double(qualityDeficit) * 6 - interferencePenalty))
         }
 
         if goalFocus.running > 0.05, lateWeek, effectiveLegReadiness >= 62,
            (hoursSinceLong.map { $0 >= 96 } ?? true) {
             let longRunSpacing = min(10, (hoursSinceLong ?? 168) / 24)
             candidates.append(Candidate(kind: .longRun,
-                score: baseRunScore + 7 + longRunSpacing))
+                score: baseRunScore + 7 + longRunSpacing - interferencePenalty))
         }
 
         // Hybrid work is a distinct adaptation for goals such as HYROX. It only
