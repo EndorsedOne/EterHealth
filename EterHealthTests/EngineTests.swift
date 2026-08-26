@@ -716,6 +716,51 @@ final class EngineTests: XCTestCase {
         XCTAssertLessThan(trained.upperBound, unknown.upperBound)
     }
 
+    // Una sesión propia de éter tiene que generar el mismo dato que una
+    // importada de Hevy: éter ya cronometra las series isométricas y de
+    // acarreo, pero guardaba esos segundos sólo en `reps`, donde son
+    // indistinguibles de repeticiones — así que un acarreo de 240 s registrado
+    // en la app no podía alimentar el forecast de Hyrox, que lee
+    // `durationSeconds`. Sólo llegaba por importación.
+    func testEterLoggedTimedSetsProduceDurationLikeAnImportedOne() {
+        let carry = ExerciseCatalog.loggedSet(weight: 32, reps: 240, type: "normal", exerciseName: "Farmers Carry")
+        XCTAssertEqual(carry.durationSeconds, 240, "Un acarreo cronometrado en éter vale igual que uno importado.")
+        XCTAssertEqual(carry.reps, 240, "reps se conserva: cambiar su significado tocaría workingSets y el volumen.")
+
+        let press = ExerciseCatalog.loggedSet(weight: 80, reps: 8, type: "normal", exerciseName: "Bench Press (Barbell)")
+        XCTAssertNil(press.durationSeconds, "8 repeticiones de press no son 8 segundos de nada.")
+
+        // Y una serie a 0 no inventa una duración de cero.
+        let empty = ExerciseCatalog.loggedSet(weight: 0, reps: 0, type: "normal", exerciseName: "Plank")
+        XCTAssertNil(empty.durationSeconds)
+    }
+
+    // Y el dato llega de verdad al motor de Hyrox, no se queda en el struct.
+    func testStationSecondsReadEterOwnSessionsNotOnlyHevyImports() {
+        let now = Date()
+        let stationNames = ["SkiErg", "Sled Push", "Sled Pull", "Burpee Broad Jump",
+                            "Rowing Machine", "Farmers Carry", "Sandbag Lunges", "Wall Ball"]
+        // Registrada como la registraría éter: los segundos pasan por
+        // ExerciseCatalog.loggedSet, no construidos a mano en el test.
+        let eterSession = ImportedWorkout(
+            title: "Simulación HYROX", start: now.addingTimeInterval(-2 * 86_400),
+            end: now.addingTimeInterval(-2 * 86_400 + 4_500),
+            exercises: stationNames.map { name in
+                ImportedExercise(name: name, sets: 1, volume: 0, totalReps: 240, averageWeight: nil,
+                                 setDetails: [ExerciseCatalog.loggedSet(weight: 0, reps: 240, type: "normal", exerciseName: name)])
+            },
+            muscleSets: [:])
+
+        let observed = HyroxForecastEngine.observedStationSeconds([eterSession], now: now)
+        // Sólo cuentan las estaciones que el catálogo de éter reconoce como
+        // medidas en tiempo. Hoy es el acarreo: las demás se registran por
+        // repeticiones, así que no producen duración — y por eso esto es
+        // cobertura parcial, no un total falso.
+        XCTAssertEqual(observed?.stationsCovered, 1,
+                       "Hoy éter sólo mide en tiempo los acarreos; el resto no genera duración.")
+        XCTAssertEqual(observed?.total, 240)
+    }
+
     func testHyroxForecastRequiresRunningEvidence() {
         let running = RunningPerformanceSummary(
             sessions: [], weeks: [], kilometers7Days: 0, priorKilometers7Days: 0,

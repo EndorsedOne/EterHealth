@@ -1078,7 +1078,25 @@ struct LiveStrengthWorkoutView: View {
             let selected = exercise.sets.filter(\.completed)
             let source = selected.isEmpty ? exercise.sets : selected
             guard !source.isEmpty else { return nil }
-            let details = source.map { ImportedSet(weight: $0.weight, reps: $0.reps, type: $0.type, rpe: nil) }
+            // Éter ya cronometra las series isométricas/de acarreo
+            // (timedSetField) y guardaba esos segundos SOLO en `reps`, donde
+            // son indistinguibles de repeticiones. Con eso, un trineo de 240 s
+            // registrado aquí no podía alimentar el componente de estaciones
+            // del forecast de Hyrox, que sí lee `durationSeconds` — sólo
+            // llegaba por importación de Hevy. Ahora una sesión propia de éter
+            // vale igual que una importada.
+            //
+            // `isTimed` sale de ExerciseCatalog, la única definición de qué
+            // ejercicio se mide en tiempo, la misma que decide mostrar "SEG"
+            // en vez de "REPS" en la propia sesión.
+            //
+            // `reps` se conserva tal cual a propósito: cambiar su significado
+            // aquí tocaría workingSets (que filtra reps > 0), effectiveSetCount
+            // y el volumen, y eso es un cambio de semántica con su propio
+            // riesgo, no algo que colar en este PR.
+            let details = source.map {
+                ExerciseCatalog.loggedSet(weight: $0.weight, reps: $0.reps, type: $0.type, exerciseName: exercise.name)
+            }
             // éter's own live session has no in-session warm-up toggle, so
             // every set is logged as "normal" — the ascending-ramp
             // inference in workingSets(_:) is what actually catches a
