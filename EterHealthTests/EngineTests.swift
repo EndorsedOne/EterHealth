@@ -1575,8 +1575,16 @@ final class EngineTests: XCTestCase {
 
         let summary = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         XCTAssertEqual(summary.dual.strengthGuidance, .overload, "El canal de fuerza está en sobrecarga real.")
-        XCTAssertNotEqual(summary.loadGuidance, .overload,
+        // La mezcla, calculada explícitamente: desde PR3f `summary.loadGuidance`
+        // YA es la de los canales, así que esta aserción tiene que construir el
+        // combinado a mano para seguir afirmando lo que quería afirmar — que el
+        // caso es real y no un supuesto.
+        let combinedGuidance = PerformanceEngine.loadGuidance(
+            ratio: summary.acuteLoad / summary.habitualLoad,
+            sustainedWeeks: summary.sustainedLoadWeeks, observedDays: summary.observedLoadDays)
+        XCTAssertNotEqual(combinedGuidance, .overload,
                           "Y la mezcla no lo ve — este es el caso que el PR arregla, no un supuesto.")
+        XCTAssertEqual(summary.loadGuidance, .overload, "La guidance de la app es ya la de los canales.")
         XCTAssertEqual(summary.dual.governingChannel, "de fuerza")
 
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: nil, context: neutralContext, now: now)

@@ -23,10 +23,17 @@ struct PerformanceSummary {
     var habitualLoad: Double { dual.habitualAerobic + dual.habitualStrength }
 
     var sessionChange: Int { sessions - previousSessions }
-    var loadRatio: Double { habitualLoad > 0 ? acuteLoad / habitualLoad : 0 }
-    var loadGuidance: LoadGuidance {
-        PerformanceEngine.loadGuidance(ratio: loadRatio, sustainedWeeks: sustainedLoadWeeks, observedDays: observedLoadDays)
-    }
+    // PR3f: una sola guidance y un solo ratio en toda la app — los de los
+    // canales. Mientras la UI leía el ratio combinado y el plan y el score ya
+    // gateaban por canal, la tarjeta podía decir "Carga productiva · ×0.93"
+    // el mismo día que la recomendación decía recuperar. `loadRatio` es
+    // ahora el ratio que gobierna, que es justo el que la guidance de al lado
+    // está describiendo; los números crudos que la tarjeta muestra
+    // (acuteLoad/habitualLoad) siguen siendo el combinado, y eso es correcto:
+    // son carga total, no un ratio.
+    var loadRatio: Double { dual.governingRatio }
+    var loadChannel: String { dual.governingChannel }
+    var loadGuidance: LoadGuidance { dual.guidance }
     var loadState: String {
         loadGuidance.title
     }

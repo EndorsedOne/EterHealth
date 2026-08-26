@@ -838,9 +838,30 @@ struct ContentView: View {
                     Capsule().fill(loadColor(ratio)).frame(width: proxy.size.width * min(1, ratio / 1.7))
                 }
             }.frame(height: 10)
-            Text(summary.habitualLoad > 0 ? "Relación aguda/base: \(ratio.formatted(.number.precision(.fractionLength(2)))). \(summary.loadAdvice)" : summary.loadAdvice)
+            // PR3f: el ratio que se muestra es el del canal que manda —el
+            // mismo que gatea el plan— y se dice cuál es. El desglose de los
+            // dos canales solo aparece cuando los dos tienen base real: sin
+            // ella no hay ratio que enseñar, y un "×0.00" leería como
+            // "descansado" cuando lo que pasa es que no hay datos.
+            if summary.dual.aerobicRatio > 0 && summary.dual.strengthRatio > 0 {
+                HStack(spacing: 14) {
+                    channelRatio("Fondo", summary.dual.aerobicRatio, .blue)
+                    channelRatio("Fuerza", summary.dual.strengthRatio, .orange)
+                }
+            }
+            Text(summary.habitualLoad > 0
+                 ? "Relación aguda/base \(summary.loadChannel): \(ratio.formatted(.number.precision(.fractionLength(2)))). Manda el canal más exigido, no la media de los dos. \(summary.loadAdvice)"
+                 : summary.loadAdvice)
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }.cardStyle()
+    }
+
+    private func channelRatio(_ title: String, _ ratio: Double, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text("×\(ratio.formatted(.number.precision(.fractionLength(2))))").font(.caption2.bold()).monospacedDigit()
+        }
     }
 
     private func intensityFocusCard(_ summary: PerformanceSummary) -> some View {

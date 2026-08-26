@@ -25,6 +25,11 @@ struct EterWidgetSnapshot: Codable, Sendable {
     let energyConfidenceReason: String?
     let loadRatio: Double
     let loadState: String
+    // Opcional, no `var` con default: el decoder sintetizado de Swift NO usa
+    // los valores por defecto de las propiedades, así que un campo nuevo no
+    // opcional haría fallar el decode de los snapshots ya guardados y el
+    // widget se quedaría en blanco hasta que la app reescribiera uno.
+    var loadChannel: String?
     let loadConfidence: String?
     let loadConfidenceScore: Int?
     let loadConfidenceReason: String?
@@ -99,6 +104,7 @@ enum WidgetSnapshotStore {
             energyConfidenceScore: confidence.score,
             energyConfidenceReason: confidence.reason,
             loadRatio: performance.loadRatio, loadState: performance.loadState,
+            loadChannel: performance.loadChannel,
             loadConfidence: loadConfidence.level.rawValue,
             loadConfidenceScore: loadConfidence.score,
             loadConfidenceReason: loadConfidence.reason,
