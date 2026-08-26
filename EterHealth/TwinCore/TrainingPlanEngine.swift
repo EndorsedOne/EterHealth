@@ -955,7 +955,10 @@ enum TrainingPlanEngine {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
-        let real = status(health: health, imports: imports, readiness: assessment.score, muscles: assessment.muscles,
+        // PR2: readiness routed through TwinReadout (same value assess()
+        // always computed — score is still real-signal-driven, never fed
+        // from physiology) instead of a bare Int.
+        let real = status(health: health, imports: imports, readiness: assessment.readout.score, muscles: assessment.muscles,
                           checkIn: checkIn, context: context,
                           physiologicalAlert: assessment.physiologicalAlert, now: now)
         let todayKind = override?.kind ?? real.nextSession
@@ -975,7 +978,7 @@ enum TrainingPlanEngine {
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
         var state = ForwardState(
             acute: loadSummary.acuteLoad, chronic: loadSummary.habitualLoad,
-            readiness: assessment.score,
+            readiness: assessment.readout.score,
             runs: real.completedRuns, strength: real.completedStrength, quality: real.completedQuality,
             swim: real.completedSwim, bike: real.completedBike,
             hoursSinceLong: hoursSinceLastCompleted(matching: isLongRun, health: health, imports: imports, now: now),
@@ -1020,7 +1023,14 @@ enum TrainingPlanEngine {
         // strength day proposed on day 3 genuinely makes day 4's legs less
         // fresh for the rest of the projection, instead of every day
         // starting from the same invented number.
-        var muscleFatigue = Dictionary(uniqueKeysWithValues: assessment.muscles.map { ($0.name, Double(max(0, 100 - $0.readiness))) })
+        //
+        // PR2: seeded from assessment.physiology.muscleFatigue (the formal
+        // vector) instead of re-deriving from assessment.muscles inline —
+        // same numbers (physiology.muscleFatigue IS assessment.muscles
+        // converted, not a second computation), now genuinely read from
+        // TwinPhysiology as the brief asks, not just implicitly consistent
+        // with it.
+        var muscleFatigue = assessment.physiology.muscleFatigue
         // Default half-life TwinEngine.calculateMuscles itself falls back
         // to for a muscle with no learned recovery rate yet (per-muscle
         // learned rates live in TwinEngine's private state, not exposed
@@ -1904,7 +1914,10 @@ enum TrainingPlanEngine {
     static func isQualityRun(_ workout: HealthWorkout) -> Bool {
         workout.durationMinutes <= 50 && (workout.calories ?? 0) / max(workout.durationMinutes, 1) >= 10
     }
-    private static func isStrengthWorkout(_ workout: HealthWorkout) -> Bool {
+    // Not private (nor a second definition): TwinPhysiology.derive reuses
+    // this exact same rule to split real history into aerobic/strength
+    // channels, instead of guessing "Fuerza" activities a second time.
+    nonisolated static func isStrengthWorkout(_ workout: HealthWorkout) -> Bool {
         workout.activity == "Fuerza" || workout.activity == "Fuerza funcional"
     }
     static func isLongRun(_ workout: HealthWorkout) -> Bool {

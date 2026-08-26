@@ -13,6 +13,18 @@ struct TwinAssessment {
     // it through and get the identical hard-override behavior, instead of
     // the card and the actual plan being able to disagree.
     let physiologicalAlert: PhysiologicalAlert?
+    // PR2: today's real vector state — score/muscles above are unchanged
+    // (still real-signal-driven, still what the plan actually consumes),
+    // this is the same underlying data formally routed through
+    // TwinPhysiology/TwinReadout so callers that want the vector itself
+    // (weekAhead's forward simulation, TwinStateStore's tomorrow
+    // prediction) can read it instead of re-deriving their own copy.
+    let physiology: TwinPhysiology
+    let readout: TwinReadout
+    // Replaces TwinStateStore's old predictedTomorrow(from:) — a real
+    // step() of today's physiology through tomorrow's proposed session,
+    // never a match on the Spanish recommendation string.
+    let predictedTomorrow: TwinReadout
 }
 
 struct TwinSignal: Identifiable {
@@ -317,9 +329,27 @@ enum TwinEngine {
                                              context: context, physiologicalAlert: physiologicalAlert, now: now)
         let plannedRecommendation = plan.nextSession == .strength ? physicalRecommendation : plan.nextSession.rawValue
         let recommendation = safeRecommendation(plannedRecommendation, injuries: activeInjuries)
-        let state = score >= 80 ? "Preparado" : score >= 62 ? "Disponible" : score >= 45 ? "Carga moderada" : "Recuperación prioritaria"
+        let state = TwinReadout.label(for: score)
         let explanation = explanation(score: score, signals: signals, muscles: muscleReadiness) + " " + plan.rationale
-        return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert)
+
+        // PR2: today's real vector, and tomorrow's prediction stepped from
+        // it — see TwinAssessment's own comment for why score/muscles
+        // above stay exactly as they were (real signals, unchanged).
+        let sleepDebtHours = (personal.sleep.current).flatMap { current in
+            personal.sleep.expected.map { expected in max(0, expected - current) }
+        } ?? 0
+        let physiology = TwinPhysiology.derive(health: health, imports: imports, muscleReadiness: muscleReadiness,
+                                               sleepDebtHours: sleepDebtHours, illness: checkIn?.illness ?? false, now: now)
+        let readout = TwinReadout(score: score, state: state, confidence: personal.confidence)
+        // No hay forma honesta de conocer hoy el HRV/sueño/check-in reales
+        // de mañana — RecoverySignals.none dice explícitamente "sin
+        // información nueva", no "todo normal". El único dato real que
+        // step() sí tiene es la sesión que el plan propone para hoy, la
+        // misma que folded into el propio weekAhead.
+        let tomorrowPhysiology = step(physiology, session: SessionLoad.forecast(plan.nextSession), recoverySignals: .none, dtDays: 1)
+        let predictedTomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: anchor, calibration: calibration)
+
+        return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert, physiology: physiology, readout: readout, predictedTomorrow: predictedTomorrow)
     }
 
     private static func safeRecommendation(_ recommendation: String, injuries: [InjuryRecord]) -> String {

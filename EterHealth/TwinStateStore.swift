@@ -102,7 +102,10 @@ final class TwinStateStore: ObservableObject {
     func capture(assessment: TwinAssessment, health: HealthStore, now: Date = Date()) {
         let calendar = Calendar.current
         let day = calendar.startOfDay(for: now)
-        let predicted = predictedTomorrow(from: assessment)
+        // PR2: a real step() of today's physiology through tomorrow's
+        // proposed session — see TwinAssessment.predictedTomorrow's own
+        // comment. No longer a match on the Spanish recommendation string.
+        let predicted = assessment.predictedTomorrow.score
         let sessions = health.recentWorkouts.filter { calendar.isDate($0.date, inSameDayAs: day) }.count
         let impacts = Dictionary(assessment.signals.map { ($0.name, $0.impact) }, uniquingKeysWith: +)
         let hrv = health.snapshot.hrv > 0 ? health.snapshot.hrv : nil
@@ -168,16 +171,6 @@ final class TwinStateStore: ObservableObject {
         let cutoff = calendar.date(byAdding: .day, value: -90, to: today) ?? .distantPast
         let morningScores = states.filter { $0.day >= cutoff && $0.day < today }.map(\.openingScore)
         return PersonalReadinessAnchor.derive(scores: morningScores)
-    }
-
-    private func predictedTomorrow(from assessment: TwinAssessment) -> Int {
-        let recommendation = assessment.recommendation.lowercased()
-        let delta: Int
-        if recommendation.contains("recuper") || recommendation.contains("descanso") { delta = 6 }
-        else if recommendation.contains("calidad") || recommendation.contains("tirada larga") { delta = -4 }
-        else if recommendation.contains("fuerza") || recommendation.contains("pierna") || recommendation.contains("empuje") || recommendation.contains("tirón") { delta = -2 }
-        else { delta = 1 }
-        return min(100, max(0, assessment.score + delta))
     }
 
     private func persist() {
