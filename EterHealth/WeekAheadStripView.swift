@@ -103,6 +103,15 @@ struct WeekAheadStripView: View {
                             Text("DESCARGA").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(EterTheme.warning)
                         }
                     }
+                    // What each kind actually asks of you — duración e
+                    // intensidad, no solo la etiqueta del tipo de sesión.
+                    // Hoy mismo (el día real, no simulado) ya trae este
+                    // dato en "Propuesta de hoy"; esto es lo mismo,
+                    // resumido, para el resto de la semana.
+                    if !isCompletedTrainingDay(selected) {
+                        Label(sessionSummary(selected), systemImage: "gauge.with.dots.needle.50percent")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Text(selected.rationale).font(.caption).foregroundStyle(.secondary).lineSpacing(2)
                 }
                 .padding(11)
@@ -142,6 +151,17 @@ struct WeekAheadStripView: View {
         day.kind == .recovery && day.alreadyTrainedToday
     }
 
+    // "Ritmo, nivel de exigencia" the week strip was missing — duration
+    // in minutes (when this kind has one; strength/recovery/race day
+    // deliberately don't, see DayForecast's own comment) plus the same
+    // zone/effort label the daily card already uses. No distance: this
+    // app never computes a per-session target distance, real or
+    // simulated, only duration + zone.
+    private func sessionSummary(_ day: TrainingPlanEngine.DayForecast) -> String {
+        guard let minutes = day.targetMinutes else { return day.intensityLabel }
+        return "≈\(minutes) min · \(day.intensityLabel)"
+    }
+
     private func dayChip(_ day: TrainingPlanEngine.DayForecast, isToday: Bool) -> some View {
         let isSelected = selected.map { Calendar.current.isDate($0.date, inSameDayAs: day.date) } ?? false
         return Button {
@@ -167,7 +187,7 @@ struct WeekAheadStripView: View {
         .buttonStyle(.plain)
         .eterTouchTarget()
         .accessibilityLabel("\(isToday ? "Hoy" : weekdayFullLabel(day.date)): \(day.kind.rawValue)\(day.isDeload ? ", descarga" : "")")
-        .accessibilityHint(day.rationale)
+        .accessibilityHint(isCompletedTrainingDay(day) ? day.rationale : "\(sessionSummary(day)). \(day.rationale)")
     }
 
     private func dayTitle(_ date: Date) -> String {
