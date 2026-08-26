@@ -493,7 +493,7 @@ struct DayWorkoutProposalView: View {
                 return StrengthRoutineBuilder.applyingVolumeFactor(InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active), factor: plan.volumeFactor)
             }
         }
-        let generated = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry())
+        let generated = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry(), context: context)
         let routine = StrengthRoutineBuilder.routine(
             from: generated, imports: imports,
             readiness: assessment.score, muscles: assessment.muscles

@@ -199,7 +199,8 @@ enum PerformanceEngine {
 
     // Shared with DecisionSimulatorEngine so a simulated session's load uses the
     // exact same per-minute weighting as the real daily load history.
-    static func cardioFactor(_ activity: String) -> Double {
+    // nonisolated: a pure switch, also called from TwinPhysiology.derive.
+    nonisolated static func cardioFactor(_ activity: String) -> Double {
         switch activity {
         case "Intervalos de alta intensidad": return 2.0
         case "Carrera", "Escaleras": return 1.45

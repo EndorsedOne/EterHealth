@@ -1052,7 +1052,7 @@ struct ContentView: View {
     private var proposedWorkoutCard: some View {
         let assessment = currentAssessment
         let plan = currentPlan
-        let workout = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry())
+        let workout = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry(), context: twinContext)
         let strengthIsAllowed = !injuries.active.contains { $0.restrictions.contains(.avoidStrength) }
         let isCompatibleStrengthProposal = !workout.title.localizedCaseInsensitiveContains("recuperación") &&
             workout.exercises.contains { !MuscleMap.groups(for: $0.name).isEmpty }

@@ -24,19 +24,18 @@ struct ProposedExercise: Identifiable {
 
 @MainActor
 enum WorkoutPlanner {
-    static func propose(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil, now: Date = Date()) -> ProposedWorkout {
-        let proposal = rawProposal(health: health, imports: imports, checkIn: checkIn, now: now)
-        return InjurySafetyEngine.sanitize(proposal, injuries: InjuryStore.shared.active)
+    // PR2: propose/rawProposal receive TwinContext (profile + injuries
+    // included) from the caller instead of reading GoalStore.shared/
+    // InjuryStore.shared internally — WorkoutPlanner itself lives outside
+    // TwinCore, but this is the same required-injection reasoning PR1
+    // already applied inside it.
+    static func propose(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil, context: TwinContext, now: Date = Date()) -> ProposedWorkout {
+        let proposal = rawProposal(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
+        return InjurySafetyEngine.sanitize(proposal, injuries: context.activeInjuries)
     }
 
-    private static func rawProposal(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil, now: Date = Date()) -> ProposedWorkout {
-        // TwinCore's engines no longer read these singletons internally —
-        // this is the one place, outside TwinCore, responsible for it.
-        let profile = GoalStore.shared.profile
-        let reviews = WorkoutReviewStore.shared.reviews
-        let context = TwinContext(profile: profile, events: LifestyleFactorStore.shared.events, reviews: reviews,
-                                  activeInjuries: InjuryStore.shared.active, calibration: TwinStateStore.shared.calibration,
-                                  personalAnchor: TwinStateStore.shared.personalAnchor(now: now))
+    private static func rawProposal(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil, context: TwinContext, now: Date = Date()) -> ProposedWorkout {
+        let profile = context.profile
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: assessment.score,
                                              muscles: assessment.muscles, checkIn: checkIn, context: context,
@@ -57,7 +56,7 @@ enum WorkoutPlanner {
         // earlier: the periodization skeleton existed, but nothing inside a
         // phase actually progressed.
         let progress = plan.block.progress(on: now)
-        let primaryEvent = TrainingPlanEngine.primaryEvents(for: GoalStore.shared.profile).first
+        let primaryEvent = TrainingPlanEngine.primaryEvents(for: profile).first
         let triDistance = primaryEvent?.resolvedTriathlonDistance
         // The distance this periodization is actually built around — nil
         // (falls back to the half-marathon reference band, scale 1.0) for
@@ -103,13 +102,13 @@ enum WorkoutPlanner {
                     .map { now.timeIntervalSince($0) / 3_600 }
                 let hoursSincePush = [hoursSinceHealthPush, hoursSinceImportedPush].compactMap { $0 }.min()
                 let calendar = Calendar.current
-                let saunaAlreadyToday = LifestyleFactorStore.shared.events.contains {
+                let saunaAlreadyToday = context.events.contains {
                     $0.saunaMinutes > 0 && calendar.isDate($0.date, inSameDayAs: now)
                 }
                 let walkAlreadyToday = health.recentWorkouts.contains {
                     $0.activity == "Caminata" && calendar.isDate($0.date, inSameDayAs: now)
                 }
-                let hasRunningGoal = TrainingPlanEngine.goalFocus(for: GoalStore.shared.profile, on: now).running > 0.05
+                let hasRunningGoal = TrainingPlanEngine.goalFocus(for: profile, on: now).running > 0.05
                 var exercises = [ProposedExercise(name: "Descanso completo", prescription: "El resto del día", cue: "Es la opción por defecto — no hace falta justificar nada más")]
                 // The only genuine second-training-stimulus option, and
                 // only when it actually serves a real goal in this plan.
@@ -150,7 +149,7 @@ enum WorkoutPlanner {
             // a triathlon race day too, a running race a tempo session) —
             // exactly backwards: today needs a pacing/nutrition/transition/
             // stop-criteria protocol, never something to train.
-            return raceDayProtocol(event: event, health: health, imports: imports, now: now)
+            return raceDayProtocol(event: event, health: health, imports: imports, reviews: context.reviews, now: now)
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("carrera suave") {
             let band = easyRunBand(phase: plan.block.phase, targetKilometers: targetKilometers)
@@ -159,7 +158,7 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Calentamiento", prescription: "8–10 min · Z1\(upTo(zones?.z1z2))", cue: "Empieza realmente cómodo"),
                 ProposedExercise(name: "Carrera continua", prescription: deload ? "\(minutes) min · Z1–Z2\(upTo(zones?.z2z3))" : "\(minutes) min · Z2\(range(zones?.z1z2, zones?.z2z3))", cue: "Ritmo conversacional y estable"),
                 ProposedExercise(name: "Vuelta a la calma", prescription: "5 min suave", cue: "No necesitas terminar fuerte")
-            ], note: (deload ? "Descarga activa: no prolongues la sesión aunque las sensaciones sean buenas." : "La zona cardíaca manda más que el ritmo cuando hace calor, hay desnivel o acumulas fatiga. Semana \(Int((progress * 100).rounded()))% de \(plan.block.name.lowercased()): el volumen sube progresivamente dentro de esta fase.") + goalTimelineNote())
+            ], note: (deload ? "Descarga activa: no prolongues la sesión aunque las sensaciones sean buenas." : "La zona cardíaca manda más que el ritmo cuando hace calor, hay desnivel o acumulas fatiga. Semana \(Int((progress * 100).rounded()))% de \(plan.block.name.lowercased()): el volumen sube progresivamente dentro de esta fase.") + goalTimelineNote(profile: profile))
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("calidad") {
             let modality = qualitySessionModality(phase: plan.block.phase, block: plan.block, now: now)
@@ -168,7 +167,7 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Calentamiento", prescription: "12–15 min suave", cue: "Añade movilidad y 3 progresivos"),
                 ProposedExercise(name: "Bloque principal", prescription: interval.prescription, cue: interval.cue),
                 ProposedExercise(name: "Vuelta a la calma", prescription: "8–10 min suave", cue: "Termina progresivamente")
-            ], note: interval.basisNote + goalTimelineNote())
+            ], note: interval.basisNote + goalTimelineNote(profile: profile))
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("tirada larga") {
             // Base builds general aerobic tolerance; the build-specific phase
@@ -193,7 +192,7 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Inicio", prescription: "10–15 min muy suaves", cue: "No persigas ritmo"),
                 ProposedExercise(name: "Bloque continuo", prescription: "\(minutes) min · Z2" + range(zones?.z1z2, zones?.z2z3), cue: "Respiración controlada y combustible si procede"),
                 ProposedExercise(name: "Final", prescription: "5–10 min cómodos", cue: "Sin progresión si las piernas se deterioran")
-            ], note: (deload ? "La reducción es deliberada: esta semana buscamos asimilar, no progresar distancia." : "Objetivo de esta fase (\(plan.block.name.lowercased())): progresar hacia \(Int(personalizedCeiling)) min según avance el bloque — hoy toca ≈\(minutes) min (\(Int((progress * 100).rounded()))% del bloque). No aumentes bruscamente por una sola recomendación.\(progressionNote)") + goalTimelineNote() + nutritionNote(minutes: Double(minutes) + 20))
+            ], note: (deload ? "La reducción es deliberada: esta semana buscamos asimilar, no progresar distancia." : "Objetivo de esta fase (\(plan.block.name.lowercased())): progresar hacia \(Int(personalizedCeiling)) min según avance el bloque — hoy toca ≈\(minutes) min (\(Int((progress * 100).rounded()))% del bloque). No aumentes bruscamente por una sola recomendación.\(progressionNote)") + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes) + 20, profile: profile))
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("natación") {
             // A triathlon/Ironman goal's swim leg had no dedicated session at
@@ -201,11 +200,11 @@ enum WorkoutPlanner {
             // or, worse, never got proposed since nothing in the decision
             // engine asked for it. Same phase/progress treatment as running.
             return swimWorkout(phase: plan.block.phase, progress: progress, deload: deload,
-                               targetKilometers: swimTargetKilometers, health: health, muscles: assessment.muscles, now: now)
+                               targetKilometers: swimTargetKilometers, health: health, muscles: assessment.muscles, profile: profile, now: now)
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("ciclismo") {
             return bikeWorkout(phase: plan.block.phase, progress: progress, deload: deload,
-                               targetKilometers: bikeTargetKilometers, health: health, muscles: assessment.muscles,
+                               targetKilometers: bikeTargetKilometers, health: health, muscles: assessment.muscles, profile: profile,
                                zoneRange: range(zones?.z1z2, zones?.z2z3), zoneFloor: floor(zones?.z3z4), now: now)
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("brick") {
@@ -213,7 +212,7 @@ enum WorkoutPlanner {
             // and running separately never provide: running on legs a bike
             // has already fatigued.
             return brickWorkout(phase: plan.block.phase, progress: progress, deload: deload,
-                                distance: triDistance, muscles: assessment.muscles,
+                                distance: triDistance, muscles: assessment.muscles, profile: profile,
                                 zoneRange: range(zones?.z1z2, zones?.z2z3))
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("híbrido") {
@@ -224,7 +223,7 @@ enum WorkoutPlanner {
             // las conecta. Esto le da al HYROX el mismo trato de periodización
             // real que ya tiene la carrera (fase, progreso dentro del bloque,
             // descarga), en vez de desentenderse del reto.
-            return hyroxWorkout(phase: plan.block.phase, progress: progress, deload: deload, muscles: assessment.muscles, now: now)
+            return hyroxWorkout(phase: plan.block.phase, progress: progress, deload: deload, muscles: assessment.muscles, profile: profile, now: now)
         }
         if bodyweightOnly { return bodyweight(for: assessment.recommendation, light: assessment.score < 62 || deload, muscles: assessment.muscles) }
         return gym(for: assessment.recommendation, imports: imports, light: assessment.score < 62 || deload, muscles: assessment.muscles)
@@ -325,10 +324,10 @@ enum WorkoutPlanner {
     // so calling this for a short easy run or swim session is a safe no-
     // op). Pulls expected race-day air temperature from the active goal's
     // own course details when the athlete has entered one — never guessed.
-    private static func nutritionNote(minutes: Double) -> String {
+    private static func nutritionNote(minutes: Double, profile: AthletePlanProfile) -> String {
         guard let guidance = EnduranceNutritionEngine.guidance(
             durationMinutes: minutes,
-            expectedAirTemperatureCelsius: TrainingPlanEngine.primaryEvents(for: GoalStore.shared.profile).first?.courseDetails?.expectedAirTemperatureCelsius
+            expectedAirTemperatureCelsius: TrainingPlanEngine.primaryEvents(for: profile).first?.courseDetails?.expectedAirTemperatureCelsius
         ) else { return "" }
         return " Nutrición de referencia: \(EnduranceNutritionEngine.summary(guidance)). \(guidance.note)"
     }
@@ -338,8 +337,8 @@ enum WorkoutPlanner {
     // the connection implicit. Empty string (not a placeholder sentence)
     // when there's no active dated goal or not enough data for a forecast —
     // never invents a countdown or a pace nobody has run.
-    private static func goalTimelineNote() -> String {
-        guard let goal = GoalStore.shared.nextEvent(), let date = goal.date else { return "" }
+    private static func goalTimelineNote(profile: AthletePlanProfile) -> String {
+        guard let goal = profile.nextEvent(after: Date()), let date = goal.date else { return "" }
         let weeks = max(0, Int(date.timeIntervalSince(Date()) / (7 * 86_400)))
         return " Faltan \(weeks) semanas para tu \(goal.title.lowercased())."
     }
@@ -677,7 +676,8 @@ enum WorkoutPlanner {
         return (0..<count).map { hyroxStations[(start + $0) % hyroxStations.count] }
     }
 
-    private static func hyroxWorkout(phase: TrainingPhase, progress: Double, deload: Bool, muscles: [MuscleReadiness], now: Date) -> ProposedWorkout {
+    private static func hyroxWorkout(phase: TrainingPhase, progress: Double, deload: Bool, muscles: [MuscleReadiness],
+                                     profile: AthletePlanProfile, now: Date) -> ProposedWorkout {
         let band = hyroxPhaseBand(phase)
         let intensity = ramp(band.min, band.max, progress) * (deload ? 0.7 : 1.0)
         let stations = hyroxRotation(now: now)
@@ -696,7 +696,7 @@ enum WorkoutPlanner {
         let note = (deload
             ? "La reducción es deliberada: esta semana buscamos asimilar el patrón, no sumar más volumen a las estaciones."
             : "Fase \(phase == .buildSpecific ? "de construcción específica" : phase == .taper ? "de afinamiento" : phase == .race ? "de competición" : phase == .transition ? "de transición" : "de base"): hoy toca ≈\(Int((intensity * 100).rounded()))% del volumen de referencia por estación (\(Int((progress * 100).rounded()))% del bloque). Rotan 5 de las 8 estaciones reales del HYROX cada semana — esta semana: \(stations.map(\.name).joined(separator: ", ")).")
-            + goalTimelineNote()
+            + goalTimelineNote(profile: profile)
         return ProposedWorkout(title: title, duration: "60–80 min", intent: intent, exercises: exercises, note: note)
     }
 
@@ -706,7 +706,8 @@ enum WorkoutPlanner {
     // two disconnected guesses — and stays honest when that number is
     // still the generic placeholder (no swim history yet).
     private static func swimWorkout(phase: TrainingPhase, progress: Double, deload: Bool,
-                                    targetKilometers: Double?, health: HealthStore, muscles: [MuscleReadiness], now: Date) -> ProposedWorkout {
+                                    targetKilometers: Double?, health: HealthStore, muscles: [MuscleReadiness],
+                                    profile: AthletePlanProfile, now: Date) -> ProposedWorkout {
         let band = swimBand(phase: phase, targetKilometers: targetKilometers)
         let recentLongestSwim = TrainingPlanEngine.recentLongestSessionMinutes(health.workoutHistory, activity: "Natación", now: now)
         let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestSwim, phaseCeiling: band.max)
@@ -744,7 +745,7 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Vuelta a la calma", prescription: "150–200 m muy suave", cue: "Piernas relajadas, respiración larga")
             ],
             note: (pace == nil ? "Sin sesiones de natación registradas todavía: el ritmo de la serie es genérico, no el tuyo. " : "")
-                + "Semana \(Int((progress * 100).rounded()))% del bloque · \(minutes) min de referencia.\(progressionNote)" + goalTimelineNote()
+                + "Semana \(Int((progress * 100).rounded()))% del bloque · \(minutes) min de referencia.\(progressionNote)" + goalTimelineNote(profile: profile)
         )
     }
 
@@ -753,7 +754,8 @@ enum WorkoutPlanner {
     // just accumulating time, mirroring how running's build-specific phase
     // asks for threshold pace instead of generic volume.
     private static func bikeWorkout(phase: TrainingPhase, progress: Double, deload: Bool, targetKilometers: Double?,
-                                    health: HealthStore, muscles: [MuscleReadiness], zoneRange: String, zoneFloor: String, now: Date) -> ProposedWorkout {
+                                    health: HealthStore, muscles: [MuscleReadiness], profile: AthletePlanProfile,
+                                    zoneRange: String, zoneFloor: String, now: Date) -> ProposedWorkout {
         let band = bikeBand(phase: phase, targetKilometers: targetKilometers)
         let recentLongestBike = TrainingPlanEngine.recentLongestSessionMinutes(health.workoutHistory, activity: "Ciclismo", now: now)
         let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestBike, phaseCeiling: band.max)
@@ -786,7 +788,7 @@ enum WorkoutPlanner {
             note: (speed == nil ? "Sin salidas de bici registradas todavía: la velocidad de referencia es genérica, no la tuya. " : "")
                 + "Semana \(Int((progress * 100).rounded()))% del bloque · \(minutes) min de referencia."
                 + (isPersonalized && personalizedCeiling < band.max ? " Techo ajustado a tu salida más larga reciente (progresión máxima ~15%/semana)." : "")
-                + goalTimelineNote() + nutritionNote(minutes: Double(minutes))
+                + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes), profile: profile)
         )
     }
 
@@ -795,7 +797,8 @@ enum WorkoutPlanner {
     // portion — this trains the transition and the pacing discipline of
     // not chasing the fatigue, not distance.
     private static func brickWorkout(phase: TrainingPhase, progress: Double, deload: Bool,
-                                     distance: TriathlonDistance?, muscles: [MuscleReadiness], zoneRange: String) -> ProposedWorkout {
+                                     distance: TriathlonDistance?, muscles: [MuscleReadiness], profile: AthletePlanProfile,
+                                     zoneRange: String) -> ProposedWorkout {
         let bikeBand: (min: Double, max: Double)
         switch phase {
         case .base: bikeBand = (20, 30)
@@ -809,7 +812,7 @@ enum WorkoutPlanner {
         // The athlete's own real transition plan (kit order, nutrition
         // staged, whatever they've actually written down) beats a generic
         // "practice your transition" cue whenever they've entered one.
-        let courseDetails = TrainingPlanEngine.primaryEvents(for: GoalStore.shared.profile).first?.courseDetails
+        let courseDetails = TrainingPlanEngine.primaryEvents(for: profile).first?.courseDetails
         let transitionCue = (courseDetails?.transitionNotes.isEmpty == false)
             ? "Tu plan de transición: \(courseDetails!.transitionNotes)"
             : "Practica el cambio de material como lo harás el día de la carrera"
@@ -823,8 +826,8 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Carrera", prescription: "\(runMinutes) min a ritmo objetivo de \((distance ?? .olympic).rawValue)",
                                 cue: "Las primeras piernas pesan; no es una señal de mal día" + (recoveryCue(for: ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"], in: muscles) ?? ""))
             ],
-            note: "Objetivo de esta fase: acostumbrar al cuerpo a correr con fatiga de bici — la transferencia real que ninguna sesión por separado entrena." + goalTimelineNote()
-                + nutritionNote(minutes: Double(bikeMinutes + runMinutes))
+            note: "Objetivo de esta fase: acostumbrar al cuerpo a correr con fatiga de bici — la transferencia real que ninguna sesión por separado entrena." + goalTimelineNote(profile: profile)
+                + nutritionNote(minutes: Double(bikeMinutes + runMinutes), profile: profile)
         )
     }
 
@@ -832,16 +835,16 @@ enum WorkoutPlanner {
     // nutrition, transition, stop criteria), never a workout to perform.
     // Branches by the goal's own kind since a running race, HYROX, and a
     // triathlon/Ironman each need a genuinely different protocol shape.
-    private static func raceDayProtocol(event: TrainingGoal, health: HealthStore, imports: ImportStore, now: Date) -> ProposedWorkout {
+    private static func raceDayProtocol(event: TrainingGoal, health: HealthStore, imports: ImportStore, reviews: [WorkoutReview], now: Date) -> ProposedWorkout {
         switch event.kind {
-        case .triathlon, .ironman: return triathlonRaceDayProtocol(event: event, health: health, now: now)
-        case .hyrox: return hyroxRaceDayProtocol(event: event, health: health, imports: imports, now: now)
-        default: return runningRaceDayProtocol(event: event, health: health, now: now)
+        case .triathlon, .ironman: return triathlonRaceDayProtocol(event: event, health: health, reviews: reviews, now: now)
+        case .hyrox: return hyroxRaceDayProtocol(event: event, health: health, imports: imports, reviews: reviews, now: now)
+        default: return runningRaceDayProtocol(event: event, health: health, reviews: reviews, now: now)
         }
     }
 
-    private static func runningRaceDayProtocol(event: TrainingGoal, health: HealthStore, now: Date) -> ProposedWorkout {
-        let running = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: WorkoutReviewStore.shared.reviews, now: now)
+    private static func runningRaceDayProtocol(event: TrainingGoal, health: HealthStore, reviews: [WorkoutReview], now: Date) -> ProposedWorkout {
+        let running = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: reviews, now: now)
         let forecast: RaceForecast?
         switch event.kind {
         case .marathon: forecast = running.marathon
@@ -872,9 +875,9 @@ enum WorkoutPlanner {
         )
     }
 
-    private static func triathlonRaceDayProtocol(event: TrainingGoal, health: HealthStore, now: Date) -> ProposedWorkout {
+    private static func triathlonRaceDayProtocol(event: TrainingGoal, health: HealthStore, reviews: [WorkoutReview], now: Date) -> ProposedWorkout {
         let distance = event.resolvedTriathlonDistance ?? .olympic
-        let running = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: WorkoutReviewStore.shared.reviews, now: now)
+        let running = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: reviews, now: now)
         let forecast = TriathlonForecastEngine.forecast(distance: distance, running: running, workouts: health.workoutHistory, courseDetails: event.courseDetails, now: now)
         var exercises: [ProposedExercise] = []
         if let forecast {
@@ -902,8 +905,8 @@ enum WorkoutPlanner {
         )
     }
 
-    private static func hyroxRaceDayProtocol(event: TrainingGoal, health: HealthStore, imports: ImportStore, now: Date) -> ProposedWorkout {
-        let running = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: WorkoutReviewStore.shared.reviews, now: now)
+    private static func hyroxRaceDayProtocol(event: TrainingGoal, health: HealthStore, imports: ImportStore, reviews: [WorkoutReview], now: Date) -> ProposedWorkout {
+        let running = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: reviews, now: now)
         let forecast = HyroxForecastEngine.forecast(running: running, workouts: imports.workouts, division: event.hyroxDivision ?? .open, now: now)
         var exercises = [ProposedExercise(name: "Calentamiento", prescription: "10–15 min progresivo + movilidad de cadera y hombro", cue: "Nada nuevo hoy")]
         if let forecast {
