@@ -77,6 +77,22 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     func finish() { send(command: "finish") }
     func discard() { send(command: "discard") }
 
+    // Último resumen enviado, para reenviarlo cuando el reloj aparezca.
+    private var lastTwinPayload: [String: Any]?
+
+    private func send(_ payload: [String: Any]) {
+        let session = WCSession.default
+        try? session.updateApplicationContext(payload)
+        if session.isReachable { session.sendMessage(payload, replyHandler: nil) }
+    }
+
+    /// Reenvía el último resumen conocido. Si no hay ninguno todavía no se
+    /// inventa uno: el iPhone lo produce en cuanto ContentView sincroniza.
+    func resendLastSummary() {
+        guard let lastTwinPayload else { return }
+        send(lastTwinPayload)
+    }
+
     func updateTwinSummary(readiness: Int, state: String, recommendation: String, reason: String,
                            activity: String, confidence: Int, maximumHeartRate: Int?,
                            hrv: Int, restingHeartRate: Int, sleepHours: Double,
@@ -96,9 +112,12 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         ]
         var completedPayload = payload
         if let maximumHeartRate { completedPayload["maximumHeartRate"] = maximumHeartRate }
-        let session = WCSession.default
-        try? session.updateApplicationContext(completedPayload)
-        if session.isReachable { session.sendMessage(completedPayload, replyHandler: nil) }
+        // Se guarda para poder reenviarlo cuando el reloj aparezca: el
+        // applicationContext persiste, pero sólo si ya se llegó a poner uno, y
+        // un reloj que arranca después de que el iPhone enviara su último
+        // contexto se quedaba en "Esperando datos" sin nada que pedirle.
+        lastTwinPayload = completedPayload
+        send(completedPayload)
     }
 
     func updateWorkoutContext(routine: String, workoutID: String, workoutDate: Date,
@@ -131,7 +150,19 @@ final class WatchMetricsStore: NSObject, ObservableObject {
 }
 
 extension WatchMetricsStore: WCSessionDelegate {
-    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {}
+    // Estaba vacío: al activarse la sesión —lo que ocurre cuando el reloj
+    // abre la app— el iPhone no enviaba nada, así que el reloj esperaba un
+    // cambio en el iPhone que podía no llegar nunca.
+    nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
+        guard error == nil, activationState == .activated else { return }
+        Task { @MainActor in resendLastSummary() }
+    }
+    // Y no existía en absoluto: el reloj pasa a alcanzable justo al abrir su
+    // app, que es exactamente el momento en que necesita el resumen.
+    nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        guard session.isReachable else { return }
+        Task { @MainActor in resendLastSummary() }
+    }
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
     nonisolated func sessionDidDeactivate(_ session: WCSession) { session.activate() }
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
