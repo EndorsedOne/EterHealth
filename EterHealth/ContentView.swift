@@ -44,6 +44,7 @@ private enum ContentSheet: Identifiable {
 private enum ConfirmationKind { case restoreBackup, deleteWorkout, deleteImportedWorkout }
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var checkIns: DailyCheckInStore
@@ -223,6 +224,18 @@ struct ContentView: View {
             Task { @MainActor in await Task.yield(); refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
         }
         .onChange(of: imports.workoutCount) { _, _ in refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
+        // syncWatchSummary sólo estaba enganchado a CAMBIOS (lastUpdated,
+        // check-in, estilo de vida, importaciones). Con la app abierta y nada
+        // cambiando, el iPhone no enviaba nada nunca y el reloj se quedaba en
+        // "Esperando datos" — el síntoma exacto. Esto lo envía también cuando
+        // hay permiso de Salud (que es cuando el guard de syncWatchSummary
+        // deja de rechazarlo) y cada vez que la app vuelve a primer plano.
+        .onChange(of: health.authorizationRequested) { _, granted in
+            if granted { syncWatchSummary() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { syncWatchSummary() }
+        }
         // performAutomaticBackupIfNeeded() used to also run from onAppear,
         // which fires the instant this view mounts — before health.prepare()'s
         // async HealthKit fetch (kicked off separately at the App level) has
@@ -235,7 +248,10 @@ struct ContentView: View {
         // even though the device itself had it all along. onChange alone is
         // sufficient: it already fires on the initial refresh and on every
         // later HealthKit background-delivery update.
-        .onAppear { refreshDashboard() }
+        // syncWatchSummary aquí también: si el permiso de Salud ya estaba
+        // concedido antes de que esta vista apareciera, ningún onChange llega a
+        // dispararse y el reloj se quedaría esperando igual.
+        .onAppear { refreshDashboard(); syncWatchSummary() }
     }
 
     // Type erasure is intentional at the navigation boundary. Each tab contains a
