@@ -60,6 +60,12 @@ struct ImportedSet: Codable, Sendable {
     var reps: Int
     var type: String
     var rpe: Double?
+    // PR5: Hevy exporta `duration_seconds` para los ejercicios que se miden
+    // en tiempo (trineo, wall balls, remo, ski…), y el parser lo ignoraba.
+    // Opcional y sin valor por defecto en el decode: la mayoría de series son
+    // de peso × reps y no tienen duración, y los JSON ya guardados tampoco
+    // traen el campo. nil significa "no medido", nunca cero.
+    var durationSeconds: Double?
 }
 
 struct LabResult: Codable, Identifiable, Sendable {
@@ -286,7 +292,8 @@ final class ImportStore: ObservableObject {
             item.sets += 1
             item.volume += weight * reps
             item.reps += Int(reps.rounded())
-            item.details.append(ImportedSet(weight: weight, reps: Int(reps.rounded()), type: setType, rpe: rpe))
+            item.details.append(ImportedSet(weight: weight, reps: Int(reps.rounded()), type: setType, rpe: rpe,
+                                            durationSeconds: Double(field(row, "duration_seconds"))))
             workout.exercises[exercise] = item
             grouped[key] = workout
         }

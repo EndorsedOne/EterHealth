@@ -726,6 +726,90 @@ final class EngineTests: XCTestCase {
         XCTAssertNil(HyroxForecastEngine.forecast(running: running, workouts: []))
     }
 
+    // PR5. Helpers locales para no repetir el montaje del forecast.
+    private func hyroxRunning() -> RunningPerformanceSummary {
+        RunningPerformanceSummary(
+            sessions: [], weeks: [], kilometers7Days: 40, priorKilometers7Days: 38,
+            fiveK: nil, tenK: RaceForecast(distanceName: "10 km", seconds: 2_700, confidence: .high, basis: "Test"),
+            halfMarathon: nil, marathon: nil, easyPercentage: 75, hardPercentage: 25, hasZoneData: true
+        )
+    }
+
+    private func hyroxSimulation(title: String, start: Date, minutes: Double,
+                                 stationSeconds: [String: Double] = [:]) -> ImportedWorkout {
+        let exercises = stationSeconds.map { name, seconds in
+            ImportedExercise(name: name, sets: 1, volume: 0, totalReps: nil, averageWeight: nil,
+                             setDetails: [ImportedSet(weight: 0, reps: 0, type: "normal", rpe: nil, durationSeconds: seconds)])
+        }
+        return ImportedWorkout(title: title, start: start, end: start.addingTimeInterval(minutes * 60),
+                               exercises: exercises, muscleSets: [:])
+    }
+
+    // Criterio del brief: con 2 resultados de carrera el forecast sigue
+    // anclado a su mediana, no a la banda poblacional.
+    func testHyroxForecastWithTwoRaceResultsStaysAnchoredToTheirMedian() {
+        let now = Date()
+        let races = [
+            hyroxSimulation(title: "HYROX race Madrid", start: now.addingTimeInterval(-40 * 86_400), minutes: 82),
+            hyroxSimulation(title: "HYROX race Valencia", start: now.addingTimeInterval(-15 * 86_400), minutes: 88)
+        ]
+        let forecast = HyroxForecastEngine.forecast(running: hyroxRunning(), workouts: races, now: now)
+
+        XCTAssertEqual(forecast?.completedRaces, 2)
+        XCTAssertEqual(forecast?.seconds ?? 0, 85 * 60, accuracy: 1,
+                       "Dos resultados reales anclan al mediano (82 y 88 -> 85 min), no a la banda de la división.")
+    }
+
+    // El cambio de este PR: con tiempos reales por estación, el componente de
+    // estaciones deja de ser la banda poblacional y la banda se estrecha.
+    func testObservedStationTimesReplaceThePopulationBandAndNarrowTheRange() {
+        let now = Date()
+        // Ocho estaciones medidas, 4 min cada una = 32 min reales, por debajo
+        // del centro de la banda Open (35–50 -> 42.5 min).
+        let measured = hyroxSimulation(title: "Simulación HYROX", start: now.addingTimeInterval(-10 * 86_400), minutes: 75,
+                                       stationSeconds: ["SkiErg": 240, "Sled Push": 240, "Sled Pull": 240,
+                                                        "Burpee Broad Jump": 240, "Rowing Machine": 240,
+                                                        "Farmers Carry": 240, "Sandbag Lunges": 240, "Wall Ball": 240])
+        let withStations = HyroxForecastEngine.forecast(running: hyroxRunning(), workouts: [measured], now: now)
+        let withoutStations = HyroxForecastEngine.forecast(running: hyroxRunning(), workouts: [], now: now)
+
+        XCTAssertEqual(withStations?.stationBasis, .observedStations)
+        XCTAssertEqual(withoutStations?.stationBasis, .populationBand)
+        XCTAssertLessThan(withStations?.stationSeconds ?? 0, withoutStations?.stationSeconds ?? 0,
+                          "32 min medidos tiran del centro de la banda hacia abajo.")
+
+        let narrowed = (withStations?.conservativeSeconds ?? 0) - (withStations?.optimisticSeconds ?? 0)
+        let population = (withoutStations?.conservativeSeconds ?? 0) - (withoutStations?.optimisticSeconds ?? 0)
+        XCTAssertLessThan(narrowed, population,
+                          "Medir estaciones tiene que estrechar la banda, que es el punto de medirlas.")
+    }
+
+    // Cobertura parcial NO se usa: sumar 2 de 8 estaciones daría un total que
+    // infraestima, y eso sería peor que la banda honesta.
+    func testPartialStationCoverageFallsBackToThePopulationBand() {
+        let now = Date()
+        let partial = hyroxSimulation(title: "Simulación HYROX", start: now.addingTimeInterval(-5 * 86_400), minutes: 70,
+                                      stationSeconds: ["SkiErg": 240, "Wall Ball": 240])
+        let forecast = HyroxForecastEngine.forecast(running: hyroxRunning(), workouts: [partial], now: now)
+
+        XCTAssertEqual(HyroxForecastEngine.observedStationSeconds([partial], now: now)?.stationsCovered, 2)
+        XCTAssertNotEqual(forecast?.stationBasis, .observedStations,
+                          "Con 2 de 8 medidas el total infraestima; mejor la banda que un número falsamente preciso.")
+    }
+
+    // Sin `duration_seconds` en el CSV no hay estaciones observadas: nil, no
+    // cero. Un cero se leería como "las hizo en 0 segundos".
+    func testStationTimesAreAbsentNotZeroWhenHevyHasNoDurationColumn() {
+        let now = Date()
+        let noDurations = ImportedWorkout(
+            title: "Simulación HYROX", start: now.addingTimeInterval(-3 * 86_400),
+            end: now.addingTimeInterval(-3 * 86_400 + 4_200),
+            exercises: [ImportedExercise(name: "Wall Ball", sets: 3, volume: 300, totalReps: 30, averageWeight: 10,
+                                         setDetails: [ImportedSet(weight: 10, reps: 10, type: "normal", rpe: 8, durationSeconds: nil)])],
+            muscleSets: [:])
+        XCTAssertNil(HyroxForecastEngine.observedStationSeconds([noDurations], now: now))
+    }
+
     func testHyroxBottleneckFlagsLowVO2MaxAsTheRealLimiterOverStationCoverage() {
         // Brandt et al. 2025: VO2max correlates with total HYROX time
         // (ρ=-0.71) more than anything else — this must take priority

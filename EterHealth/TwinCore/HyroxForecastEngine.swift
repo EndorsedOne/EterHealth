@@ -12,6 +12,11 @@ struct HyroxForecast {
     let conservativeSeconds: Double
     let runSeconds: Double
     let stationSeconds: Double
+    // PR5: de dónde salen esos segundos — banda poblacional, tiempos reales
+    // por estación, o implícitos de simulaciones completas. Que se pueda
+    // leer es parte de la honestidad: un número personal y uno de banda no
+    // valen lo mismo.
+    let stationBasis: HyroxStationBasis
     let transitionSeconds: Double
     let division: HyroxDivision
     let stations: [HyroxStationEvidence]
@@ -20,6 +25,12 @@ struct HyroxForecast {
     let confidence: ConfidenceAssessment
     let bottleneck: String
     let basis: String
+}
+
+enum HyroxStationBasis: String, Equatable {
+    case populationBand = "banda de la división"
+    case observedStations = "tiempos reales por estación"
+    case impliedFromSimulations = "implícito de tus simulaciones"
 }
 
 enum HyroxForecastEngine {
@@ -72,12 +83,47 @@ enum HyroxForecastEngine {
         let compromise = compromisedRunPenalty(stationCoverage: stationCoverage, specificSessions: specific.count)
         let runSeconds = run8K * (1 + (compromise.lowerBound + compromise.upperBound) / 2)
         let stationBand = stationTimeBand(division)
-        let stationSeconds = (stationBand.lowerBound + stationBand.upperBound) / 2
+        let priorStationSeconds = (stationBand.lowerBound + stationBand.upperBound) / 2
         let transitionSeconds = division == .doubles ? 270.0 : 330.0
-        var central = runSeconds + stationSeconds + transitionSeconds
 
         let credibleSimulations = specific.map { $0.end.timeIntervalSince($0.start) }
             .filter { $0 >= 45 * 60 && $0 <= 180 * 60 }
+
+        // PR5: el componente de estaciones deja de ser sólo la banda de la
+        // división en cuanto hay evidencia personal. Dos fuentes, y la más
+        // directa gana.
+        let observed = observedStationSeconds(specific, now: now)
+        let impliedStationSeconds: Double? = credibleSimulations.count >= 2
+            ? median(credibleSimulations).map { max(0, $0 - runSeconds - transitionSeconds) }
+            : nil
+        let stationSeconds: Double
+        let stationBasis: HyroxStationBasis
+        let stationSpread: Double
+        if let observed, observed.stationsCovered >= 4 {
+            // Medición directa de lo que se predice: pesa más que el prior.
+            // El 0.65 es deliberadamente más que el 0.55 que la app da a una
+            // simulación completa, porque una simulación mezcla descansos y
+            // formatos parciales y esto no.
+            stationSeconds = observed.total * 0.65 + priorStationSeconds * 0.35
+            stationBasis = .observedStations
+            // Banda estrecha porque hay medición: ±8% en vez de los ~18 min
+            // de la banda poblacional. Heurística documentada, no un número
+            // clínico.
+            stationSpread = stationSeconds * 0.08
+        } else if let impliedStationSeconds, impliedStationSeconds > 0 {
+            // Indirecto: el resto de una simulación completa tras quitar
+            // carrera y transiciones. Mismos pesos que la app ya usa para
+            // mezclar una simulación con el prior (0.55 prior / 0.45 personal).
+            stationSeconds = priorStationSeconds * 0.55 + impliedStationSeconds * 0.45
+            stationBasis = .impliedFromSimulations
+            stationSpread = stationSeconds * 0.12
+        } else {
+            stationSeconds = priorStationSeconds
+            stationBasis = .populationBand
+            stationSpread = (stationBand.upperBound - stationBand.lowerBound) / 2
+        }
+
+        var central = runSeconds + stationSeconds + transitionSeconds
         if !credibleSimulations.isEmpty {
             // A specific simulation is more personal than the structural station
             // prior, but remains blended because rests and partial formats vary.
@@ -89,11 +135,13 @@ enum HyroxForecastEngine {
             if let result = median(results) { central = result }
         }
 
+        // La banda ya no es siempre la poblacional: se estrecha cuando la
+        // evidencia de estaciones es personal (stationSpread arriba).
         let optimistic = raceResults.isEmpty
-            ? run8K * (1 + compromise.lowerBound) + stationBand.lowerBound + 240
+            ? run8K * (1 + compromise.lowerBound) + (stationSeconds - stationSpread) + 240
             : central * 0.97
         let conservative = raceResults.isEmpty
-            ? run8K * (1 + compromise.upperBound) + stationBand.upperBound + 480
+            ? run8K * (1 + compromise.upperBound) + (stationSeconds + stationSpread) + 480
             : central * 1.04
         let confidence = ConfidenceEngine.hyrox(
             stationCoverage: stationCoverage, specificSessions: specific.count,
@@ -109,16 +157,47 @@ enum HyroxForecastEngine {
         else if runForecast.confidence == .low { bottleneck = "La carrera base todavía procede de esfuerzos poco comparables." }
         else { bottleneck = "El siguiente salto de precisión requiere una simulación completa comparable." }
         let source = raceResults.isEmpty
-            ? "8 km proyectados desde \(runForecast.distanceName), penalización por carrera comprometida y banda de estaciones \(division.rawValue)."
+            ? "8 km proyectados desde \(runForecast.distanceName), penalización por carrera comprometida y estaciones por \(stationBasis.rawValue)."
             : "\(raceResults.count) resultado\(raceResults.count == 1 ? "" : "s") completo\(raceResults.count == 1 ? "" : "s") localizado\(raceResults.count == 1 ? "" : "s")."
         return HyroxForecast(
             seconds: central, optimisticSeconds: min(optimistic, central),
             conservativeSeconds: max(conservative, central), runSeconds: runSeconds,
-            stationSeconds: stationSeconds, transitionSeconds: transitionSeconds,
+            stationSeconds: stationSeconds, stationBasis: stationBasis, transitionSeconds: transitionSeconds,
             division: division, stations: stations, specificSessions: specific.count,
             completedRaces: raceResults.count, confidence: confidence,
             bottleneck: bottleneck, basis: source
         )
+    }
+
+    // Suma de duraciones reales por estación dentro de UNA sola sesión
+    // específica — la más reciente que tenga al menos 4 de las 8 medidas.
+    // De una sola sesión y no mezclando varias a propósito: sumar el trineo
+    // de una y el remo de otra daría un total que nadie ha corrido nunca.
+    // Y con cobertura parcial el total infraestima, así que el llamante exige
+    // >= 4 antes de usarlo.
+    nonisolated static func observedStationSeconds(_ specific: [ImportedWorkout],
+                                                   now: Date = Date()) -> (total: Double, stationsCovered: Int)? {
+        for workout in specific.sorted(by: { $0.start > $1.start }) {
+            var total = 0.0
+            var covered = 0
+            for (_, terms) in stationDefinitions {
+                var seconds = 0.0
+                for exercise in workout.exercises {
+                    let name = normalized(exercise.name)
+                    guard terms.contains(where: { name.contains($0) }) else { continue }
+                    guard let details = exercise.setDetails else { continue }
+                    for set in details {
+                        if let duration = set.durationSeconds, duration > 0 { seconds += duration }
+                    }
+                }
+                if seconds > 0 {
+                    total += seconds
+                    covered += 1
+                }
+            }
+            if covered > 0 { return (total, covered) }
+        }
+        return nil
     }
 
     nonisolated static func compromisedRunPenalty(stationCoverage: Int, specificSessions: Int) -> ClosedRange<Double> {
