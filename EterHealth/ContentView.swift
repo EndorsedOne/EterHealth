@@ -1346,7 +1346,10 @@ struct ContentView: View {
     }
 
     private func syncWatchSummary() {
-        guard health.authorizationRequested else { return }
+        guard health.authorizationRequested else {
+            print("[éter/watch] syncWatchSummary descartado: sin permiso de Salud todavía")
+            return
+        }
         let assessment = currentAssessment
         // Driven by the plan's own structured PlannedSessionKind, not by
         // re-parsing the rendered Spanish recommendation text — see
