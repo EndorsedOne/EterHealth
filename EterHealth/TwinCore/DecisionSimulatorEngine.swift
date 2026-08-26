@@ -140,8 +140,12 @@ enum DecisionSimulatorEngine {
                 : "Con tu disponibilidad de hoy (\(assessment.score)/100), esperable prescribir ~\(pct)% de tu carga habitual — no es el día para buscar un máximo."
         }
 
-        let projectedLoad = performance.projectedAcuteLoad(adding: added)
-        let ratio = performance.projectedLoadRatio(adding: added)
+        // El reparto por canal sale de overrideSessionKind, que ya mapea cada
+        // decisión a su tipo de sesión — no una segunda tabla.
+        let addedDual = DualLoad.split(total: added, kind: decision.overrideSessionKind ?? .recovery)
+        let projectedAcute = performance.dual.projectedAcute(adding: addedDual)
+        let projectedChronicDual = performance.dual.projectedHabitual(adding: addedDual)
+        let ratio = performance.dual.projectedGoverningRatio(adding: addedDual)
         let ratioPenalty = ratio > 1.55 ? 8 : ratio > 1.30 ? 4 : 0
         let tomorrow = min(100, max(0, assessment.score - fatigue - ratioPenalty + recovery))
         let headline: String
@@ -154,10 +158,12 @@ enum DecisionSimulatorEngine {
         if let basis, !basis.isPersonal { evidenceScore = min(evidenceScore, 35) }
         let confidence = ConfidenceEngine.level(score: evidenceScore)
 
-        let projectedChronic = ratio > 0 ? projectedLoad / ratio : performance.habitualLoad
+        // El crónico proyectado se calcula, ya no se reconstruye dividiendo
+        // el agudo por el ratio (que además se caía al habitual cuando el
+        // ratio era 0).
         let trajectory = projectTrajectory(
-            tomorrowReadiness: tomorrow, projectedAcuteLoad: projectedLoad,
-            projectedChronicLoad: projectedChronic, days: 4,
+            tomorrowReadiness: tomorrow, projectedAcuteLoad: projectedAcute,
+            projectedChronicLoad: projectedChronicDual, days: 4,
             futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, context: context, now: now, count: 3)
         )
         let explanation = basis.map { basis in
@@ -167,7 +173,7 @@ enum DecisionSimulatorEngine {
         } ?? "Parte de tu disponibilidad actual (\(assessment.score)/100) y aplica una respuesta de recuperación conservadora."
 
         return DecisionSimulation(
-            decision: decision, addedLoad: added, projectedAcuteLoad: projectedLoad, projectedRatio: ratio,
+            decision: decision, addedLoad: added, projectedAcuteLoad: projectedAcute.combined, projectedRatio: ratio,
             tomorrowReadiness: tomorrow, headline: headline, explanation: explanation,
             performanceExpectation: performanceExpectation,
             tradeoffs: tradeoffs, confidence: confidence, trajectory: trajectory
@@ -228,7 +234,8 @@ enum DecisionSimulatorEngine {
         let sampleCount = association?.samples ?? 0
         let confidence = association?.confidence.level ?? ConfidenceEngine.level(score: 0)
         let trajectory = projectTrajectory(
-            tomorrowReadiness: tomorrow, projectedAcuteLoad: performance.acuteLoad, projectedChronicLoad: performance.habitualLoad, days: 4,
+            tomorrowReadiness: tomorrow, projectedAcuteLoad: performance.dual.acuteChannels,
+            projectedChronicLoad: performance.dual.habitualChannels, days: 4,
             futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, context: context, now: now, count: 3)
         )
         let explanation = "Parte de tu disponibilidad actual (\(assessment.score)/100)" +
@@ -236,7 +243,8 @@ enum DecisionSimulatorEngine {
             (hasConfidentLearning ? ", más tu efecto personal aprendido (\(learnedImpact >= 0 ? "+" : "")\(learnedImpact) pt sobre \(sampleCount) episodios)." : ".")
 
         return DecisionSimulation(
-            decision: decision, addedLoad: 0, projectedAcuteLoad: performance.acuteLoad, projectedRatio: performance.loadRatio,
+            decision: decision, addedLoad: 0, projectedAcuteLoad: performance.acuteLoad,
+            projectedRatio: performance.dual.governingRatio,
             tomorrowReadiness: tomorrow, headline: headline, explanation: explanation,
             performanceExpectation: performanceExpectation, tradeoffs: tradeoffs, confidence: confidence, trajectory: trajectory
         )
@@ -253,31 +261,39 @@ enum DecisionSimulatorEngine {
     /// happens if I do X today" account for the fact that training doesn't
     /// stop the day after — it keeps following whatever the plan for day 3,
     /// 4, 5... actually recommends, instead of quietly assuming full rest.
-    nonisolated static func projectTrajectory(tomorrowReadiness: Int, projectedAcuteLoad: Double,
-                                               projectedChronicLoad: Double, days: Int,
-                                               futureLoads: [Double] = []) -> [DecisionProjectionDay] {
+    // PR3c: acute/chronic duales y el ratio que gobierna, el mismo que el
+    // gate del plan. Con el ratio combinado, la trayectoria podía proyectar
+    // "reevaluar sesión prevista" para un día que status() habría mandado a
+    // recuperar, porque el pico de un canal quedaba diluido por el otro.
+    nonisolated static func projectTrajectory(tomorrowReadiness: Int, projectedAcuteLoad: DualLoad,
+                                               projectedChronicLoad: DualLoad, days: Int,
+                                               futureLoads: [DualLoad] = []) -> [DecisionProjectionDay] {
         guard days > 0 else { return [] }
         var readiness = min(100, max(0, tomorrowReadiness))
-        var acute = max(0, projectedAcuteLoad)
-        var chronic = max(0, projectedChronicLoad)
+        var acute = DualLoad(aerobic: max(0, projectedAcuteLoad.aerobic), strength: max(0, projectedAcuteLoad.strength))
+        var chronic = DualLoad(aerobic: max(0, projectedChronicLoad.aerobic), strength: max(0, projectedChronicLoad.strength))
         return (1...days).map { day in
             if day > 1 {
-                let addedLoad = futureLoads.count >= day - 1 ? futureLoads[day - 2] : 0
-                acute = PerformanceEngine.stepWeeklyEquivalent(acute, dayLoad: addedLoad, timeConstant: 7)
-                chronic = PerformanceEngine.stepWeeklyEquivalent(chronic, dayLoad: addedLoad, timeConstant: 28)
-                let ratio = chronic > 0 ? acute / chronic : 0
+                let addedLoad = futureLoads.count >= day - 1 ? futureLoads[day - 2] : .none
+                acute = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(acute.aerobic, dayLoad: addedLoad.aerobic, timeConstant: 7),
+                                 strength: PerformanceEngine.stepWeeklyEquivalent(acute.strength, dayLoad: addedLoad.strength, timeConstant: 7))
+                chronic = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(chronic.aerobic, dayLoad: addedLoad.aerobic, timeConstant: 28),
+                                   strength: PerformanceEngine.stepWeeklyEquivalent(chronic.strength, dayLoad: addedLoad.strength, timeConstant: 28))
+                let ratio = DualLoad.governingRatio(acute: acute, habitual: chronic)
                 let recovery = readiness < 55 ? 7 : readiness < 75 ? 5 : 3
                 // Only a real assumed session should cost readiness — a rest
                 // day (addedLoad 0) keeps the original pure-recovery bump.
-                let fatigueFromLoad = addedLoad > 45 ? 6 : addedLoad > 25 ? 3 : 0
+                // Combinado a propósito: "¿hubo sesión de verdad?" no
+                // distingue canal.
+                let fatigueFromLoad = addedLoad.combined > 45 ? 6 : addedLoad.combined > 25 ? 3 : 0
                 let residualPenalty = ratio >= 1.55 ? 4 : ratio >= 1.30 ? 2 : 0
                 readiness = min(100, max(0, readiness + recovery - fatigueFromLoad - residualPenalty))
             }
-            let ratio = chronic > 0 ? acute / chronic : 0
+            let ratio = DualLoad.governingRatio(acute: acute, habitual: chronic)
             let guidance = readiness < 50 || ratio >= 1.55 ? "Recuperar"
                 : readiness < 65 || ratio >= 1.30 ? "Suave o menor volumen"
                 : "Reevaluar sesión prevista"
-            return DecisionProjectionDay(day: day, readiness: readiness, acuteLoad: acute, loadRatio: ratio, guidance: guidance)
+            return DecisionProjectionDay(day: day, readiness: readiness, acuteLoad: acute.combined, loadRatio: ratio, guidance: guidance)
         }
     }
 
@@ -294,11 +310,11 @@ enum DecisionSimulatorEngine {
     // starting point (already reflected above), not what gets recommended
     // several days out.
     private static func forwardPlanLoads(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
-                                         context: TwinContext, now: Date, count: Int) -> [Double] {
+                                         context: TwinContext, now: Date, count: Int) -> [DualLoad] {
         let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIn,
                                                 context: context, now: now, days: min(7, count + 2))
         guard week.count > 2 else { return [] }
-        return week.dropFirst(2).prefix(count).map { TrainingPlanEngine.forecastSessionLoad($0.kind) }
+        return week.dropFirst(2).prefix(count).map { DualLoad.ratioLoad($0.kind) }
     }
 
     // MARK: - Personal-history load & pace helpers

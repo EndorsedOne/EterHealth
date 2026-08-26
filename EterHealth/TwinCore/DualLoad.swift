@@ -151,12 +151,22 @@ struct DualLoadSummary: Equatable {
                  strength: acuteStrength + session.strength * (1 - exp(-1 / 7.0)) * 7)
     }
 
+    func projectedHabitual(adding session: DualLoad) -> DualLoad {
+        DualLoad(aerobic: habitualAerobic + session.aerobic * (1 - exp(-1 / 28.0)) * 7,
+                 strength: habitualStrength + session.strength * (1 - exp(-1 / 28.0)) * 7)
+    }
+
     func projectedRatios(adding session: DualLoad) -> (aerobic: Double, strength: Double) {
-        let projected = projectedAcute(adding: session)
-        let chronicAerobic = habitualAerobic + session.aerobic * (1 - exp(-1 / 28.0)) * 7
-        let chronicStrength = habitualStrength + session.strength * (1 - exp(-1 / 28.0)) * 7
-        return (chronicAerobic > 0 ? projected.aerobic / chronicAerobic : 0,
-                chronicStrength > 0 ? projected.strength / chronicStrength : 0)
+        let acute = projectedAcute(adding: session), habitual = projectedHabitual(adding: session)
+        return (DualLoad.ratio(acute: acute.aerobic, habitual: habitual.aerobic),
+                DualLoad.ratio(acute: acute.strength, habitual: habitual.strength))
+    }
+
+    // El ratio que gobierna tras añadir una sesión hipotética — el mismo
+    // criterio que el gate del plan, para que el simulador no pueda decir
+    // "esto no te pasa factura" mientras status() manda a recuperación.
+    func projectedGoverningRatio(adding session: DualLoad) -> Double {
+        DualLoad.governingRatio(acute: projectedAcute(adding: session), habitual: projectedHabitual(adding: session))
     }
 }
 
