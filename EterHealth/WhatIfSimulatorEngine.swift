@@ -67,12 +67,10 @@ enum WhatIfSimulatorEngine {
         // TwinCore's TwinEngine.assess no longer reads these singletons
         // internally — this (outside TwinCore) is where they're read.
         let events = LifestyleFactorStore.shared.events
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
-                                           events: events, reviews: WorkoutReviewStore.shared.reviews,
-                                           activeInjuries: InjuryStore.shared.active,
-                                           calibration: TwinStateStore.shared.calibration,
-                                           personalAnchor: TwinStateStore.shared.personalAnchor(now: now),
-                                           profile: GoalStore.shared.profile, now: now)
+        let context = TwinContext(profile: GoalStore.shared.profile, events: events, reviews: WorkoutReviewStore.shared.reviews,
+                                  activeInjuries: InjuryStore.shared.active, calibration: TwinStateStore.shared.calibration,
+                                  personalAnchor: TwinStateStore.shared.personalAnchor(now: now))
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let associations = HabitAssociationEngine.analyze(
             events: events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory, sleep: health.sleepHistory,

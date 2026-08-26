@@ -86,7 +86,17 @@ final class ImportStore: ObservableObject {
     @Published var message: String?
     @Published private(set) var isImporting = false
 
-    init() { load() }
+    // Production behavior is unchanged: init() always loads and every
+    // mutation persists. EngineTests uses persistToDisk: false for
+    // scenarios that need real control over exactly which workouts exist —
+    // the default ImportStore() otherwise reads whatever this machine's
+    // real Hevy import history happens to be, which is fine for tests that
+    // only add one workout on top of it, but was silently deciding the
+    // outcome of a few multi-day weekAhead tests that need a genuinely
+    // empty or fully-controlled history to mean anything.
+    private let persistsToDisk: Bool
+    init() { persistsToDisk = true; load() }
+    init(persistToDisk: Bool) { persistsToDisk = persistToDisk }
 
     func importFiles(_ urls: [URL]) {
         guard !isImporting else { return }
@@ -523,6 +533,7 @@ final class ImportStore: ObservableObject {
     private var storageURL: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("eter-imports.json") }
     private struct Storage: Codable { let workouts: [ImportedWorkout]; let labs: [LabResult] }
     private func save() {
+        guard persistsToDisk else { return }
         try? FileManager.default.createDirectory(at: storageURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONEncoder().encode(Storage(workouts: workouts, labs: labs)).write(to: storageURL, options: .atomic)
     }

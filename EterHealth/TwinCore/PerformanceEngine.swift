@@ -151,11 +151,11 @@ enum PerformanceEngine {
     // TwinCore: goalProfile/reviews/events/activeInjuries/calibration/
     // personalAnchor used to come from GoalStore/TwinStateStore/
     // LifestyleFactorStore/WorkoutReviewStore/InjuryStore singleton
-    // instances — same required-injection reasoning as TwinEngine.assess.
-    static func balance(health: HealthStore, imports: ImportStore, goalProfile: AthletePlanProfile,
-                        events: [LifestyleEvent], reviews: [WorkoutReview], activeInjuries: [InjuryRecord],
-                        calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
+    // instances — same required-injection reasoning as TwinEngine.assess,
+    // bundled into one TwinContext since PR1.5.
+    static func balance(health: HealthStore, imports: ImportStore, context: TwinContext,
                         now: Date = Date()) -> TrainingBalance {
+        let goalProfile = context.profile
         let summary = summarize(health: health, imports: imports, now: now)
         let calendar = Calendar.current
         let block = TrainingPlanEngine.activeBlock(on: now, profile: goalProfile)
@@ -163,9 +163,7 @@ enum PerformanceEngine {
         let strengthSessions = recent.count
         let runningSessions = health.recentWorkouts.filter { $0.date >= calendar.date(byAdding: .day, value: -10, to: now)! && $0.activity == "Carrera" }.count
         let hardPercent = summary.highAerobic + summary.anaerobic
-        let assessment = TwinEngine.assess(health: health, imports: imports,
-                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                           calibration: calibration, personalAnchor: personalAnchor, profile: goalProfile, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, context: context, now: now)
 
         let phase = block.name
         let desiredRuns = block.runningSessions

@@ -86,10 +86,14 @@ enum DecisionSimulatorEngine {
                                      profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
                                      calibration: calibration, personalAnchor: personalAnchor, now: now)
         }
+        // PR1.5: assembled once and reused below for both the assess() call
+        // and (via forwardPlanLoads) weekAhead — this function's own
+        // external signature keeps the six separate parameters since
+        // callers outside TwinCore already have them as six separate reads.
+        let context = TwinContext(profile: profile, events: events, reviews: reviews,
+                                  activeInjuries: activeInjuries, calibration: calibration, personalAnchor: personalAnchor)
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
-                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                           calibration: calibration, personalAnchor: personalAnchor, profile: profile, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let added: Double
         let fatigue: Int
         let recovery: Int
@@ -154,9 +158,7 @@ enum DecisionSimulatorEngine {
         let trajectory = projectTrajectory(
             tomorrowReadiness: tomorrow, projectedAcuteLoad: projectedLoad,
             projectedChronicLoad: projectedChronic, days: 4,
-            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn,
-                                          profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                          calibration: calibration, personalAnchor: personalAnchor, now: now, count: 3)
+            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, context: context, now: now, count: 3)
         )
         let explanation = basis.map { basis in
             basis.isPersonal
@@ -181,10 +183,10 @@ enum DecisionSimulatorEngine {
                                           profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
                                           activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
                                           now: Date = Date()) -> DecisionSimulation {
+        let context = TwinContext(profile: profile, events: events, reviews: reviews,
+                                  activeInjuries: activeInjuries, calibration: calibration, personalAnchor: personalAnchor)
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
-                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                           calibration: calibration, personalAnchor: personalAnchor, profile: profile, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let associations = HabitAssociationEngine.analyze(
             events: events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory, sleep: health.sleepHistory,
@@ -227,9 +229,7 @@ enum DecisionSimulatorEngine {
         let confidence = association?.confidence.level ?? ConfidenceEngine.level(score: 0)
         let trajectory = projectTrajectory(
             tomorrowReadiness: tomorrow, projectedAcuteLoad: performance.acuteLoad, projectedChronicLoad: performance.habitualLoad, days: 4,
-            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn,
-                                          profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                          calibration: calibration, personalAnchor: personalAnchor, now: now, count: 3)
+            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, context: context, now: now, count: 3)
         )
         let explanation = "Parte de tu disponibilidad actual (\(assessment.score)/100)" +
             (genericImmediate != 0 ? " y aplica la misma cautela inmediata que el gemelo ya usaría (\(genericImmediate) pt)" : "") +
@@ -294,12 +294,9 @@ enum DecisionSimulatorEngine {
     // starting point (already reflected above), not what gets recommended
     // several days out.
     private static func forwardPlanLoads(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
-                                         profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
-                                         activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
-                                         now: Date, count: Int) -> [Double] {
+                                         context: TwinContext, now: Date, count: Int) -> [Double] {
         let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIn,
-                                                profile: profile, reviews: reviews, events: events, activeInjuries: activeInjuries,
-                                                calibration: calibration, personalAnchor: personalAnchor, now: now, days: min(7, count + 2))
+                                                context: context, now: now, days: min(7, count + 2))
         guard week.count > 2 else { return [] }
         return week.dropFirst(2).prefix(count).map { TrainingPlanEngine.forecastSessionLoad($0.kind) }
     }
