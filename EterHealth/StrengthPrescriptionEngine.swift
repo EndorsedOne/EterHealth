@@ -1,14 +1,37 @@
 import Foundation
 
+// Cómo se mide un ejercicio. Era un booleano `isTimed`, y con dos estados no
+// se podía expresar ni "cuenta repeticiones y además cronometro cuánto tardo"
+// (lo que hace Hevy) ni "trineo/remo/ski, que son tiempo Y distancia y no
+// tienen repeticiones en absoluto".
+enum ExerciseMeasurement: String, Equatable {
+    // Estándar: repeticiones. La duración es OPCIONAL — se puede cronometrar
+    // la serie sin que eso cambie que lo que cuenta son las reps.
+    case reps
+    // Planchas y holds: sólo tiempo. "Cuántas repeticiones de plancha" no es
+    // una pregunta coherente.
+    case time
+    // Trineo, remo, ski: tiempo Y distancia. Ninguna de las dos por separado
+    // describe la serie — 200 m de trineo en 90 s y en 150 s no son lo mismo.
+    case timeAndDistance
+}
+
 struct ExerciseDescriptor: Identifiable {
     var id: String { name }
     let name: String
     let pattern: String
     let equipment: String
     let symbol: String
-    // Isometric holds and loaded carries are logged in seconds, not
-    // repetitions — "how many reps of a plank" isn't a coherent question.
-    var isTimed: Bool = false
+    var measurement: ExerciseMeasurement = .reps
+    // Un ergómetro de remo o ski no tiene carga externa que registrar: pedir
+    // kilos ahí es pedir un dato que no existe. El trineo sí la tiene, así que
+    // esto es explícito por ejercicio y no inferido del tipo de medición.
+    // (Hevy hace lo mismo: para el Ski Erg muestra KM y TIME, sin KG.)
+    var tracksWeight: Bool = true
+
+    // Conveniencia derivada, no un segundo estado: "no se cuenta por reps".
+    var isTimed: Bool { measurement != .reps }
+    var tracksDistance: Bool { measurement == .timeAndDistance }
 }
 
 enum ExerciseCatalog {
@@ -45,39 +68,72 @@ enum ExerciseCatalog {
         .init(name: "Hip Thrust (Barbell)", pattern: "Bisagra", equipment: "Barra", symbol: "figure.strengthtraining.traditional"),
         .init(name: "Leg Curl (Machine)", pattern: "Aislamiento de isquios", equipment: "Máquina", symbol: "figure.strengthtraining.traditional"),
         .init(name: "Calf Raise", pattern: "Gemelos", equipment: "Libre", symbol: "figure.strengthtraining.functional"),
-        .init(name: "Plank", pattern: "Core anti-extensión", equipment: "Peso corporal", symbol: "figure.core.training", isTimed: true),
-        .init(name: "Side Plank", pattern: "Core lateral", equipment: "Peso corporal", symbol: "figure.core.training", isTimed: true),
+        .init(name: "Plank", pattern: "Core anti-extensión", equipment: "Peso corporal", symbol: "figure.core.training", measurement: .time),
+        .init(name: "Side Plank", pattern: "Core lateral", equipment: "Peso corporal", symbol: "figure.core.training", measurement: .time),
         .init(name: "Dead Bug", pattern: "Core anti-extensión", equipment: "Peso corporal", symbol: "figure.core.training"),
         .init(name: "Pallof Press", pattern: "Core anti-rotación", equipment: "Polea", symbol: "figure.core.training"),
         .init(name: "Hanging Leg Raise", pattern: "Core", equipment: "Peso corporal", symbol: "figure.core.training"),
-        .init(name: "Farmer Carry", pattern: "Carga y core", equipment: "Mancuernas", symbol: "figure.strengthtraining.functional", isTimed: true),
+        .init(name: "Farmer Carry", pattern: "Carga y core", equipment: "Mancuernas", symbol: "figure.strengthtraining.functional", measurement: .time),
         .init(name: "Kettlebell Swing", pattern: "Bisagra explosiva", equipment: "Kettlebell", symbol: "figure.strengthtraining.functional"),
-        .init(name: "Thruster (Dumbbell)", pattern: "Cuerpo completo", equipment: "Mancuernas", symbol: "figure.cross.training")
+        .init(name: "Thruster (Dumbbell)", pattern: "Cuerpo completo", equipment: "Mancuernas", symbol: "figure.cross.training"),
+        // Estaciones de HYROX que el catálogo no tenía: sin ellas no se podían
+        // registrar en éter, y por tanto tampoco alimentar el componente de
+        // estaciones del forecast. Las cuatro se miden en tiempo y distancia.
+        .init(name: "Sled Push", pattern: "Empuje horizontal cargado", equipment: "Trineo",
+              symbol: "figure.strengthtraining.functional", measurement: .timeAndDistance),
+        .init(name: "Sled Pull", pattern: "Tirón horizontal cargado", equipment: "Trineo",
+              symbol: "figure.strengthtraining.functional", measurement: .timeAndDistance),
+        .init(name: "Rowing Machine", pattern: "Tirón cíclico", equipment: "Remo ergómetro",
+              symbol: "figure.rower", measurement: .timeAndDistance, tracksWeight: false),
+        .init(name: "SkiErg", pattern: "Tirón vertical cíclico", equipment: "Ski ergómetro",
+              symbol: "figure.skiing.crosscountry", measurement: .timeAndDistance, tracksWeight: false)
     ]
 
     static func descriptor(for name: String) -> ExerciseDescriptor {
         descriptors.first { normalized($0.name) == normalized(name) }
             ?? ExerciseDescriptor(name: name, pattern: inferredPattern(name), equipment: inferredEquipment(name),
-                                  symbol: "figure.strengthtraining.traditional", isTimed: inferredIsTimed(name))
+                                  symbol: "figure.strengthtraining.traditional", measurement: inferredMeasurement(name),
+                                  tracksWeight: inferredTracksWeight(name))
     }
 
     /// Construye la serie que se persiste desde una serie en vivo de éter.
     /// Vive aquí, junto a `isTimed`, para que la interpretación de "este número
     /// son segundos, no repeticiones" tenga un solo sitio — y para que sea
     /// testeable, que dentro de la vista de sesión no lo era.
-    static func loggedSet(weight: Double, reps: Int, type: String, exerciseName: String) -> ImportedSet {
-        let isTimed = descriptor(for: exerciseName).isTimed
-        return ImportedSet(weight: weight, reps: reps, type: type, rpe: nil,
-                           durationSeconds: isTimed && reps > 0 ? Double(reps) : nil)
+    /// `reps` son repeticiones de verdad (0 en los ejercicios que no las
+    /// tienen), y la duración/distancia van en sus propios campos. Antes los
+    /// segundos viajaban dentro de `reps`, donde eran indistinguibles de
+    /// repeticiones e inflaban el volumen (peso × reps).
+    static func loggedSet(weight: Double, reps: Int, type: String, exerciseName: String,
+                          durationSeconds: Double? = nil, distanceMeters: Double? = nil) -> ImportedSet {
+        let measurement = descriptor(for: exerciseName).measurement
+        // En un ejercicio por tiempo o por tiempo y distancia no hay
+        // repeticiones que contar: se guarda 0, no el número de segundos.
+        let countedReps = measurement == .reps ? reps : 0
+        return ImportedSet(weight: weight, reps: countedReps, type: type, rpe: nil,
+                           durationSeconds: durationSeconds.flatMap { $0 > 0 ? $0 : nil },
+                           distanceMeters: measurement == .timeAndDistance ? distanceMeters.flatMap { $0 > 0 ? $0 : nil } : nil)
     }
 
     /// Name-based fallback for holds/carries not in the fixed catalog above
     /// (custom entries, different Hevy naming, etc.) — same idea as
     /// inferredPattern/inferredEquipment below.
-    private static func inferredIsTimed(_ name: String) -> Bool {
-        let value = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-        return ["plank", "plancha", "wall sit", "dead hang", "hollow hold", "l-sit", "lsit", "carry"]
+    /// Ergómetros: sin carga externa que registrar. El trineo sí la lleva.
+    private static func inferredTracksWeight(_ name: String) -> Bool {
+        let value = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+        return !["row erg", "rowing machine", "remo ergometro", "concept2", "skierg", "ski erg"]
             .contains { value.contains($0) }
+    }
+
+    private static func inferredMeasurement(_ name: String) -> ExerciseMeasurement {
+        let value = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+        // Nombres distintos para la misma estación (catálogo propio, otro
+        // idioma, nomenclatura de Hevy) tienen que caer en el mismo tipo.
+        if ["sled", "trineo", "row erg", "rowing machine", "remo ergometro", "concept2",
+            "skierg", "ski erg"].contains(where: { value.contains($0) }) { return .timeAndDistance }
+        if ["plank", "plancha", "wall sit", "dead hang", "hollow hold", "l-sit", "lsit", "carry",
+            "acarreo", "granjero"].contains(where: { value.contains($0) }) { return .time }
+        return .reps
     }
 
     private static func normalized(_ value: String) -> String {

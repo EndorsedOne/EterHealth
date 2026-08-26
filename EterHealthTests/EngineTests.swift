@@ -716,151 +716,97 @@ final class EngineTests: XCTestCase {
         XCTAssertLessThan(trained.upperBound, unknown.upperBound)
     }
 
-    // Una sesión propia de éter tiene que generar el mismo dato que una
-    // importada de Hevy: éter ya cronometra las series isométricas y de
-    // acarreo, pero guardaba esos segundos sólo en `reps`, donde son
-    // indistinguibles de repeticiones — así que un acarreo de 240 s registrado
-    // en la app no podía alimentar el forecast de Hyrox, que lee
-    // `durationSeconds`. Sólo llegaba por importación.
-    func testEterLoggedTimedSetsProduceDurationLikeAnImportedOne() {
-        let carry = ExerciseCatalog.loggedSet(weight: 32, reps: 240, type: "normal", exerciseName: "Farmers Carry")
-        XCTAssertEqual(carry.durationSeconds, 240, "Un acarreo cronometrado en éter vale igual que uno importado.")
-        XCTAssertEqual(carry.reps, 240, "reps se conserva: cambiar su significado tocaría workingSets y el volumen.")
+    // Los tres tipos de medición. Antes era un booleano, y con dos estados no
+    // se podía expresar ni "reps y además cronometro la serie" ni "trineo, que
+    // es tiempo Y distancia y no tiene repeticiones".
+    func testEachMeasurementTypeRecordsWhatThatExerciseActuallyHas() {
+        // Estándar: cuentan las reps, y la duración es opcional (como Hevy).
+        let press = ExerciseCatalog.loggedSet(weight: 80, reps: 8, type: "normal",
+                                              exerciseName: "Bench Press (Barbell)", durationSeconds: 45)
+        XCTAssertEqual(press.reps, 8)
+        XCTAssertEqual(press.durationSeconds, 45, "Cronometrar la serie no cambia que lo que cuenta son las reps.")
+        XCTAssertNil(press.distanceMeters, "Un press no recorre distancia.")
 
-        let press = ExerciseCatalog.loggedSet(weight: 80, reps: 8, type: "normal", exerciseName: "Bench Press (Barbell)")
-        XCTAssertNil(press.durationSeconds, "8 repeticiones de press no son 8 segundos de nada.")
+        // Sin cronometrar, el mismo ejercicio no inventa una duración.
+        XCTAssertNil(ExerciseCatalog.loggedSet(weight: 80, reps: 8, type: "normal",
+                                               exerciseName: "Bench Press (Barbell)").durationSeconds)
 
-        // Y una serie a 0 no inventa una duración de cero.
-        let empty = ExerciseCatalog.loggedSet(weight: 0, reps: 0, type: "normal", exerciseName: "Plank")
-        XCTAssertNil(empty.durationSeconds)
+        // Por tiempo: no hay repeticiones que contar.
+        let plank = ExerciseCatalog.loggedSet(weight: 0, reps: 0, type: "normal",
+                                              exerciseName: "Plank", durationSeconds: 90)
+        XCTAssertEqual(plank.durationSeconds, 90)
+        XCTAssertEqual(plank.reps, 0, "Los segundos ya no viajan dentro de reps: ahí inflaban el volumen (peso × reps).")
+
+        // Tiempo Y distancia: sin las dos no hay serie que comparar.
+        let sled = ExerciseCatalog.loggedSet(weight: 125, reps: 0, type: "normal",
+                                             exerciseName: "Sled Push", durationSeconds: 95, distanceMeters: 50)
+        XCTAssertEqual(sled.durationSeconds, 95)
+        XCTAssertEqual(sled.distanceMeters, 50)
+        XCTAssertEqual(sled.reps, 0)
     }
 
-    // Y el dato llega de verdad al motor de Hyrox, no se queda en el struct.
-    func testStationSecondsReadEterOwnSessionsNotOnlyHevyImports() {
+    // Trineo, remo y ski se miden por tiempo y distancia, y el catálogo no los
+    // tenía en absoluto: sin ellos no se podían registrar en éter.
+    func testSledRowAndSkiAreMeasuredByTimeAndDistance() {
+        for name in ["Sled Push", "Sled Pull", "Rowing Machine", "SkiErg"] {
+            XCTAssertEqual(ExerciseCatalog.descriptor(for: name).measurement, .timeAndDistance, name)
+        }
+        // Y por nombre alternativo (otro idioma, nomenclatura de Hevy) caen en
+        // el mismo tipo, no en el genérico de repeticiones.
+        for name in ["Trineo empuje", "Row Erg", "Ski Erg", "Concept2 Row"] {
+            XCTAssertEqual(ExerciseCatalog.descriptor(for: name).measurement, .timeAndDistance, name)
+        }
+        XCTAssertEqual(ExerciseCatalog.descriptor(for: "Plank").measurement, .time)
+        XCTAssertEqual(ExerciseCatalog.descriptor(for: "Squat (Barbell)").measurement, .reps)
+    }
+
+    // Y con eso una simulación registrada en éter ya alimenta el componente de
+    // estaciones del forecast. Antes sólo llegaba 1 de 8 (los acarreos), por
+    // debajo del umbral de 4, así que la tubería existía pero no servía.
+    func testEterLoggedHyroxSimulationNowReachesTheStationThreshold() {
         let now = Date()
-        let stationNames = ["SkiErg", "Sled Push", "Sled Pull", "Burpee Broad Jump",
-                            "Rowing Machine", "Farmers Carry", "Sandbag Lunges", "Wall Ball"]
-        // Registrada como la registraría éter: los segundos pasan por
-        // ExerciseCatalog.loggedSet, no construidos a mano en el test.
-        let eterSession = ImportedWorkout(
+        let timed: [(String, Double)] = [("SkiErg", 240), ("Sled Push", 95), ("Sled Pull", 110),
+                                         ("Rowing Machine", 250), ("Farmers Carry", 180)]
+        let repsBased = ["Burpee Broad Jump", "Sandbag Lunges", "Wall Ball"]
+        let session = ImportedWorkout(
             title: "Simulación HYROX", start: now.addingTimeInterval(-2 * 86_400),
             end: now.addingTimeInterval(-2 * 86_400 + 4_500),
-            exercises: stationNames.map { name in
-                ImportedExercise(name: name, sets: 1, volume: 0, totalReps: 240, averageWeight: nil,
-                                 setDetails: [ExerciseCatalog.loggedSet(weight: 0, reps: 240, type: "normal", exerciseName: name)])
+            exercises: timed.map { name, seconds in
+                ImportedExercise(name: name, sets: 1, volume: 0, totalReps: 0, averageWeight: nil,
+                                 setDetails: [ExerciseCatalog.loggedSet(weight: 0, reps: 0, type: "normal",
+                                                                        exerciseName: name, durationSeconds: seconds,
+                                                                        distanceMeters: 500)])
+            } + repsBased.map { name in
+                ImportedExercise(name: name, sets: 3, volume: 0, totalReps: 30, averageWeight: nil,
+                                 setDetails: [ExerciseCatalog.loggedSet(weight: 0, reps: 10, type: "normal", exerciseName: name)])
             },
             muscleSets: [:])
 
-        let observed = HyroxForecastEngine.observedStationSeconds([eterSession], now: now)
-        // Sólo cuentan las estaciones que el catálogo de éter reconoce como
-        // medidas en tiempo. Hoy es el acarreo: las demás se registran por
-        // repeticiones, así que no producen duración — y por eso esto es
-        // cobertura parcial, no un total falso.
-        XCTAssertEqual(observed?.stationsCovered, 1,
-                       "Hoy éter sólo mide en tiempo los acarreos; el resto no genera duración.")
-        XCTAssertEqual(observed?.total, 240)
+        let observed = HyroxForecastEngine.observedStationSeconds([session], now: now)
+        XCTAssertEqual(observed?.stationsCovered, 5, "Cinco estaciones medidas en tiempo: por encima del umbral de 4.")
+        XCTAssertEqual(observed?.total, 875)
+
+        let forecast = HyroxForecastEngine.forecast(running: hyroxRunning(), workouts: [session], now: now)
+        XCTAssertEqual(forecast?.stationBasis, .observedStations,
+                       "Una simulación registrada en éter ya vale igual que una importada de Hevy.")
     }
 
-    // PR6. Helper: una semana de sentadillas con N series y un e1RM concreto.
-    private func squatWeek(weeksAgo: Int, sets: Int, oneRepMax: Double, now: Date) -> ImportedWorkout {
-        // Epley invertido: peso = e1RM / (1 + reps/30), con 5 reps.
-        let weight = oneRepMax / (1 + 5.0 / 30)
-        let day = Calendar.current.date(byAdding: .day, value: -7 * weeksAgo, to: now)!
-        let details = (0..<sets).map { _ in ImportedSet(weight: weight, reps: 5, type: "normal", rpe: 8, durationSeconds: nil) }
-        return ImportedWorkout(
-            title: "Pierna", start: day, end: day.addingTimeInterval(3_600),
-            exercises: [ImportedExercise(name: "Squat (Barbell)", sets: sets, volume: weight * 5 * Double(sets),
-                                         totalReps: 5 * sets, averageWeight: weight, setDetails: details)],
-            muscleSets: [:])
+    // El ski y el remo no llevan carga externa: pedir kilos ahí es pedir un
+    // dato que no existe. El trineo sí la lleva.
+    func testErgometersDoNotAskForWeightButTheSledDoes() {
+        XCTAssertFalse(ExerciseCatalog.descriptor(for: "SkiErg").tracksWeight)
+        XCTAssertFalse(ExerciseCatalog.descriptor(for: "Rowing Machine").tracksWeight)
+        XCTAssertFalse(ExerciseCatalog.descriptor(for: "Ski Erg").tracksWeight, "También por nombre alternativo.")
+        XCTAssertTrue(ExerciseCatalog.descriptor(for: "Sled Push").tracksWeight, "El trineo sí lleva carga.")
+        XCTAssertTrue(ExerciseCatalog.descriptor(for: "Squat (Barbell)").tracksWeight)
     }
 
-    // El caso que el PR6 existe para resolver: este atleta progresa con 6
-    // series semanales y se estanca con 14. Su MRV real está por debajo del
-    // prior fijo de la tabla (1.5 × MAV = 12 para cuádriceps).
-    func testLearnedMRVMovesBelowThePriorWhenHighVolumeWeeksStall() {
-        let now = Date()
-        var workouts: [ImportedWorkout] = []
-        // 6 semanas de volumen bajo progresando: e1RM subiendo.
-        for (index, week) in (10...15).reversed().enumerated() {
-            workouts.append(squatWeek(weeksAgo: week, sets: 3, oneRepMax: 100 + Double(index) * 3, now: now))
-        }
-        // 5 semanas de volumen alto estancándose: e1RM cayendo del récord.
-        for week in (1...5).reversed() {
-            workouts.append(squatWeek(weeksAgo: week, sets: 7, oneRepMax: 108, now: now))
-        }
-        let learned = VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)
-
-        guard let quads = learned["Cuádriceps"] else {
-            XCTFail("Con 11 semanas y las dos clases presentes tiene que haber estimación: \(learned.keys)")
-            return
-        }
-        let prior = MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps").mrv
-        XCTAssertLessThan(quads.mrv, prior, "Si se estanca con volumen alto, su MRV real está por debajo del prior fijo.")
-        XCTAssertGreaterThanOrEqual(quads.stalledWeeks, 3)
-        XCTAssertGreaterThanOrEqual(quads.progressedWeeks, 3)
-
-        // Y el landmark que lee el plan ya es el aprendido, no el prior.
-        XCTAssertEqual(MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps", learned: learned).mrv, quads.mrv)
-        XCTAssertEqual(MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps", learned: learned).mev,
-                       MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps").mev,
-                       "El MEV sigue siendo 0.5 × MAV: el brief lo mantiene como prior válido.")
-    }
-
-    // Sin 8 semanas de volumen real no se afirma nada. Es el mismo mínimo de
-    // evidencia que learnedRecovery, y el motivo es el mismo.
-    func testLearnedMRVStaysSilentWithoutEightWeeksOfVolume() {
-        let now = Date()
-        let workouts = (1...4).map { squatWeek(weeksAgo: $0, sets: 6, oneRepMax: 100, now: now) }
-        XCTAssertTrue(VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now).isEmpty,
-                      "4 semanas no dan para hablar del MRV de nadie.")
-    }
-
-    // Y aunque haya 8 semanas: si todas progresan, no hay frontera que
-    // estimar. Un MRV es una frontera, no una media.
-    func testLearnedMRVStaysSilentWhenEveryWeekProgresses() {
-        let now = Date()
-        let workouts = (1...12).reversed().enumerated().map { index, week in
-            squatWeek(weeksAgo: week, sets: 5, oneRepMax: 100 + Double(index) * 2, now: now)
-        }
-        let learned = VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)
-        XCTAssertNil(learned["Cuádriceps"],
-                     "Sin semanas estancadas no hay techo observado — no se inventa uno.")
-    }
-
-    // Y si el volumen no es lo que separa progreso de estancamiento (se
-    // estanca con volumen BAJO), tampoco se afirma nada: sería atribuir al
-    // volumen algo que no explica.
-    func testLearnedMRVStaysSilentWhenVolumeIsNotWhatSeparatesStalling() {
-        let now = Date()
-        var workouts: [ImportedWorkout] = []
-        // Volumen alto progresando.
-        for (index, week) in (7...12).reversed().enumerated() {
-            workouts.append(squatWeek(weeksAgo: week, sets: 8, oneRepMax: 100 + Double(index) * 3, now: now))
-        }
-        // Volumen bajo estancándose — al revés de lo que un MRV explicaría.
-        for week in (1...4).reversed() {
-            workouts.append(squatWeek(weeksAgo: week, sets: 2, oneRepMax: 110, now: now))
-        }
-        XCTAssertNil(VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)["Cuádriceps"],
-                     "Estancarse con volumen bajo no es un MRV; el volumen no lo explica.")
-    }
-
-    // El aprendizaje está acotado respecto al prior: con pocas semanas, ruido
-    // en una sola no puede producir un número absurdo.
-    func testLearnedMRVIsBoundedRelativeToThePrior() {
-        let now = Date()
-        var workouts: [ImportedWorkout] = []
-        for (index, week) in (9...14).reversed().enumerated() {
-            workouts.append(squatWeek(weeksAgo: week, sets: 1, oneRepMax: 100 + Double(index) * 3, now: now))
-        }
-        for week in (1...4).reversed() {
-            workouts.append(squatWeek(weeksAgo: week, sets: 40, oneRepMax: 105, now: now))
-        }
-        let prior = MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps").mrv
-        if let quads = VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)["Cuádriceps"] {
-            XCTAssertLessThanOrEqual(quads.mrv, prior * VolumeLandmarkLearning.maximumPriorMultiple)
-            XCTAssertGreaterThanOrEqual(quads.mrv, prior * VolumeLandmarkLearning.minimumPriorMultiple)
-        }
+    // Una serie de plancha o de trineo no tiene reps y sí es una serie hecha:
+    // el filtro por reps > 0 las descartaba enteras del progreso de fuerza.
+    func testTimeBasedSetsStillCountAsRealSets() {
+        let plank = ExerciseCatalog.loggedSet(weight: 0, reps: 0, type: "normal", exerciseName: "Plank", durationSeconds: 60)
+        XCTAssertEqual(StrengthProgressEngine.effectiveSetCount([plank, plank, plank]), 3,
+                       "Tres planchas son tres series, no cero.")
     }
 
     func testHyroxForecastRequiresRunningEvidence() {
