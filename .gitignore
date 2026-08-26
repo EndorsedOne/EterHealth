@@ -1,0 +1,22 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcresult
+
+# CocoaPods / SPM (this project doesn't use either today, but harmless if it ever does)
+Pods/
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Provisioning / signing artifacts — never versioned
+*.mobileprovision
+*.p12
+*.cer
