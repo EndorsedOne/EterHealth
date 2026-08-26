@@ -897,6 +897,76 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(decision.rationale.localizedCaseInsensitiveContains("natación"))
     }
 
+    // PR3e. La interferencia concurrente es el caso que una sola carga EWMA
+    // no podía ni plantear: no sabía qué parte del pico era fondo y qué parte
+    // era hierro. Exige las DOS condiciones a la vez.
+    func testConcurrentInterferenceNeedsBothAHighAerobicRatioAndALegDay() {
+        let running = GoalTrainingFocus(running: 0.70, strength: 0.20, hybrid: 0, leadingGoal: "Media maratón")
+
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.45, legStrengthLikely: false, goalFocus: running),
+                       .none, "Pico aeróbico sin día de pierna no es interferencia, es solo carga.")
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 0.95, legStrengthLikely: true, goalFocus: running),
+                       .none, "Día de pierna con el fondo tranquilo tampoco: no hay nada que proteger.")
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.45, legStrengthLikely: true, goalFocus: running),
+                       .protectAerobic, "Las dos a la vez, y con el fondo como objetivo, protegen el fondo.")
+    }
+
+    // El objetivo decide a quién se protege — eso es lo que pide el brief:
+    // Hyrox protege el aeróbico, hipertrofia protege el MEV.
+    func testInterferenceProtectsWhicheverGoalActuallyLeads() {
+        let hyrox = GoalTrainingFocus(running: 0.25, strength: 0.20, hybrid: 0.55, leadingGoal: "HYROX")
+        let hypertrophy = GoalTrainingFocus(running: 0.10, strength: 0.80, hybrid: 0, leadingGoal: "Hipertrofia")
+
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.40, legStrengthLikely: true, goalFocus: hyrox),
+                       .protectAerobic)
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.40, legStrengthLikely: true, goalFocus: hypertrophy),
+                       .protectLegStrength)
+    }
+
+    // El umbral no es nuevo: es la línea de "conviene absorber" (1.30) que
+    // loadGuidance ya usa.
+    func testInterferenceThresholdIsLoadGuidancesOwnAbsorbLine() {
+        let hyrox = GoalTrainingFocus(running: 0.25, strength: 0.20, hybrid: 0.55, leadingGoal: "HYROX")
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.29, legStrengthLikely: true, goalFocus: hyrox), .none)
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.30, legStrengthLikely: true, goalFocus: hyrox), .protectAerobic)
+    }
+
+    // "Día de pierna" sale de bestStrengthPattern, la única definición de qué
+    // patrón toca — no de una segunda heurística.
+    func testLegStrengthLikelyReusesTheStrengthPatternDefinition() {
+        let freshLegs = muscles(legs: 85)
+        XCTAssertEqual(TrainingPlanEngine.legStrengthLikely(muscles: freshLegs, avoidLegs: false),
+                       TrainingPlanEngine.bestStrengthPattern(freshLegs, avoidLegs: false) == "pierna")
+        XCTAssertFalse(TrainingPlanEngine.legStrengthLikely(muscles: freshLegs, avoidLegs: true),
+                       "Si la pierna ya está fuera del patrón, no hay día de pierna que proteger.")
+    }
+
+    // Penalizar, no prohibir. Un déficit real de calidad sigue ganando.
+    func testProtectingLegStrengthPenalizesQualityWithoutVetoingIt() {
+        let hypertrophy = GoalTrainingFocus(running: 0.30, strength: 0.70, hybrid: 0, leadingGoal: "Hipertrofia")
+        func decide(_ interference: TrainingPlanEngine.ConcurrentInterference, qualityDeficit: Int) -> PlannedSessionKind {
+            TrainingPlanEngine.balancedDecision(
+                runs: 2, targetRuns: 4, strength: 2, targetStrength: 2,
+                quality: 0, targetQuality: qualityDeficit,
+                daysSinceStrength: 1, daysSinceSwim: 10, daysSinceBike: 10,
+                hoursSinceLong: 168, hoursSinceQuality: 96,
+                avoidLegsTomorrow: false, interference: interference,
+                lateWeek: false, readiness: 80, muscles: muscles(legs: 80),
+                goalFocus: hypertrophy
+            ).kind
+        }
+        // Con un déficit de una sola sesión de calidad, la protección basta
+        // para que gane otra cosa.
+        let unprotected = decide(.none, qualityDeficit: 1)
+        let protected = decide(.protectLegStrength, qualityDeficit: 1)
+        XCTAssertEqual(unprotected, .qualityRun, "Sin interferencia, el déficit de calidad manda.")
+        XCTAssertNotEqual(protected, .qualityRun, "Con la fuerza a proteger, un déficit de una sesión ya no manda.")
+        // Pero con dos ya vuelve a ganar: 8 + 6×2 = 20 contra 16 de
+        // protección. Es una penalización acotada, no un veto.
+        XCTAssertEqual(decide(.protectLegStrength, qualityDeficit: 2), .qualityRun,
+                       "Dos sesiones de déficit pesan más que la protección — penalizar no es prohibir.")
+    }
+
     func testBalancedDecisionOffersBrickOnlyDuringBuildOrTaperPhase() {
         let focus = GoalTrainingFocus(running: 0.30, strength: 0.15, hybrid: 0, triathlon: 0.55, leadingGoal: "Ironman")
         let base = TrainingBlock(name: "Base", phase: .base, start: Date(), end: Date().addingTimeInterval(30 * 86_400),
