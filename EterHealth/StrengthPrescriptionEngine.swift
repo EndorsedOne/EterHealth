@@ -61,6 +61,16 @@ enum ExerciseCatalog {
                                   symbol: "figure.strengthtraining.traditional", isTimed: inferredIsTimed(name))
     }
 
+    /// Construye la serie que se persiste desde una serie en vivo de éter.
+    /// Vive aquí, junto a `isTimed`, para que la interpretación de "este número
+    /// son segundos, no repeticiones" tenga un solo sitio — y para que sea
+    /// testeable, que dentro de la vista de sesión no lo era.
+    static func loggedSet(weight: Double, reps: Int, type: String, exerciseName: String) -> ImportedSet {
+        let isTimed = descriptor(for: exerciseName).isTimed
+        return ImportedSet(weight: weight, reps: reps, type: type, rpe: nil,
+                           durationSeconds: isTimed && reps > 0 ? Double(reps) : nil)
+    }
+
     /// Name-based fallback for holds/carries not in the fixed catalog above
     /// (custom entries, different Hevy naming, etc.) — same idea as
     /// inferredPattern/inferredEquipment below.
