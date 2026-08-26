@@ -36,6 +36,13 @@ struct TrainingScenario: Identifiable {
     var id: String { name }
     let name: String
     let weeklyGrowthRate: Double
+    // True for exactly the one scenario matching the athlete's own real
+    // ProgressionPace (Ajustes/GoalEditorView) — the concrete link between
+    // "Tres futuros" and the real plan: this is the trajectory
+    // TrainingPlanEngine.progressedCeiling is actually ramping the real
+    // week's long-run/long-session ceilings along right now, not just one
+    // of three equally-hypothetical alternatives.
+    let isCurrentPace: Bool
     let weeks: [ScenarioWeekPoint]
     let peakLoadRatio: Double
     let finalLoadRatio: Double
@@ -47,25 +54,32 @@ struct TrainingScenario: Identifiable {
 
 @MainActor
 enum TrainingScenarioEngine {
-    static let conservativeGrowth = 0.04
-    static let optimalGrowth = 0.09
-    static let aggressiveGrowth = 0.15
     // Real training-load history — the same >=8-day/real-habitual-load
     // gate PerformanceEngine.loadGuidance already applies — before
     // simulating a block on top of it means anything.
     nonisolated private static let minimumObservedDays = 8
 
-    static func simulate(health: HealthStore, imports: ImportStore, weeks: Int = 8, now: Date = Date()) -> [TrainingScenario] {
+    // currentPace: the athlete's own real ProgressionPace — used only to
+    // flag which scenario below is isCurrentPace, never to hide the other
+    // two. This is what makes "Tres futuros" a comparison against the
+    // plan's real behavior instead of three disconnected hypotheticals:
+    // ProgressionPace.weeklyGrowthRate is the SAME number
+    // TrainingPlanEngine.progressedCeiling now actually ramps the real
+    // week's long-run/long-session ceilings by.
+    static func simulate(health: HealthStore, imports: ImportStore, currentPace: ProgressionPace, weeks: Int = 8, now: Date = Date()) -> [TrainingScenario] {
         let baseline = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         guard baseline.observedLoadDays >= minimumObservedDays, baseline.habitualLoad > 0 else { return [] }
         return [
-            scenario(name: "Conservador", growth: conservativeGrowth, baseline: baseline, weeks: weeks, now: now),
-            scenario(name: "Óptimo", growth: optimalGrowth, baseline: baseline, weeks: weeks, now: now),
-            scenario(name: "Agresivo", growth: aggressiveGrowth, baseline: baseline, weeks: weeks, now: now)
+            scenario(name: ProgressionPace.conservative.rawValue, growth: ProgressionPace.conservative.weeklyGrowthRate,
+                    isCurrentPace: currentPace == .conservative, baseline: baseline, weeks: weeks, now: now),
+            scenario(name: ProgressionPace.optimal.rawValue, growth: ProgressionPace.optimal.weeklyGrowthRate,
+                    isCurrentPace: currentPace == .optimal, baseline: baseline, weeks: weeks, now: now),
+            scenario(name: ProgressionPace.aggressive.rawValue, growth: ProgressionPace.aggressive.weeklyGrowthRate,
+                    isCurrentPace: currentPace == .aggressive, baseline: baseline, weeks: weeks, now: now)
         ]
     }
 
-    nonisolated static func scenario(name: String, growth: Double, baseline: PerformanceSummary, weeks: Int, now: Date) -> TrainingScenario {
+    nonisolated static func scenario(name: String, growth: Double, isCurrentPace: Bool = false, baseline: PerformanceSummary, weeks: Int, now: Date) -> TrainingScenario {
         var acute = baseline.acuteLoad
         var habitual = baseline.habitualLoad
         var weeklyTargetLoad = baseline.habitualLoad
@@ -112,7 +126,7 @@ enum TrainingScenarioEngine {
             summary = "Se mantiene en carga productiva las \(weeks) semanas completas."
         }
         return TrainingScenario(
-            name: name, weeklyGrowthRate: growth, weeks: points,
+            name: name, weeklyGrowthRate: growth, isCurrentPace: isCurrentPace, weeks: points,
             peakLoadRatio: peak, finalLoadRatio: final, weeksAtRisk: weeksAtRisk,
             habitualLoadChangePercent: habitualChangePercent,
             projectedPaceChangePercent: paceRange, summary: summary

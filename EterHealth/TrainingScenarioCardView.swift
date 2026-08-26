@@ -42,8 +42,8 @@ struct TrainingScenarioCardView: View {
     }
 
     var body: some View {
-        let scenarios = TrainingScenarioEngine.simulate(health: health, imports: imports)
         let currentPace = goals.profile.effectiveProgressionPace
+        let scenarios = TrainingScenarioEngine.simulate(health: health, imports: imports, currentPace: currentPace)
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Tres futuros, 8 semanas").font(.headline)
@@ -65,11 +65,11 @@ struct TrainingScenarioCardView: View {
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(scenarios) { scenario in
-                        scenarioRow(scenario, isCurrent: scenario.name == currentPace.rawValue)
+                        scenarioRow(scenario, isCurrent: scenario.isCurrentPace)
                         if scenario.id != scenarios.last?.id { Divider() }
                     }
                 }
-                Text("La banda de ritmo es una relación genérica de la literatura (Banister 1975 · Busso 2003), no ajustada a tus propios datos — a diferencia de tus previsiones de carrera, que sí lo son. El riesgo (ratio de carga aguda/habitual) sí es tu propio historial real, proyectado hacia delante bajo cada ritmo. Tu ritmo elegido arriba es el que realmente usa tu plan de hoy y de la semana para decidir cuándo tocar descansar.")
+                Text("La banda de ritmo es una relación genérica de la literatura (Banister 1975 · Busso 2003), no ajustada a tus propios datos — a diferencia de tus previsiones de carrera, que sí lo son. El riesgo (ratio de carga aguda/habitual) sí es tu propio historial real, proyectado hacia delante bajo cada ritmo. Tu ritmo elegido arriba es el que realmente usa tu plan de hoy y de la semana: decide cuándo tocar descansar (ratio de carga) y también cuánto puede crecer por semana tu tirada larga o tu salida más larga de nado/bici — el mismo \(Int((currentPace.weeklyGrowthRate * 100).rounded()))%/semana que ves arriba en \"\(currentPace.rawValue)\", no una cifra aparte.")
                     .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
             }
         }.cardStyle()

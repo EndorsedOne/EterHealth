@@ -221,6 +221,27 @@ enum ProgressionPace: String, Codable, CaseIterable, Identifiable {
     // the explicit risk disclosure kicks in.
     static let elevatedRiskRatio = 1.55
 
+    // Single source for the weekly growth ceiling this pace allows — the
+    // exact numbers `explanation` below already promises the user
+    // ("Ritmo de crecimiento simulado en 'Tres futuros': ~4%/9%/15%").
+    // Before this, TrainingScenarioEngine's three scenarios and
+    // TrainingPlanEngine.progressedCeiling's real weekly-volume ramp each
+    // hardcoded their own independent copy of these same numbers — they
+    // happened to agree, but nothing enforced it, and only
+    // TrainingScenarioEngine's copy was ever actually reachable from a
+    // real ratio ceiling change; progressedCeiling silently used a flat
+    // 15%/week for every pace, so a Conservador athlete's real long-run/
+    // long-session ceiling grew exactly as fast as an Agresivo one's —
+    // this is what "Tres futuros" being disconnected from the real plan
+    // concretely meant. Both now read this one property.
+    var weeklyGrowthRate: Double {
+        switch self {
+        case .conservative: return 0.04
+        case .optimal: return 0.09
+        case .aggressive: return 0.15
+        }
+    }
+
     var explanation: String {
         switch self {
         case .conservative: return "Descansa en cuanto la carga se acerca a la zona de absorber (1.30) — más días de recuperación, progresión más lenta y con más margen de seguridad. Ritmo de crecimiento simulado en \"Tres futuros\": ~4%/semana."

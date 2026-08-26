@@ -1064,15 +1064,31 @@ final class EngineTests: XCTestCase {
     }
 
     func testTrainingScenarioSimulateReturnsEmptyWithoutRealLoadHistory() {
-        XCTAssertTrue(TrainingScenarioEngine.simulate(health: HealthStore(), imports: ImportStore()).isEmpty,
+        XCTAssertTrue(TrainingScenarioEngine.simulate(health: HealthStore(), imports: ImportStore(), currentPace: .optimal).isEmpty,
                      "No real load history at all — must not fabricate three futures out of nothing.")
+    }
+
+    // The concrete link between "Tres futuros" and the real plan: the
+    // scenario matching the athlete's actual ProgressionPace must be
+    // flagged, and only that one — this is the trajectory
+    // TrainingPlanEngine.progressedCeiling is actually ramping the real
+    // week's ceilings along, not just one of three equal hypotheticals.
+    func testTrainingScenarioFlagsExactlyTheAthletesOwnCurrentPace() {
+        let health = HealthStore()
+        health.recentWorkouts = (0..<10).map { offset in
+            healthWorkout(activity: "Carrera", kilometers: 8, minutes: 45, date: Date().addingTimeInterval(-Double(offset) * 86_400))
+        }
+        let scenarios = TrainingScenarioEngine.simulate(health: health, imports: ImportStore(), currentPace: .aggressive)
+        guard !scenarios.isEmpty else { return }
+        XCTAssertEqual(scenarios.filter(\.isCurrentPace).count, 1, "Exactly one scenario must be flagged as the athlete's real current pace.")
+        XCTAssertEqual(scenarios.first { $0.isCurrentPace }?.name, ProgressionPace.aggressive.rawValue)
     }
 
     func testTrainingScenarioAggressiveRampsFasterThanConservative() {
         let baseline = performanceSummary(acuteLoad: 300, habitualLoad: 300)
         let now = Date()
-        let conservative = TrainingScenarioEngine.scenario(name: "Conservador", growth: TrainingScenarioEngine.conservativeGrowth, baseline: baseline, weeks: 8, now: now)
-        let aggressive = TrainingScenarioEngine.scenario(name: "Agresivo", growth: TrainingScenarioEngine.aggressiveGrowth, baseline: baseline, weeks: 8, now: now)
+        let conservative = TrainingScenarioEngine.scenario(name: "Conservador", growth: ProgressionPace.conservative.weeklyGrowthRate, baseline: baseline, weeks: 8, now: now)
+        let aggressive = TrainingScenarioEngine.scenario(name: "Agresivo", growth: ProgressionPace.aggressive.weeklyGrowthRate, baseline: baseline, weeks: 8, now: now)
         XCTAssertGreaterThan(aggressive.peakLoadRatio, conservative.peakLoadRatio)
         XCTAssertGreaterThan(aggressive.habitualLoadChangePercent, conservative.habitualLoadChangePercent)
         XCTAssertEqual(conservative.weeks.count, 8)
@@ -1101,7 +1117,7 @@ final class EngineTests: XCTestCase {
         // ≠ imprudente" a real property of the model, not just a claim
         // in a comment.
         let baseline = performanceSummary(acuteLoad: 300, habitualLoad: 300)
-        let aggressive = TrainingScenarioEngine.scenario(name: "Agresivo", growth: TrainingScenarioEngine.aggressiveGrowth, baseline: baseline, weeks: 8, now: Date())
+        let aggressive = TrainingScenarioEngine.scenario(name: "Agresivo", growth: ProgressionPace.aggressive.weeklyGrowthRate, baseline: baseline, weeks: 8, now: Date())
         XCTAssertFalse(aggressive.weeks.contains { $0.guidance == .overload })
     }
 
@@ -1112,7 +1128,7 @@ final class EngineTests: XCTestCase {
         // ratio says — the whole point of comparing scenarios is showing
         // WHEN each one hits the wall, not modeling past it.
         let baseline = performanceSummary(acuteLoad: 500, habitualLoad: 300)
-        let aggressive = TrainingScenarioEngine.scenario(name: "Agresivo", growth: TrainingScenarioEngine.aggressiveGrowth, baseline: baseline, weeks: 8, now: Date())
+        let aggressive = TrainingScenarioEngine.scenario(name: "Agresivo", growth: ProgressionPace.aggressive.weeklyGrowthRate, baseline: baseline, weeks: 8, now: Date())
         let loads = aggressive.weeks.map(\.weeklyLoad)
         // Once in overload, non-deload weeks must not exceed the prior week's load.
         for index in 1..<loads.count where !aggressive.weeks[index].isDeloadWeek && aggressive.weeks[index - 1].guidance == .overload {
@@ -1122,7 +1138,7 @@ final class EngineTests: XCTestCase {
 
     func testTrainingScenarioEveryFourthWeekDeloads() {
         let baseline = performanceSummary(acuteLoad: 300, habitualLoad: 300)
-        let scenario = TrainingScenarioEngine.scenario(name: "Óptimo", growth: TrainingScenarioEngine.optimalGrowth, baseline: baseline, weeks: 8, now: Date())
+        let scenario = TrainingScenarioEngine.scenario(name: "Óptimo", growth: ProgressionPace.optimal.weeklyGrowthRate, baseline: baseline, weeks: 8, now: Date())
         XCTAssertTrue(scenario.weeks[4].isDeloadWeek, "The 5th week (index 4) must be the deload week.")
         XCTAssertLessThan(scenario.weeks[4].weeklyLoad, scenario.weeks[3].weeklyLoad)
     }
@@ -3664,6 +3680,23 @@ final class EngineTests: XCTestCase {
         let result = TrainingPlanEngine.progressedCeiling(recent: 40, phaseCeiling: 90)
         XCTAssertEqual(result.minutes, 46, accuracy: 0.01)
         XCTAssertTrue(result.isPersonalized)
+    }
+
+    // The concrete fix behind "conectar Tres futuros al plan real": before
+    // this, every ProgressionPace shared the exact same flat 15%/week
+    // ceiling here regardless of what the athlete actually chose — a
+    // Conservador athlete's real long-run/long-session progression grew
+    // exactly as fast as an Agresivo one's. weeklyGrowthCap must now
+    // actually vary the real ceiling, using ProgressionPace's own numbers.
+    func testProgressedCeilingWeeklyGrowthCapVariesByProgressionPace() {
+        let conservative = TrainingPlanEngine.progressedCeiling(recent: 40, phaseCeiling: 90, weeklyGrowthCap: ProgressionPace.conservative.weeklyGrowthRate)
+        let optimal = TrainingPlanEngine.progressedCeiling(recent: 40, phaseCeiling: 90, weeklyGrowthCap: ProgressionPace.optimal.weeklyGrowthRate)
+        let aggressive = TrainingPlanEngine.progressedCeiling(recent: 40, phaseCeiling: 90, weeklyGrowthCap: ProgressionPace.aggressive.weeklyGrowthRate)
+        XCTAssertEqual(conservative.minutes, 40 * 1.04, accuracy: 0.01)
+        XCTAssertEqual(optimal.minutes, 40 * 1.09, accuracy: 0.01)
+        XCTAssertEqual(aggressive.minutes, 40 * 1.15, accuracy: 0.01)
+        XCTAssertLessThan(conservative.minutes, optimal.minutes)
+        XCTAssertLessThan(optimal.minutes, aggressive.minutes)
     }
 
     func testPersonalizedStepTargetRatchetsUpFromASedentaryBaselineInsteadOfJumpingTo10000() {

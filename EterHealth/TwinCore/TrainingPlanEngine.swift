@@ -377,16 +377,16 @@ enum TrainingPlanEngine {
     private static func disciplineDose(activity: String, health: HealthStore, imports: ImportStore, now: Date,
                                        phase: TrainingPhase, demand: Double,
                                        base: Double, build: Double, taper: Double, transition: Double, race: Double,
-                                       longSessionPhaseCeiling: Double) -> DisciplineDose {
+                                       longSessionPhaseCeiling: Double, weeklyGrowthCap: Double) -> DisciplineDose {
         let completed = weeklyMinutes(activity, health: health, imports: imports, now: now)
         // 0 demand -> 0 dose (no goal asking for this discipline at all);
         // 0.5 demand (a genuinely invested goal) -> the full table value;
         // capped at 1.6x for a near-single-focus portfolio.
         let structuralCeiling = weeklyDoseCeiling(for: phase, base: base, build: build, taper: taper, transition: transition, race: race) * min(1.6, max(0, demand / 0.5))
         let weeklyBaseline = recentWeeklyMinutesBaseline(activity, health: health, imports: imports, now: now)
-        let (target, _) = progressedCeiling(recent: weeklyBaseline, phaseCeiling: structuralCeiling)
+        let (target, _) = progressedCeiling(recent: weeklyBaseline, phaseCeiling: structuralCeiling, weeklyGrowthCap: weeklyGrowthCap)
         let longestRecent = recentLongestSessionMinutes(health.workoutHistory, activity: activity, now: now)
-        let (longSession, isPersonalized) = progressedCeiling(recent: longestRecent, phaseCeiling: longSessionPhaseCeiling)
+        let (longSession, isPersonalized) = progressedCeiling(recent: longestRecent, phaseCeiling: longSessionPhaseCeiling, weeklyGrowthCap: weeklyGrowthCap)
         return DisciplineDose(targetMinutes: target, completedMinutes: completed,
                               targetLongSessionMinutes: longSession, isPersonalizedProgression: isPersonalized)
     }
@@ -617,10 +617,12 @@ enum TrainingPlanEngine {
         let deloadFactor = isDeload ? 0.70 : 1.0
         var swimDose = disciplineDose(activity: "Natación", health: health, imports: imports, now: now, phase: block.phase,
                                       demand: goalFocus.triathlon, base: 60, build: 100, taper: 45, transition: 60, race: 20,
-                                      longSessionPhaseCeiling: weeklyDoseCeiling(for: block.phase, base: 35, build: 50, taper: 25, transition: 30, race: 15))
+                                      longSessionPhaseCeiling: weeklyDoseCeiling(for: block.phase, base: 35, build: 50, taper: 25, transition: 30, race: 15),
+                                      weeklyGrowthCap: profile.effectiveProgressionPace.weeklyGrowthRate)
         var bikeDose = disciplineDose(activity: "Ciclismo", health: health, imports: imports, now: now, phase: block.phase,
                                       demand: goalFocus.triathlon, base: 90, build: 180, taper: 70, transition: 90, race: 30,
-                                      longSessionPhaseCeiling: weeklyDoseCeiling(for: block.phase, base: 70, build: 110, taper: 50, transition: 60, race: 30))
+                                      longSessionPhaseCeiling: weeklyDoseCeiling(for: block.phase, base: 70, build: 110, taper: 50, transition: 60, race: 30),
+                                      weeklyGrowthCap: profile.effectiveProgressionPace.weeklyGrowthRate)
         // Distance-scaling the run dose the way WorkoutPlanner's own
         // longRunBand does (marathon vs. half vs. 5K) would need the same
         // targetKilometers resolution WorkoutPlanner computes locally —
@@ -629,7 +631,8 @@ enum TrainingPlanEngine {
         // (which WorkoutPlanner still gets right, distance-scaled).
         let runDose = disciplineDose(activity: "Carrera", health: health, imports: imports, now: now, phase: block.phase,
                                      demand: goalFocus.running, base: 120, build: 220, taper: 90, transition: 120, race: 40,
-                                     longSessionPhaseCeiling: weeklyDoseCeiling(for: block.phase, base: 55, build: 80, taper: 40, transition: 50, race: 20))
+                                     longSessionPhaseCeiling: weeklyDoseCeiling(for: block.phase, base: 55, build: 80, taper: 40, transition: 50, race: 20),
+                                     weeklyGrowthCap: profile.effectiveProgressionPace.weeklyGrowthRate)
         if isDeload {
             swimDose = DisciplineDose(targetMinutes: swimDose.targetMinutes * deloadFactor, completedMinutes: swimDose.completedMinutes,
                                       targetLongSessionMinutes: swimDose.targetLongSessionMinutes, isPersonalizedProgression: swimDose.isPersonalizedProgression)

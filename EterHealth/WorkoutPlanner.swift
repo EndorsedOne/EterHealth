@@ -179,14 +179,19 @@ enum WorkoutPlanner {
             let band = longRunBand(phase: plan.block.phase, targetKilometers: targetKilometers)
             // The phase table sets the ambition; this never lets it override
             // reality — the actual ceiling this week is also capped by this
-            // person's own recent longest run plus a safe ~15% increase, so
-            // the plan can't jump straight to a fixed number regardless of
-            // whether real duration tolerance has been built yet.
+            // person's own recent longest run plus their chosen
+            // ProgressionPace's own weekly growth rate (4/9/15%, the same
+            // number "Tres futuros" simulates and the athlete actually
+            // picked in Ajustes — not always a flat 15%), so the plan can't
+            // jump straight to a fixed number regardless of whether real
+            // duration tolerance has been built yet, or ramp everyone at
+            // the same speed regardless of what they asked for.
             let recentLongestRun = TrainingPlanEngine.recentLongestSessionMinutes(health.workoutHistory, activity: "Carrera", now: now)
-            let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestRun, phaseCeiling: band.max)
+            let weeklyGrowthCap = profile.effectiveProgressionPace.weeklyGrowthRate
+            let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestRun, phaseCeiling: band.max, weeklyGrowthCap: weeklyGrowthCap)
             let minutes = deload ? Int((band.min * 0.65).rounded(to: 5)) : Int(ramp(band.min, personalizedCeiling, progress).rounded(to: 5))
             let progressionNote = isPersonalized && personalizedCeiling < band.max
-                ? " Techo ajustado a tu propia tirada más larga reciente (progresión máxima ~15%/semana), no a la tabla de fase sin más."
+                ? " Techo ajustado a tu propia tirada más larga reciente (progresión máxima ~\(Int((weeklyGrowthCap * 100).rounded()))%/semana, tu ritmo \(profile.effectiveProgressionPace.rawValue.lowercased())), no a la tabla de fase sin más."
                 : ""
             return ProposedWorkout(title: deload ? "Tirada reducida" : "Tirada larga", duration: "\(minutes + 15)–\(minutes + 25) min", intent: deload ? "Mantener resistencia sin ampliar fatiga" : "Aumentar resistencia específica", exercises: [
                 ProposedExercise(name: "Inicio", prescription: "10–15 min muy suaves", cue: "No persigas ritmo"),
@@ -710,7 +715,7 @@ enum WorkoutPlanner {
                                     profile: AthletePlanProfile, now: Date) -> ProposedWorkout {
         let band = swimBand(phase: phase, targetKilometers: targetKilometers)
         let recentLongestSwim = TrainingPlanEngine.recentLongestSessionMinutes(health.workoutHistory, activity: "Natación", now: now)
-        let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestSwim, phaseCeiling: band.max)
+        let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestSwim, phaseCeiling: band.max, weeklyGrowthCap: profile.effectiveProgressionPace.weeklyGrowthRate)
         let minutes = deload ? Int((band.min * 0.65).rounded(to: 5)) : Int(ramp(band.min, personalizedCeiling, progress).rounded(to: 5))
         let pace = TriathlonForecastEngine.personalSwimPace100mSeconds(TriathlonForecastEngine.swimSessions(health.workoutHistory))
         let mainSet: String
@@ -734,7 +739,7 @@ enum WorkoutPlanner {
             cue = "Recupera el patrón sin buscar velocidad máxima"
         }
         let progressionNote = isPersonalized && personalizedCeiling < band.max
-            ? " Techo ajustado a tu nado más largo reciente (progresión máxima ~15%/semana)."
+            ? " Techo ajustado a tu nado más largo reciente (progresión máxima ~\(Int((profile.effectiveProgressionPace.weeklyGrowthRate * 100).rounded()))%/semana, tu ritmo \(profile.effectiveProgressionPace.rawValue.lowercased()))."
             : ""
         return ProposedWorkout(
             title: deload ? "Natación reducida" : "Natación", duration: "\(minutes) min",
@@ -758,7 +763,7 @@ enum WorkoutPlanner {
                                     zoneRange: String, zoneFloor: String, now: Date) -> ProposedWorkout {
         let band = bikeBand(phase: phase, targetKilometers: targetKilometers)
         let recentLongestBike = TrainingPlanEngine.recentLongestSessionMinutes(health.workoutHistory, activity: "Ciclismo", now: now)
-        let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestBike, phaseCeiling: band.max)
+        let (personalizedCeiling, isPersonalized) = TrainingPlanEngine.progressedCeiling(recent: recentLongestBike, phaseCeiling: band.max, weeklyGrowthCap: profile.effectiveProgressionPace.weeklyGrowthRate)
         let minutes = deload ? Int((band.min * 0.6).rounded(to: 5)) : Int(ramp(band.min, personalizedCeiling, progress).rounded(to: 5))
         let speed = TriathlonForecastEngine.personalBikeSpeedKmh(TriathlonForecastEngine.bikeSessions(health.workoutHistory))
         let mainSet: String
@@ -787,7 +792,7 @@ enum WorkoutPlanner {
             ],
             note: (speed == nil ? "Sin salidas de bici registradas todavía: la velocidad de referencia es genérica, no la tuya. " : "")
                 + "Semana \(Int((progress * 100).rounded()))% del bloque · \(minutes) min de referencia."
-                + (isPersonalized && personalizedCeiling < band.max ? " Techo ajustado a tu salida más larga reciente (progresión máxima ~15%/semana)." : "")
+                + (isPersonalized && personalizedCeiling < band.max ? " Techo ajustado a tu salida más larga reciente (progresión máxima ~\(Int((profile.effectiveProgressionPace.weeklyGrowthRate * 100).rounded()))%/semana, tu ritmo \(profile.effectiveProgressionPace.rawValue.lowercased()))." : "")
                 + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes), profile: profile)
         )
     }
