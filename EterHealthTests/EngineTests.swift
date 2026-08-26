@@ -269,7 +269,10 @@ final class EngineTests: XCTestCase {
     func testMultiDayProjectionRecoversWhileAcuteLoadDecays() {
         let trajectory = DecisionSimulatorEngine.projectTrajectory(
             tomorrowReadiness: 48, projectedAcuteLoad: aerobicOnly(150),
-            projectedChronicLoad: aerobicOnly(100), days: 4
+            projectedChronicLoad: aerobicOnly(100), days: 4,
+            // La trayectoria evoluciona un estado real: con fatiga acumulada
+            // sobre una fitness establecida, cuatro días sin carga recuperan.
+            physiology: fatiguedPhysiology(), anchor: neutralAnchor, calibration: neutralCalibration
         )
 
         XCTAssertEqual(trajectory.count, 4)
@@ -2596,19 +2599,68 @@ final class EngineTests: XCTestCase {
         let spiked = DecisionSimulatorEngine.projectTrajectory(
             tomorrowReadiness: 70,
             projectedAcuteLoad: DualLoad(aerobic: 180, strength: 76),
-            projectedChronicLoad: DualLoad(aerobic: 200, strength: 35), days: 1)
+            projectedChronicLoad: DualLoad(aerobic: 200, strength: 35), days: 1,
+            physiology: fatiguedPhysiology(), anchor: neutralAnchor, calibration: neutralCalibration)
 
         XCTAssertEqual(spiked.first?.guidance, "Recuperar")
         XCTAssertGreaterThan(spiked.first?.loadRatio ?? 0, 1.55,
                              "El ratio que reporta la trayectoria es el que gobierna, no la mezcla.")
     }
 
+    // El simulador tenía su propia fisiología: `assessment.score - fatigue -
+    // ratioPenalty + recovery`, con constantes por tipo de decisión, y una
+    // segunda copia de la misma forma dentro de projectTrajectory. Con eso, el
+    // MISMO tomorrowReadiness y las mismas cargas producían la MISMA
+    // trayectoria fuera cual fuera el estado real del atleta — porque el
+    // estado no entraba en el cálculo. Ahora sí.
+    func testTrajectoryShapeComesFromTheStateNotFromConstants() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        func trajectory(fatigue: Double) -> [DecisionProjectionDay] {
+            DecisionSimulatorEngine.projectTrajectory(
+                tomorrowReadiness: 70, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140),
+                days: 4,
+                physiology: TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: fatigue, fitnessStrength: 150,
+                                           fatigueStrength: 20, muscleFatigue: [:], sleepDebtHours: 0,
+                                           illness: false, asOf: today),
+                anchor: neutralAnchor, calibration: neutralCalibration)
+        }
+        let deeplyFatigued = trajectory(fatigue: 260)
+        let barelyFatigued = trajectory(fatigue: 30)
+
+        XCTAssertEqual(deeplyFatigued[0].readiness, barelyFatigued[0].readiness,
+                       "El día 1 lo fija el nivel que pasa el llamante, igual en los dos.")
+        XCTAssertNotEqual(deeplyFatigued[3].readiness, barelyFatigued[3].readiness,
+                          "Pero la FORMA sale del estado: con la fórmula vieja los dos días 4 eran idénticos.")
+        XCTAssertGreaterThan(deeplyFatigued[3].readiness - deeplyFatigued[0].readiness,
+                             barelyFatigued[3].readiness - barelyFatigued[0].readiness,
+                             "Quien arrastra más fatiga tiene más que recuperar en cuatro días de descanso.")
+    }
+
+    // Y el bonus de recuperación de un día de descanso ya no se declara como
+    // constante: emerge de que step() decae la fatiga sin añadir carga nueva.
+    func testRestRecoveryIsEmergentNotADeclaredBonus() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        let resting = DecisionSimulatorEngine.projectTrajectory(
+            tomorrowReadiness: 55, projectedAcuteLoad: aerobicOnly(200), projectedChronicLoad: aerobicOnly(140),
+            days: 4,
+            physiology: TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 240, fitnessStrength: 150,
+                                       fatigueStrength: 130, muscleFatigue: ["Cuádriceps": 70],
+                                       sleepDebtHours: 2, illness: false, asOf: today),
+            anchor: neutralAnchor, calibration: neutralCalibration)
+
+        XCTAssertEqual(resting.map(\.readiness), resting.map(\.readiness).sorted(),
+                       "Cuatro días sin carga no pueden bajar la disponibilidad: \(resting.map(\.readiness))")
+        XCTAssertGreaterThan(resting[3].readiness, resting[0].readiness)
+    }
+
     func testProjectTrajectoryUsesFutureLoadsInsteadOfAssumingRest() {
         let rested = DecisionSimulatorEngine.projectTrajectory(
-            tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3
+            tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3,
+            physiology: fatiguedPhysiology(), anchor: neutralAnchor, calibration: neutralCalibration
         )
         let trained = DecisionSimulatorEngine.projectTrajectory(
             tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3,
+            physiology: fatiguedPhysiology(), anchor: neutralAnchor, calibration: neutralCalibration,
             futureLoads: [aerobicOnly(60), aerobicOnly(60)]
         )
         // Assuming real training on days 2-3 instead of silent rest must
@@ -2621,6 +2673,7 @@ final class EngineTests: XCTestCase {
         // existing callers.
         let explicitRest = DecisionSimulatorEngine.projectTrajectory(
             tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3,
+            physiology: fatiguedPhysiology(), anchor: neutralAnchor, calibration: neutralCalibration,
             futureLoads: [.none, .none]
         )
         XCTAssertEqual(explicitRest.map(\.readiness), rested.map(\.readiness))
@@ -4982,6 +5035,14 @@ final class EngineTests: XCTestCase {
     // el habitual por encima del suelo de confianza, el ratio que gobierna es
     // exactamente el mismo número que el combinado de antes.
     private func aerobicOnly(_ load: Double) -> DualLoad { DualLoad(aerobic: load, strength: 0) }
+
+    /// Estado con fatiga real sobre una fitness establecida: es lo que hace
+    /// que una trayectoria tenga algo que recuperar.
+    private func fatiguedPhysiology() -> TwinPhysiology {
+        TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 180, fitnessStrength: 150, fatigueStrength: 120,
+                       muscleFatigue: ["Cuádriceps": 60], sleepDebtHours: 0, illness: false,
+                       asOf: Date(timeIntervalSince1970: 1_700_000_000))
+    }
 
     private func labResult(_ name: String, _ value: Double, date: Date, unit: String = "", low: Double? = nil, high: Double? = nil) -> LabResult {
         LabResult(date: date, name: name, value: value, unit: unit, low: low, high: high, previous: nil)

@@ -95,8 +95,6 @@ enum DecisionSimulatorEngine {
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let added: Double
-        let fatigue: Int
-        let recovery: Int
         let tradeoffs: [String]
         let performanceExpectation: String
         let basis: HistoricalLoad?
@@ -106,7 +104,7 @@ enum DecisionSimulatorEngine {
             fatalError("Lifestyle decisions are routed to simulateLifestyle above and never reach this switch")
 
         case .rest:
-            added = 0; fatigue = 0; recovery = 7; basis = nil
+            added = 0; basis = nil
             tradeoffs = ["Más disponibilidad probable mañana", "No añade estímulo ni kilómetros", "Útil si hay dolor, enfermedad o fatiga acumulada"]
             performanceExpectation = "Sin sesión que valorar hoy — el beneficio se mide en la disponibilidad de mañana, no en un rendimiento."
 
@@ -126,7 +124,6 @@ enum DecisionSimulatorEngine {
             ), now: now)
             let load = historicalLoad(matched, cardioFactor: PerformanceEngine.cardioFactor("Carrera"), fallback: 78)
             basis = load; added = load.load
-            fatigue = added > 70 ? 14 : added > 45 ? 10 : 6; recovery = 0
             tradeoffs = ["Aporta estímulo de velocidad o umbral", "Eleva la carga cardiovascular aguda", "Probablemente desplaza mañana hacia descanso o tren superior"]
             performanceExpectation = paceExpectation(matched, readiness: assessment.score, label: "intervalos", basis: load)
 
@@ -134,7 +131,6 @@ enum DecisionSimulatorEngine {
             let matched = qualifyingRuns(health.recentWorkouts, matching: TrainingPlanEngine.isLongRun, now: now)
             let load = historicalLoad(matched, cardioFactor: PerformanceEngine.cardioFactor("Carrera"), fallback: 75)
             basis = load; added = load.load
-            fatigue = added > 70 ? 12 : added > 45 ? 8 : 5; recovery = 0
             tradeoffs = ["Construye resistencia aeróbica y tolerancia de tiempo en pie", "Coste de recuperación alto por duración, no por intensidad", "Probablemente desplaza mañana hacia descanso o trabajo suave"]
             performanceExpectation = paceExpectation(matched, readiness: assessment.score, label: "tirada larga", basis: load)
 
@@ -143,7 +139,6 @@ enum DecisionSimulatorEngine {
             let loads = matched.map { workout in Double(workout.exercises.reduce(0) { $0 + $1.sets }) * 3 }
             let load = HistoricalLoad(load: loads.isEmpty ? 42 : median(loads), sessions: matched.count, isPersonal: matched.count >= 2)
             basis = load; added = load.load
-            fatigue = added > 55 ? 8 : added > 30 ? 5 : 3; recovery = 1
             tradeoffs = ["Mantiene empuje y tirón sin cargar tanto las piernas", "Compatible con prioridad de running", "La fatiga local depende de series y proximidad al fallo"]
             let factor = StrengthPrescriptionEngine.readinessLoadFactor(assessment.score)
             let pct = Int((factor * 100).rounded())
@@ -158,8 +153,20 @@ enum DecisionSimulatorEngine {
         let projectedAcute = performance.dual.projectedAcute(adding: addedDual)
         let projectedChronicDual = performance.dual.projectedHabitual(adding: addedDual)
         let ratio = performance.dual.projectedGoverningRatio(adding: addedDual)
-        let ratioPenalty = ratio > 1.55 ? 8 : ratio > 1.30 ? 4 : 0
-        let tomorrow = min(100, max(0, assessment.score - fatigue - ratioPenalty + recovery))
+
+        // Una sola fisiología. Esto era una segunda: constantes de fatiga y
+        // recuperación por tipo de decisión (14/10/6 para calidad, 8/5/3 para
+        // fuerza, +7 para descanso) más una penalización propia por ratio,
+        // todo aplicado a mano sobre la puntuación de hoy. Ahora la decisión
+        // se convierte en carga, la carga pasa por step() y la disponibilidad
+        // sale de TwinReadout — el mismo camino exacto que usan
+        // TwinStateStore.predictedTomorrow y el weekAhead del plan.
+        //
+        // El bonus de recuperación de un día de descanso ya no se declara:
+        // emerge de que step() decae la fatiga sin añadir carga nueva.
+        let tomorrowPhysiology = step(assessment.physiology, session: addedDual, recoverySignals: .none, dtDays: 1)
+        let tomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: context.personalAnchor,
+                                          calibration: context.calibration).score
         let headline: String
         if tomorrow >= 70 { headline = "Mañana seguirías con buena disponibilidad" }
         else if tomorrow >= 50 { headline = "Mañana convendría ajustar la intensidad" }
@@ -176,6 +183,7 @@ enum DecisionSimulatorEngine {
         let trajectory = projectTrajectory(
             tomorrowReadiness: tomorrow, projectedAcuteLoad: projectedAcute,
             projectedChronicLoad: projectedChronicDual, days: 4,
+            physiology: tomorrowPhysiology, anchor: context.personalAnchor, calibration: context.calibration,
             futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, context: context, now: now, count: 3)
         )
         let explanation = basis.map { basis in
@@ -226,7 +234,17 @@ enum DecisionSimulatorEngine {
         let association = associations.first { $0.kind == kind }
         let hasConfidentLearning = association.map { $0.confidence.level != .low && $0.direction != .neutral } ?? false
         let learnedImpact = association.map(HabitAssociationEngine.readinessImpact) ?? 0
-        let tomorrow = min(100, max(0, assessment.score + genericImmediate + learnedImpact))
+        // Base: el mañana que el gemelo ya predice para hoy (predictedTomorrow,
+        // que es step() con la sesión que el plan propone). Antes esto partía
+        // de la puntuación de HOY, que es otra cantidad: un efecto aprendido
+        // sobre "mañana" tiene que aplicarse sobre el mañana previsto, no
+        // sobre el hoy medido.
+        //
+        // El delta aprendido NO pasa por step() a propósito: "2 cervezas" no
+        // es una carga y no hay forma honesta de expresarla como tal.
+        // HabitAssociationEngine lo mide como puntos de disponibilidad sobre
+        // evidencia personal, y así se aplica.
+        let tomorrow = min(100, max(0, assessment.predictedTomorrow.score + genericImmediate + learnedImpact))
 
         let headline: String
         if tomorrow >= 70 { headline = "Mañana seguirías con buena disponibilidad" }
@@ -248,6 +266,11 @@ enum DecisionSimulatorEngine {
         let trajectory = projectTrajectory(
             tomorrowReadiness: tomorrow, projectedAcuteLoad: performance.dual.acuteChannels,
             projectedChronicLoad: performance.dual.habitualChannels, days: 4,
+            // El estado de mañana del propio gemelo: una decisión de estilo de
+            // vida no cambia la sesión de hoy, así que la trayectoria evoluciona
+            // desde ahí, con el delta aprendido ya aplicado al nivel del día 1.
+            physiology: step(assessment.physiology, session: .none, recoverySignals: .none, dtDays: 1),
+            anchor: context.personalAnchor, calibration: context.calibration,
             futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, context: context, now: now, count: 3)
         )
         let explanation = "Parte de tu disponibilidad actual (\(assessment.score)/100)" +
@@ -277,11 +300,31 @@ enum DecisionSimulatorEngine {
     // gate del plan. Con el ratio combinado, la trayectoria podía proyectar
     // "reevaluar sesión prevista" para un día que status() habría mandado a
     // recuperar, porque el pico de un canal quedaba diluido por el otro.
+    /// `physiology` es el estado de mañana ya calculado por el llamante (la
+    /// decisión aplicada vía step()). La FORMA de la trayectoria sale de
+    /// evolucionar ese estado con step(), no de una fórmula propia — el NIVEL
+    /// lo sigue fijando `tomorrowReadiness`, porque el día 1 puede venir de
+    /// algo que step() no modela: el efecto personal aprendido de una decisión
+    /// de estilo de vida ("2 cervezas") no es una carga y no hay forma honesta
+    /// de expresarlo como tal. Así que los días 2+ aplican el DELTA que el
+    /// propio modelo predice sobre ese nivel, en vez de reinventar cuánto se
+    /// recupera cada día.
     nonisolated static func projectTrajectory(tomorrowReadiness: Int, projectedAcuteLoad: DualLoad,
                                                projectedChronicLoad: DualLoad, days: Int,
+                                               // Obligatorio, sin valor por defecto: con un nil
+                                               // la trayectoria se quedaría congelada sin que
+                                               // nada avisara, que es peor que no tenerla.
+                                               physiology: TwinPhysiology,
+                                               anchor: PersonalReadinessAnchor,
+                                               calibration: TwinCalibration,
                                                futureLoads: [DualLoad] = []) -> [DecisionProjectionDay] {
         guard days > 0 else { return [] }
         var readiness = min(100, max(0, tomorrowReadiness))
+        var state = physiology
+        // Referencia del día 1 en la escala del modelo, para poder aplicar
+        // deltas sin arrastrar la diferencia de nivel entre esa escala y la
+        // puntuación real/aprendida que fija el día 1.
+        let baseline = TwinReadout.derive(from: state, anchor: anchor, calibration: calibration).score
         var acute = DualLoad(aerobic: max(0, projectedAcuteLoad.aerobic), strength: max(0, projectedAcuteLoad.strength))
         var chronic = DualLoad(aerobic: max(0, projectedChronicLoad.aerobic), strength: max(0, projectedChronicLoad.strength))
         return (1...days).map { day in
@@ -291,15 +334,15 @@ enum DecisionSimulatorEngine {
                                  strength: PerformanceEngine.stepWeeklyEquivalent(acute.strength, dayLoad: addedLoad.strength, timeConstant: 7))
                 chronic = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(chronic.aerobic, dayLoad: addedLoad.aerobic, timeConstant: 28),
                                    strength: PerformanceEngine.stepWeeklyEquivalent(chronic.strength, dayLoad: addedLoad.strength, timeConstant: 28))
-                let ratio = DualLoad.governingRatio(acute: acute, habitual: chronic)
-                let recovery = readiness < 55 ? 7 : readiness < 75 ? 5 : 3
-                // Only a real assumed session should cost readiness — a rest
-                // day (addedLoad 0) keeps the original pure-recovery bump.
-                // Combinado a propósito: "¿hubo sesión de verdad?" no
-                // distingue canal.
-                let fatigueFromLoad = addedLoad.combined > 45 ? 6 : addedLoad.combined > 25 ? 3 : 0
-                let residualPenalty = ratio >= 1.55 ? 4 : ratio >= 1.30 ? 2 : 0
-                readiness = min(100, max(0, readiness + recovery - fatigueFromLoad - residualPenalty))
+                // Esto era la SEGUNDA copia de la fórmula que el PR2 quitó de
+                // ForwardState.apply: mismo bonus por recuperación, misma
+                // fatiga por carga, misma penalización por ratio. Se aplicó el
+                // arreglo en un sitio y se dejó en el otro. Ahora el estado
+                // evoluciona con step() y la disponibilidad sale del delta que
+                // TwinReadout predice, no de constantes propias.
+                state = step(state, session: addedLoad, recoverySignals: .none, dtDays: 1)
+                let projected = TwinReadout.derive(from: state, anchor: anchor, calibration: calibration).score
+                readiness = min(100, max(0, tomorrowReadiness + projected - baseline))
             }
             let ratio = DualLoad.governingRatio(acute: acute, habitual: chronic)
             let guidance = readiness < 50 || ratio >= 1.55 ? "Recuperar"
