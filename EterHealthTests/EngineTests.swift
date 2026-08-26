@@ -4571,14 +4571,126 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(StrengthPrescriptionEngine.readinessLoadFactor(90), 1.015, accuracy: 0.001)
     }
 
-    func testLongRunAndQualityRunClassificationAreDisjoint() {
-        let quality = healthRun(kilometers: 6, minutes: 30, calories: 400)
-        let long = healthRun(kilometers: 15, minutes: 70, calories: 500)
+    // PR4. Este test afirmaba que "calidad" y "tirada larga" son disjuntos, y
+    // eso NO era un requisito real: era un efecto colateral de la regla vieja
+    // (duración <= 50 min), que hacía imposible por construcción que una
+    // tirada larga fuese de calidad. Una tirada larga a ritmo de umbral es las
+    // dos cosas a la vez, y es un entrenamiento que existe. Lo que sí hay que
+    // fijar es que las dos clasificaciones son independientes: isLongRun es
+    // geometría (distancia/duración) e isQuality es intensidad.
+    func testLongRunGeometryIsIndependentOfQualityIntensity() {
+        let tenK = RaceForecast(distanceName: "10 km", seconds: 2_700, confidence: .high, basis: "test")
+        let threshold = SessionClassification.thresholdPaceSecondsPerKm(fiveK: nil, tenK: tenK)
+        // 15 km en 66 min = 4:24/km, por debajo del umbral (4:45/km): una
+        // tirada larga a ritmo de umbral.
+        let longAndHard = healthRun(kilometers: 15, minutes: 66, calories: 900)
+        XCTAssertTrue(TrainingPlanEngine.isLongRun(longAndHard))
+        XCTAssertTrue(SessionClassification.runQuality(longAndHard, review: nil, thresholdPace: threshold,
+                                                       thresholdHeartRate: nil).isQuality,
+                      "Una tirada larga a ritmo de umbral es larga Y de calidad; la regla vieja lo hacía imposible.")
 
-        XCTAssertTrue(TrainingPlanEngine.isQualityRun(quality))
-        XCTAssertFalse(TrainingPlanEngine.isLongRun(quality))
-        XCTAssertTrue(TrainingPlanEngine.isLongRun(long))
-        XCTAssertFalse(TrainingPlanEngine.isQualityRun(long))
+        // 15 km en 90 min = 6:00/km: larga y suave.
+        let longAndEasy = healthRun(kilometers: 15, minutes: 90, calories: 900)
+        XCTAssertTrue(TrainingPlanEngine.isLongRun(longAndEasy))
+        XCTAssertFalse(SessionClassification.runQuality(longAndEasy, review: nil, thresholdPace: threshold,
+                                                        thresholdHeartRate: nil).isQuality)
+    }
+
+    // Criterio de aceptación del brief: un rodaje suave, largo y caluroso
+    // (muchas kcal/min) NO es calidad si hay ritmo con el que juzgarlo.
+    func testHotEasyRunIsNotQualityOnceThereIsRealPaceEvidence() {
+        let tenK = RaceForecast(distanceName: "10 km", seconds: 2_700, confidence: .high, basis: "test")
+        let threshold = SessionClassification.thresholdPaceSecondsPerKm(fiveK: nil, tenK: tenK)
+        // 45 min, 8 km = 5:37/km (suave), 500 kcal = 11.1 kcal/min.
+        let hotEasyRun = healthRun(kilometers: 8, minutes: 45, calories: 500)
+
+        // La regla vieja decía que SÍ: <= 50 min y >= 10 kcal/min.
+        XCTAssertTrue(hotEasyRun.durationMinutes <= 50 && (hotEasyRun.calories ?? 0) / hotEasyRun.durationMinutes >= 10,
+                      "El proxy viejo clasificaba esto como calidad — eso es el bug, no un supuesto.")
+        let verdict = SessionClassification.runQuality(hotEasyRun, review: nil, thresholdPace: threshold, thresholdHeartRate: nil)
+        XCTAssertFalse(verdict.isQuality, "El calor no es intensidad.")
+        XCTAssertEqual(verdict.basis, .pace)
+        XCTAssertEqual(verdict.trust, .high)
+    }
+
+    // El otro criterio: intervalos cortos a ritmo de 5k SÍ cuentan, aunque
+    // duren menos de 30 min y gasten pocas calorías.
+    func testShortIntervalsAtRacePaceCountEvenUnderThirtyMinutes() {
+        let tenK = RaceForecast(distanceName: "10 km", seconds: 2_700, confidence: .high, basis: "test")
+        let threshold = SessionClassification.thresholdPaceSecondsPerKm(fiveK: nil, tenK: tenK)
+        // 20 min, 5 km = 4:00/km, y sólo 150 kcal = 7.5 kcal/min.
+        let intervals = healthRun(kilometers: 5, minutes: 20, calories: 150)
+
+        XCTAssertFalse((intervals.calories ?? 0) / intervals.durationMinutes >= 10,
+                       "El proxy viejo descartaba esto por gasto insuficiente — el otro lado del mismo bug.")
+        let verdict = SessionClassification.runQuality(intervals, review: nil, thresholdPace: threshold, thresholdHeartRate: nil)
+        XCTAssertTrue(verdict.isQuality, "El criterio es el ritmo, no la duración ni las calorías.")
+        XCTAssertEqual(verdict.basis, .pace)
+    }
+
+    // Lo que dijo el atleta manda sobre cualquier proxy, en los dos sentidos.
+    func testDeclaredEffortOutranksEveryProxy() {
+        let tenK = RaceForecast(distanceName: "10 km", seconds: 2_700, confidence: .high, basis: "test")
+        let threshold = SessionClassification.thresholdPaceSecondsPerKm(fiveK: nil, tenK: tenK)
+        let fastLooking = healthRun(kilometers: 5, minutes: 20, calories: 150)
+        let slowLooking = healthRun(kilometers: 8, minutes: 50, calories: 300)
+
+        // Declarado suave sobre una sesión que por ritmo parecía calidad: se
+        // respeta, y no se sigue bajando la escalera buscando una razón.
+        let declaredEasy = review(for: fastLooking, effort: 3, purpose: .easy)
+        let easyVerdict = SessionClassification.runQuality(fastLooking, review: declaredEasy, thresholdPace: threshold, thresholdHeartRate: nil)
+        XCTAssertFalse(easyVerdict.isQuality)
+        XCTAssertEqual(easyVerdict.basis, .review)
+
+        // Y al revés: RPE 8 sobre una sesión lenta sigue siendo calidad.
+        let declaredHard = review(for: slowLooking, effort: 8, purpose: .training)
+        let hardVerdict = SessionClassification.runQuality(slowLooking, review: declaredHard, thresholdPace: threshold, thresholdHeartRate: nil)
+        XCTAssertTrue(hardVerdict.isQuality)
+        XCTAssertEqual(hardVerdict.basis, .review)
+    }
+
+    // El peldaño de pulso sólo entra cuando no hay ritmo (cinta sin distancia),
+    // usa el pulso de ESA sesión, y vale menos porque es una media de sesión y
+    // no la fracción real en Z4–Z5.
+    func testHeartRateStepOnlyAppliesWithoutPaceAndCarriesMediumTrust() {
+        let treadmill = HealthWorkout(id: UUID(), date: Date(), durationMinutes: 35, calories: nil,
+                                      distanceKilometers: nil, averageHeartRate: 165, elevationMeters: nil,
+                                      activity: "Carrera", muscleGroups: [:], source: "Apple Watch")
+        let verdict = SessionClassification.runQuality(treadmill, review: nil, thresholdPace: nil, thresholdHeartRate: 155)
+        XCTAssertTrue(verdict.isQuality)
+        XCTAssertEqual(verdict.basis, .heartRate)
+        XCTAssertEqual(verdict.trust, .medium)
+
+        let easyTreadmill = HealthWorkout(id: UUID(), date: Date(), durationMinutes: 35, calories: nil,
+                                          distanceKilometers: nil, averageHeartRate: 130, elevationMeters: nil,
+                                          activity: "Carrera", muscleGroups: [:], source: "Apple Watch")
+        XCTAssertFalse(SessionClassification.runQuality(easyTreadmill, review: nil, thresholdPace: nil, thresholdHeartRate: 155).isQuality)
+    }
+
+    // El proxy legado sobrevive como último recurso, pero marcado: es lo que
+    // permite que el resto de la app sepa que esa clasificación no vale lo
+    // mismo que un RPE declarado.
+    func testLegacyCaloriesFallbackSurvivesButIsMarkedLowTrust() {
+        let noEvidence = HealthWorkout(id: UUID(), date: Date(), durationMinutes: 30, calories: 400,
+                                       distanceKilometers: nil, averageHeartRate: nil, elevationMeters: nil,
+                                       activity: "Carrera", muscleGroups: [:], source: "Apple Watch")
+        let verdict = SessionClassification.runQuality(noEvidence, review: nil, thresholdPace: nil, thresholdHeartRate: nil)
+        XCTAssertTrue(verdict.isQuality, "Sin nada mejor, el proxy de siempre sigue decidiendo.")
+        XCTAssertEqual(verdict.basis, .legacyCalories)
+        XCTAssertEqual(verdict.trust, .low, "Pero marcado, no colado como medición.")
+
+        // Y sin ni eso, no se inventa nada.
+        let nothing = HealthWorkout(id: UUID(), date: Date(), durationMinutes: 30, calories: nil,
+                                    distanceKilometers: nil, averageHeartRate: nil, elevationMeters: nil,
+                                    activity: "Carrera", muscleGroups: [:], source: "Apple Watch")
+        let empty = SessionClassification.runQuality(nothing, review: nil, thresholdPace: nil, thresholdHeartRate: nil)
+        XCTAssertFalse(empty.isQuality)
+        XCTAssertEqual(empty.basis, .insufficient)
+    }
+
+    // Sin forecast no se inventa un ritmo umbral.
+    func testNoForecastMeansNoInventedThresholdPace() {
+        XCTAssertNil(SessionClassification.thresholdPaceSecondsPerKm(fiveK: nil, tenK: nil))
     }
 
     func testHistoricalLoadFallsBackHonestlyWithoutPersonalHistory() {

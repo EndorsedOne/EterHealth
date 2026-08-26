@@ -163,8 +163,13 @@ enum RunningPerformanceEngine {
         }
     }
 
+    // zoneBoundaries opcional: es el peldaño de pulso de
+    // SessionClassification. Quien no lo tenga a mano pasa nil y ese peldaño
+    // no se usa — nunca se sustituye por las zonas agregadas de la semana,
+    // que no dicen nada de una sesión concreta.
     static func coverage(workouts: [HealthWorkout], reviews: [WorkoutReview], summary: RunningPerformanceSummary,
-                         targetRuns: Int, targetQuality: Int, block: TrainingBlock, now: Date = Date()) -> RunningCoverageSummary {
+                         targetRuns: Int, targetQuality: Int, block: TrainingBlock,
+                         zoneBoundaries: HeartRateZoneBoundaries? = nil, now: Date = Date()) -> RunningCoverageSummary {
         let calendar = Calendar.current
         let seven = calendar.date(byAdding: .day, value: -7, to: now) ?? now
         let runs = workouts.filter { $0.activity == "Carrera" && $0.date >= seven && $0.date <= now }
@@ -203,13 +208,18 @@ enum RunningPerformanceEngine {
         longMid = max(targetRuns > 0 ? 6 : 0, min(longMid, kilometerTarget.upperBound * 0.55))
         let longTarget = roundedRange(longMid * 0.92, longMid * 1.06, step: 0.5)
 
-        let reviewsByID = Dictionary(uniqueKeysWithValues: reviews.map { ($0.workoutID, $0) })
-        let quality = runs.filter { workout in
-            if let review = reviewsByID["health-\(workout.id.uuidString)"] {
-                return review.purpose == .quality || review.purpose == .test || review.purpose == .race || review.effort >= 8
-            }
-            return workout.durationMinutes <= 50 && (workout.calories ?? 0) / max(workout.durationMinutes, 1) >= 10
-        }.count
+        // PR4: esta era la SEGUNDA definición de "sesión de calidad" del repo
+        // —con RPE >= 8, mientras la otra no miraba el review— y las dos
+        // caían en el mismo proxy de kcal/min. Ahora las dos llaman a
+        // SessionClassification. El umbral de ritmo sale de los forecasts que
+        // ya se han calculado justo arriba, así que no hay recursión.
+        let quality = runs.filter(SessionClassification.qualityRunPredicate(
+            reviews: reviews,
+            // Los forecasts vienen ya hechos en `summary` — no se recalculan
+            // aquí, que además sería el camino directo a una recursión.
+            thresholdPace: SessionClassification.thresholdPaceSecondsPerKm(fiveK: summary.fiveK, tenK: summary.tenK),
+            thresholdHeartRate: zoneBoundaries.map { Double($0.z3z4) }
+        )).count
         let longest = runs.compactMap(\.distanceKilometers).max() ?? 0
         let easyTarget = easyIntensityTarget(for: block)
         let cycling = workouts.filter { $0.activity == "Ciclismo" && $0.date >= seven && $0.date <= now }

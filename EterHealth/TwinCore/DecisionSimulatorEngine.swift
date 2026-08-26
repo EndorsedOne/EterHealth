@@ -111,7 +111,19 @@ enum DecisionSimulatorEngine {
             performanceExpectation = "Sin sesión que valorar hoy — el beneficio se mide en la disponibilidad de mañana, no en un rendimiento."
 
         case .quality:
-            let matched = qualifyingRuns(health.recentWorkouts, matching: TrainingPlanEngine.isQualityRun, now: now)
+            // PR4: el mismo clasificador configurado que el plan, con la
+            // evidencia real de este atleta. Antes esto compartía con el plan
+            // una regla de kcal/min que confundía calor con intensidad, así
+            // que "cuánto me costó una sesión de calidad" se calculaba sobre
+            // un conjunto de sesiones mal etiquetado.
+            let running = RunningPerformanceEngine.summarize(
+                workouts: health.workoutHistory, zones: health.runningHeartRateZones,
+                reviews: context.reviews, now: now)
+            let matched = qualifyingRuns(health.recentWorkouts, matching: SessionClassification.qualityRunPredicate(
+                reviews: context.reviews,
+                thresholdPace: SessionClassification.thresholdPaceSecondsPerKm(fiveK: running.fiveK, tenK: running.tenK),
+                thresholdHeartRate: health.currentHeartRateZoneBoundaries().map { Double($0.z3z4) }
+            ), now: now)
             let load = historicalLoad(matched, cardioFactor: PerformanceEngine.cardioFactor("Carrera"), fallback: 78)
             basis = load; added = load.load
             fatigue = added > 70 ? 14 : added > 45 ? 10 : 6; recovery = 0
