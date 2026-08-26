@@ -4,8 +4,7 @@ import Foundation
 // scratch as an additive score every time assess() runs. TwinReadout.score
 // below is a DERIVED summary of this state for the UI (Hoy still shows a
 // single 0–100 number and its TwinSignal breakdown, unchanged), never fed
-// back into TrainingPlanEngine as an input itself — the plan reads
-// TwinPhysiology directly for muscle-fatigue-driven interference instead.
+// back into TrainingPlanEngine as an input itself.
 //
 // Same two-compartment fitness/fatigue shape TrainingScenarioEngine's own
 // Banister-style model already uses for "Tres futuros" — fatigue clears
@@ -13,6 +12,25 @@ import Foundation
 // invented model. τ values below are that same heuristic, split into an
 // aerobic and a strength channel instead of TrainingScenarioEngine's single
 // population-pace one.
+//
+// Three layers, not two: this struct is canonical PHYSIOLOGY only —
+// fitness/fatigue and per-muscle FATIGUE, nothing else. TwinReadout is the
+// separate derived score/confidence layer. Weekly training VOLUME/HISTORY
+// per muscle (recentSets, lastTrained — what bestStrengthPattern's MEV/MAV/
+// MRV logic needs) is a third, distinct layer that intentionally does NOT
+// live here: it isn't canonical physiology, and folding it in would let a
+// single struct silently mix "how tired is this muscle" with "how much has
+// it actually been trained this week", two different questions with two
+// different lifetimes (fatigue decays in hours/days; weekly volume resets
+// on a training-week cadence). TrainingPlanEngine.status/weekAhead/
+// balancedDecision still take that third layer as a plain
+// [MuscleReadiness] array (a real compatibility shape, not the final
+// target — see their own call sites) rather than a named
+// MuscleTrainingContext type; the eventual, non-mixed shape the plan
+// should read is TwinPhysiology + TwinReadout + a MuscleTrainingContext
+// (or the current [MuscleReadiness]) passed as its own, separate
+// parameter — never merged into this one. Do not add recentSets/
+// lastTrained to TwinPhysiology to "simplify" a call site.
 struct TwinPhysiology: Equatable {
     var fitnessAerobic: Double       // EWMA semanal-equivalente, τ ≈ 42 días
     var fatigueAerobic: Double       // τ ≈ 7 días

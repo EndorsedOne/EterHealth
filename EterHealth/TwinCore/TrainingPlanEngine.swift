@@ -394,6 +394,18 @@ enum TrainingPlanEngine {
     // TwinCore: profile/reviews used to be read straight from the GoalStore/
     // WorkoutReviewStore singleton instances throughout this function — both required
     // params now, no default, same reasoning as TwinEngine.assess.
+    //
+    // readiness/muscles here are a PR2 compatibility shape, not the final
+    // target — see TwinPhysiology's own comment. readiness IS
+    // TwinReadout.score and muscles' fatigue numbers ARE
+    // TwinPhysiology.muscleFatigue (same single source, TwinEngine.
+    // calculateMuscles), just not yet passed as those named types: muscles
+    // also carries recentSets/lastTrained (for bestStrengthPattern's real
+    // MEV/MAV/MRV logic, via balancedDecision below) that TwinPhysiology
+    // deliberately does not carry. Migrating this call site to take
+    // TwinPhysiology + TwinReadout + a separate MuscleTrainingContext
+    // (never merging volume/history into TwinPhysiology) is future work,
+    // not done here to avoid losing that fidelity mid-PR.
     static func status(health: HealthStore, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness], checkIn: DailyCheckIn?,
                        context: TwinContext,
                        physiologicalAlert: PhysiologicalAlert? = nil, now: Date = Date()) -> WeeklyPlanStatus {
@@ -1592,6 +1604,12 @@ enum TrainingPlanEngine {
     /// Compares the opportunity cost of the available sessions. Running keeps a
     /// small priority in race blocks, while an overdue strength stimulus grows in
     /// urgency instead of waiting indefinitely for every running target to be met.
+    ///
+    /// `muscles: [MuscleReadiness]` below is the same PR2 compatibility
+    /// shape status() takes — see its own comment. Kept as-is here on
+    /// purpose: this function hands `muscles` straight to
+    /// bestStrengthPattern, which needs recentSets (MEV/MAV/MRV) that
+    /// TwinPhysiology.muscleFatigue alone can't provide.
     static func balancedDecision(
         runs: Int, targetRuns: Int,
         strength: Int, targetStrength: Int,

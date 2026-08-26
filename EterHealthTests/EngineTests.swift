@@ -4223,4 +4223,58 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(muscles), "empuje")
     }
 
+    // PR2: TwinPhysiology.muscleFatigue drives weekAhead's simulated
+    // freshness, but recentSets/lastTrained deliberately stay OUT of
+    // TwinPhysiology (not canonical physiology) — weekAhead keeps
+    // accumulating them separately in its own simulatedSets dict, exactly
+    // as before PR2, so bestStrengthPattern's MEV/MAV/MRV volume-urgency
+    // logic still works on simulated future days, not just today's real
+    // one. Proven end to end here (not just via bestStrengthPattern's own
+    // hand-constructed unit test) by forcing three consecutive real
+    // simulated strength days from a hypertrophy-heavy profile with a
+    // real baseline history: if simulatedSets reset to 0 (or never
+    // accumulated) every simulated day, every one of these would
+    // deterministically tie-break to the same pattern ("pierna", the
+    // first group in bestStrengthPattern's own list) instead of rotating
+    // as each pattern's own weekly volume gets used up.
+    func testWeekAheadAccumulatesSimulatedSetsSoStrengthPatternRotatesAcrossDays() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        var profile = AthletePlanProfile.angelDefault
+        profile.gymAvailable = true
+        profile.goals = [TrainingGoal(id: UUID(), kind: .hypertrophy, title: "Hipertrofia", date: nil, targetValue: nil, unit: "", priority: .primary, isActive: true)]
+        profile.trainingDaysPerWeek = 7
+
+        // Real baseline (8 weeks, 4x/week) so the acute:chronic ratio gate
+        // doesn't veto the whole week the way a genuinely empty history
+        // would (the same fix already applied to the flaky weekAhead
+        // tests above) — this is about volume accumulation, not about
+        // readiness itself.
+        let imports = ImportStore(persistToDisk: false)
+        var importBaseline: [ImportedWorkout] = []
+        for weekOffset in 1...8 {
+            for dayOffset in [1, 3, 5, 7] {
+                let liftDay = now.addingTimeInterval(-Double(weekOffset) * 7 * 86_400 - Double(dayOffset) * 86_400)
+                importBaseline.append(ImportedWorkout(
+                    title: "Empuje", start: liftDay, end: liftDay.addingTimeInterval(3_600),
+                    exercises: [ImportedExercise(name: "Bench Press (Barbell)", sets: 4, volume: 1_600, totalReps: 32, averageWeight: 50, setDetails: nil)],
+                    muscleSets: ["Pecho": 4]
+                ))
+            }
+        }
+        imports.restore(workouts: importBaseline, labs: [])
+
+        let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: imports, checkIn: nil, context: context, now: now, days: 7)
+
+        let strengthDays = week.prefix(3)
+        XCTAssertTrue(strengthDays.allSatisfy { $0.kind == .strength },
+                     "Sanity check: this scenario must actually produce three consecutive real strength days, or the test proves nothing.")
+        let patterns = strengthDays.map(\.rationale)
+        XCTAssertTrue(patterns[0].localizedCaseInsensitiveContains("pierna"))
+        XCTAssertTrue(patterns[1].localizedCaseInsensitiveContains("empuje"))
+        XCTAssertTrue(patterns[2].localizedCaseInsensitiveContains("tirón"),
+                      "Three consecutive simulated strength days must rotate through different patterns as each one's own weekly volume gets used up — not repeat the same tie-broken pattern every day.")
+    }
+
 }
