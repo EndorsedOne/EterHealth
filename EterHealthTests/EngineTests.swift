@@ -761,6 +761,108 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(observed?.total, 240)
     }
 
+    // PR6. Helper: una semana de sentadillas con N series y un e1RM concreto.
+    private func squatWeek(weeksAgo: Int, sets: Int, oneRepMax: Double, now: Date) -> ImportedWorkout {
+        // Epley invertido: peso = e1RM / (1 + reps/30), con 5 reps.
+        let weight = oneRepMax / (1 + 5.0 / 30)
+        let day = Calendar.current.date(byAdding: .day, value: -7 * weeksAgo, to: now)!
+        let details = (0..<sets).map { _ in ImportedSet(weight: weight, reps: 5, type: "normal", rpe: 8, durationSeconds: nil) }
+        return ImportedWorkout(
+            title: "Pierna", start: day, end: day.addingTimeInterval(3_600),
+            exercises: [ImportedExercise(name: "Squat (Barbell)", sets: sets, volume: weight * 5 * Double(sets),
+                                         totalReps: 5 * sets, averageWeight: weight, setDetails: details)],
+            muscleSets: [:])
+    }
+
+    // El caso que el PR6 existe para resolver: este atleta progresa con 6
+    // series semanales y se estanca con 14. Su MRV real está por debajo del
+    // prior fijo de la tabla (1.5 × MAV = 12 para cuádriceps).
+    func testLearnedMRVMovesBelowThePriorWhenHighVolumeWeeksStall() {
+        let now = Date()
+        var workouts: [ImportedWorkout] = []
+        // 6 semanas de volumen bajo progresando: e1RM subiendo.
+        for (index, week) in (10...15).reversed().enumerated() {
+            workouts.append(squatWeek(weeksAgo: week, sets: 3, oneRepMax: 100 + Double(index) * 3, now: now))
+        }
+        // 5 semanas de volumen alto estancándose: e1RM cayendo del récord.
+        for week in (1...5).reversed() {
+            workouts.append(squatWeek(weeksAgo: week, sets: 7, oneRepMax: 108, now: now))
+        }
+        let learned = VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)
+
+        guard let quads = learned["Cuádriceps"] else {
+            XCTFail("Con 11 semanas y las dos clases presentes tiene que haber estimación: \(learned.keys)")
+            return
+        }
+        let prior = MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps").mrv
+        XCTAssertLessThan(quads.mrv, prior, "Si se estanca con volumen alto, su MRV real está por debajo del prior fijo.")
+        XCTAssertGreaterThanOrEqual(quads.stalledWeeks, 3)
+        XCTAssertGreaterThanOrEqual(quads.progressedWeeks, 3)
+
+        // Y el landmark que lee el plan ya es el aprendido, no el prior.
+        XCTAssertEqual(MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps", learned: learned).mrv, quads.mrv)
+        XCTAssertEqual(MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps", learned: learned).mev,
+                       MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps").mev,
+                       "El MEV sigue siendo 0.5 × MAV: el brief lo mantiene como prior válido.")
+    }
+
+    // Sin 8 semanas de volumen real no se afirma nada. Es el mismo mínimo de
+    // evidencia que learnedRecovery, y el motivo es el mismo.
+    func testLearnedMRVStaysSilentWithoutEightWeeksOfVolume() {
+        let now = Date()
+        let workouts = (1...4).map { squatWeek(weeksAgo: $0, sets: 6, oneRepMax: 100, now: now) }
+        XCTAssertTrue(VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now).isEmpty,
+                      "4 semanas no dan para hablar del MRV de nadie.")
+    }
+
+    // Y aunque haya 8 semanas: si todas progresan, no hay frontera que
+    // estimar. Un MRV es una frontera, no una media.
+    func testLearnedMRVStaysSilentWhenEveryWeekProgresses() {
+        let now = Date()
+        let workouts = (1...12).reversed().enumerated().map { index, week in
+            squatWeek(weeksAgo: week, sets: 5, oneRepMax: 100 + Double(index) * 2, now: now)
+        }
+        let learned = VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)
+        XCTAssertNil(learned["Cuádriceps"],
+                     "Sin semanas estancadas no hay techo observado — no se inventa uno.")
+    }
+
+    // Y si el volumen no es lo que separa progreso de estancamiento (se
+    // estanca con volumen BAJO), tampoco se afirma nada: sería atribuir al
+    // volumen algo que no explica.
+    func testLearnedMRVStaysSilentWhenVolumeIsNotWhatSeparatesStalling() {
+        let now = Date()
+        var workouts: [ImportedWorkout] = []
+        // Volumen alto progresando.
+        for (index, week) in (7...12).reversed().enumerated() {
+            workouts.append(squatWeek(weeksAgo: week, sets: 8, oneRepMax: 100 + Double(index) * 3, now: now))
+        }
+        // Volumen bajo estancándose — al revés de lo que un MRV explicaría.
+        for week in (1...4).reversed() {
+            workouts.append(squatWeek(weeksAgo: week, sets: 2, oneRepMax: 110, now: now))
+        }
+        XCTAssertNil(VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)["Cuádriceps"],
+                     "Estancarse con volumen bajo no es un MRV; el volumen no lo explica.")
+    }
+
+    // El aprendizaje está acotado respecto al prior: con pocas semanas, ruido
+    // en una sola no puede producir un número absurdo.
+    func testLearnedMRVIsBoundedRelativeToThePrior() {
+        let now = Date()
+        var workouts: [ImportedWorkout] = []
+        for (index, week) in (9...14).reversed().enumerated() {
+            workouts.append(squatWeek(weeksAgo: week, sets: 1, oneRepMax: 100 + Double(index) * 3, now: now))
+        }
+        for week in (1...4).reversed() {
+            workouts.append(squatWeek(weeksAgo: week, sets: 40, oneRepMax: 105, now: now))
+        }
+        let prior = MuscleVolumeLandmarkTable.landmarks(for: "Cuádriceps").mrv
+        if let quads = VolumeLandmarkLearning.learnedMRV(workouts: workouts, now: now)["Cuádriceps"] {
+            XCTAssertLessThanOrEqual(quads.mrv, prior * VolumeLandmarkLearning.maximumPriorMultiple)
+            XCTAssertGreaterThanOrEqual(quads.mrv, prior * VolumeLandmarkLearning.minimumPriorMultiple)
+        }
+    }
+
     func testHyroxForecastRequiresRunningEvidence() {
         let running = RunningPerformanceSummary(
             sessions: [], weeks: [], kilometers7Days: 0, priorKilometers7Days: 0,
