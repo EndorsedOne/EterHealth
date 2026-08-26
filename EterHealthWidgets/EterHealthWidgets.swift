@@ -30,6 +30,10 @@ private struct Snapshot: Codable {
     let energyConfidenceReason: String?
     let loadRatio: Double
     let loadState: String
+    // Opcional por el mismo motivo que en WidgetSnapshotStore: el decoder
+    // sintetizado no usa valores por defecto, así que un campo nuevo no
+    // opcional dejaría el widget en blanco con los snapshots ya guardados.
+    var loadChannel: String?
     let loadConfidence: String?
     let loadConfidenceScore: Int?
     let loadConfidenceReason: String?
@@ -50,7 +54,7 @@ private struct Snapshot: Codable {
         energyBasis: "Noche +55 · día −7 · ejercicio −14",
         energyConfidence: "Media", energyConfidenceScore: 63,
         energyConfidenceReason: "Usa sueño, HRV y actividad; falta check-in.",
-        loadRatio: 1.10, loadState: "Carga productiva",
+        loadRatio: 1.10, loadState: "Carga productiva", loadChannel: "aeróbica",
         loadConfidence: "Alta", loadConfidenceScore: 82,
         loadConfidenceReason: "28 días de carga observados y 8 sesiones recientes.",
         dailyLoads: [12, 0, 18, 9, 0, 31, 8, 15, 0, 24, 10, 6, 0, 28, 12, 7, 0, 20, 35, 8, 0, 16, 11, 26, 0, 14, 20, 9],
@@ -292,8 +296,15 @@ private struct LoadView: View {
                     Text("Conf. \((entry.snapshot.loadConfidence ?? "Baja").lowercased())")
                         .font(.system(size: 7, weight: .semibold)).foregroundStyle(.secondary)
                 }
-                Text(entry.snapshot.loadRatio > 0 ? String(format: "%.2f", entry.snapshot.loadRatio) : "—")
-                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                HStack(alignment: .lastTextBaseline, spacing: 4) {
+                    Text(entry.snapshot.loadRatio > 0 ? String(format: "%.2f", entry.snapshot.loadRatio) : "—")
+                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                    // De qué canal es ese ratio: manda el más exigido, y sin
+                    // decir cuál el número no se puede interpretar.
+                    if let channel = entry.snapshot.loadChannel, entry.snapshot.loadRatio > 0 {
+                        Text(channel).font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                    }
+                }
                 Label(entry.snapshot.loadState, systemImage: "checkmark.circle.fill").font(.caption.bold()).foregroundStyle(loadColor)
                 Text("Running \(entry.snapshot.runningShare)% · Fuerza \(entry.snapshot.strengthShare)%")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
