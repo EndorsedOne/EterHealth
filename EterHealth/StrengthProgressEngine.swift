@@ -242,7 +242,12 @@ enum StrengthProgressEngine {
     }
 
     private static func workingSets(_ exercise: ImportedExercise) -> [ImportedSet] {
-        let details = (exercise.setDetails ?? []).filter { $0.reps > 0 && $0.weight >= 0 }
+        // "La serie tiene contenido real", no "tiene repeticiones": una serie
+        // de plancha o de trineo no tiene reps y sí es una serie hecha.
+        // Filtrar por reps > 0 las descartaba enteras del progreso de fuerza.
+        let details = (exercise.setDetails ?? []).filter {
+            ($0.reps > 0 || ($0.durationSeconds ?? 0) > 0) && $0.weight >= 0
+        }
         return workingSets(details)
     }
 

@@ -733,6 +733,10 @@ private struct LiveSet: Identifiable {
     var weight: Double
     var reps: Int
     var type: String
+    // Campos propios: antes los segundos se guardaban dentro de `reps`, donde
+    // eran indistinguibles de repeticiones e inflaban el volumen.
+    var durationSeconds: Double?
+    var distanceMeters: Double?
     var completed = false
 }
 
@@ -757,6 +761,10 @@ struct LiveStrengthWorkoutView: View {
     @State private var requestedWatchStart = false
     // Only one set can realistically be timed at once, so a single shared
     // pair of state covers every exercise card.
+    // Borrador de entrada de tiempo por serie: mientras se teclea manda el
+    // texto crudo, y sólo al salir se formatea desde el modelo. Sin esto,
+    // reformatear en cada pulsación pelea con quien está escribiendo.
+    @State private var timeDrafts: [UUID: String] = [:]
     @State private var timingSetID: UUID?
     @State private var timingStartedAt: Date?
 
@@ -887,28 +895,29 @@ struct LiveStrengthWorkoutView: View {
                 Button(role: .destructive) { exercises.removeAll { $0.id == exercise.wrappedValue.id } } label: { Image(systemName: "trash") }
             }
             HStack {
-                Text("SERIE").frame(width: 30, alignment: .leading)
-                Text("KG").frame(maxWidth: .infinity)
-                Text(descriptor.isTimed ? "SEG" : "REPS").frame(maxWidth: .infinity)
-                Text("HECHA").frame(width: 52)
+                Text("#").frame(width: 18, alignment: .leading)
+                if descriptor.tracksWeight { Text("KG").frame(maxWidth: .infinity) }
+                measurementHeaders(descriptor.measurement)
+                Image(systemName: "checkmark").frame(width: 44)
             }.font(.caption2.bold()).foregroundStyle(.secondary)
             ForEach(exercise.sets) { $set in
                 HStack(spacing: 8) {
                     Text("\((exercise.wrappedValue.sets.firstIndex { $0.id == set.id } ?? 0) + 1)")
-                        .font(.subheadline.bold()).frame(width: 30, alignment: .leading)
-                    stepperField(value: $set.weight, step: 2.5, minimum: 0, decimalPlaces: 0...1)
-                    if descriptor.isTimed {
-                        timedSetField($set)
-                    } else {
-                        stepperField(value: $set.reps, step: 1, minimum: 0)
+                        .font(.subheadline.bold()).frame(width: 18, alignment: .leading)
+                    if descriptor.tracksWeight {
+                        stepperField(value: $set.weight, step: 2.5, minimum: 0, decimalPlaces: 0...1)
                     }
+                    measurementFields(descriptor.measurement, set: $set)
                     completedButton($set, restSeconds: exercise.wrappedValue.restSeconds)
                 }
             }
             Button {
-                let fallback = LiveSet(weight: 0, reps: descriptor.isTimed ? 30 : 10, type: "normal")
+                let fallback = LiveSet(weight: 0, reps: descriptor.measurement == .reps ? 10 : 0, type: "normal",
+                                       durationSeconds: descriptor.isTimed ? 30 : nil, distanceMeters: nil)
                 let previous = exercise.wrappedValue.sets.last ?? fallback
-                exercise.wrappedValue.sets.append(LiveSet(weight: previous.weight, reps: previous.reps, type: "normal"))
+                exercise.wrappedValue.sets.append(LiveSet(weight: previous.weight, reps: previous.reps, type: "normal",
+                                                          durationSeconds: previous.durationSeconds,
+                                                          distanceMeters: previous.distanceMeters))
             } label: { Label("Añadir serie", systemImage: "plus.circle").font(.caption.bold()) }
         }.cardStyle()
     }
@@ -963,11 +972,109 @@ struct LiveStrengthWorkoutView: View {
             Image(systemName: "checkmark")
                 .font(.title3.bold())
                 .foregroundStyle(set.wrappedValue.completed ? .white : .secondary)
-                .frame(width: 52, height: 46)
+                .frame(width: 44, height: 46)
         }
         .buttonStyle(.plain)
         .background(set.wrappedValue.completed ? EterTheme.positive : Color.primary.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .eterTouchTarget()
+    }
+
+    @ViewBuilder
+    private func measurementHeaders(_ measurement: ExerciseMeasurement) -> some View {
+        switch measurement {
+        case .reps:
+            Text("REPS").frame(maxWidth: .infinity)
+        case .time:
+            Text("TIEMPO").frame(maxWidth: .infinity)
+        case .timeAndDistance:
+            Text("TIEMPO").frame(maxWidth: .infinity)
+            Text("M").frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Los campos de cada tipo de medición. Extraído de la fila porque el
+    /// switch en línea con los TextField dentro ahogaba al type-checker.
+    @ViewBuilder
+    private func measurementFields(_ measurement: ExerciseMeasurement, set: Binding<LiveSet>) -> some View {
+        switch measurement {
+        case .reps:
+            // Sin control extra aquí: KG con stepper + REPS con stepper +
+            // HECHA ya va al límite del ancho, y un cuarto control desbordaba
+            // la tarjeta (comprobado en el simulador). El modelo SÍ soporta
+            // duración opcional en un ejercicio de reps —llega así desde
+            // Hevy—; exponerla en la sesión propia pide rediseñar la fila, no
+            // apretarla más.
+            stepperField(value: set.reps, step: 1, minimum: 0)
+        case .time:
+            timedSetField(set)
+        case .timeAndDistance:
+            timedSetField(set)
+            // Metros: 200 m de trineo en 90 s y en 150 s no son la misma
+            // serie. Campo plano sin stepper, igual que Hevy — 500 m no se
+            // teclean a base de +/-, y es lo que deja sitio para que
+            // KG + TIEMPO + M + HECHA quepan en el trineo.
+            distanceField(set)
+        }
+    }
+
+    private func distanceField(_ set: Binding<LiveSet>) -> some View {
+        TextField("0", value: Binding(
+            get: { Int(set.wrappedValue.distanceMeters ?? 0) },
+            set: { set.wrappedValue.distanceMeters = $0 > 0 ? Double($0) : nil }
+        ), format: .number)
+            .keyboardType(.numberPad).multilineTextAlignment(.center)
+            .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
+    }
+
+    /// "250" -> "4:10". Cadena vacía para nil, nunca "0:00": un cero se leería
+    /// como "lo hizo en cero segundos" en vez de "no medido".
+    static func minutesSeconds(_ seconds: Double?) -> String {
+        guard let seconds, seconds > 0 else { return "" }
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    /// Entrada estilo cronómetro: los dos últimos dígitos son segundos, el
+    /// resto minutos. "410" -> 4:10, "45" -> 0:45.
+    static func secondsFromDigits(_ digits: String) -> Double {
+        guard let value = Int(digits) else { return 0 }
+        return Double(value / 100 * 60 + value % 100)
+    }
+
+    /// Un ejercicio de repeticiones no necesita tiempo para estar bien
+    /// registrado, así que esto es un botón y no una columna: no ocupa sitio
+    /// mientras no se use, y cuando se usa la duración va a su propio campo
+    /// (nunca dentro de `reps`, que es lo que inflaba el volumen).
+    private func optionalTimerButton(_ set: Binding<LiveSet>) -> some View {
+        let isTiming = timingSetID == set.wrappedValue.id
+        return Button {
+            if isTiming {
+                if let startedAt = timingStartedAt {
+                    set.wrappedValue.durationSeconds = max(0, Date().timeIntervalSince(startedAt).rounded())
+                }
+                timingSetID = nil; timingStartedAt = nil
+            } else {
+                timingSetID = set.wrappedValue.id; timingStartedAt = Date()
+            }
+        } label: {
+            if isTiming, let startedAt = timingStartedAt {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(Self.minutesSeconds(context.date.timeIntervalSince(startedAt).rounded()))
+                        .font(.caption2.monospacedDigit().bold()).foregroundStyle(.orange)
+                        .frame(width: 34, height: 30)
+                }
+            } else if let seconds = set.wrappedValue.durationSeconds, seconds > 0 {
+                Text(Self.minutesSeconds(seconds)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    .frame(width: 34, height: 30)
+            } else {
+                Image(systemName: "stopwatch").font(.caption2).foregroundStyle(.secondary)
+                    .frame(width: 26, height: 30)
+            }
+        }
+        .buttonStyle(.plain)
+        .background((isTiming ? Color.orange : Color.primary).opacity(isTiming ? 0.22 : 0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
         .eterTouchTarget()
     }
 
@@ -981,7 +1088,7 @@ struct LiveStrengthWorkoutView: View {
             Button {
                 if isTiming {
                     if let startedAt = timingStartedAt {
-                        set.wrappedValue.reps = max(0, Int(Date().timeIntervalSince(startedAt).rounded()))
+                        set.wrappedValue.durationSeconds = max(0, Date().timeIntervalSince(startedAt).rounded())
                     }
                     timingSetID = nil; timingStartedAt = nil
                 } else {
@@ -997,12 +1104,23 @@ struct LiveStrengthWorkoutView: View {
 
             if isTiming, let startedAt = timingStartedAt {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text("\(Int(context.date.timeIntervalSince(startedAt).rounded())) s")
+                    Text(Self.minutesSeconds(context.date.timeIntervalSince(startedAt).rounded()))
                         .font(.subheadline.monospacedDigit().bold()).foregroundStyle(.orange)
                         .frame(maxWidth: .infinity).fieldBox()
                 }
             } else {
-                TextField("0", value: set.reps, format: .number)
+                // mm:ss, como se piensa un ski de 4:10 — no "250 s". Se teclean
+                // dígitos y los dos últimos son los segundos, igual que en un
+                // cronómetro: no hay que escribir los dos puntos.
+                let id = set.wrappedValue.id
+                TextField("mm:ss", text: Binding(
+                    get: { timeDrafts[id] ?? Self.minutesSeconds(set.wrappedValue.durationSeconds) },
+                    set: { text in
+                        let digits = String(text.filter(\.isNumber).suffix(5))
+                        timeDrafts[id] = digits.isEmpty ? "" : Self.minutesSeconds(Self.secondsFromDigits(digits))
+                        set.wrappedValue.durationSeconds = digits.isEmpty ? nil : Self.secondsFromDigits(digits)
+                    }
+                ))
                     .keyboardType(.numberPad).multilineTextAlignment(.center)
                     .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
             }
@@ -1095,7 +1213,8 @@ struct LiveStrengthWorkoutView: View {
             // y el volumen, y eso es un cambio de semántica con su propio
             // riesgo, no algo que colar en este PR.
             let details = source.map {
-                ExerciseCatalog.loggedSet(weight: $0.weight, reps: $0.reps, type: $0.type, exerciseName: exercise.name)
+                ExerciseCatalog.loggedSet(weight: $0.weight, reps: $0.reps, type: $0.type, exerciseName: exercise.name,
+                                          durationSeconds: $0.durationSeconds, distanceMeters: $0.distanceMeters)
             }
             // éter's own live session has no in-session warm-up toggle, so
             // every set is logged as "normal" — the ascending-ramp

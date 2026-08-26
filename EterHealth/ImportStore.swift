@@ -66,6 +66,12 @@ struct ImportedSet: Codable, Sendable {
     // de peso × reps y no tienen duración, y los JSON ya guardados tampoco
     // traen el campo. nil significa "no medido", nunca cero.
     var durationSeconds: Double?
+    // Trineo, remo y ski se miden en tiempo Y distancia: ninguna de las dos
+    // por separado describe la serie. Hevy la exporta en `distance_km`; aquí
+    // se guarda en metros, que es la unidad en la que se piensan estas
+    // estaciones. Opcional por el mismo motivo que la duración: nil es "no
+    // medido", nunca cero.
+    var distanceMeters: Double?
 }
 
 struct LabResult: Codable, Identifiable, Sendable {
@@ -292,8 +298,10 @@ final class ImportStore: ObservableObject {
             item.sets += 1
             item.volume += weight * reps
             item.reps += Int(reps.rounded())
+            let distanceMeters = Double(field(row, "distance_km")).map { $0 * 1_000 }
             item.details.append(ImportedSet(weight: weight, reps: Int(reps.rounded()), type: setType, rpe: rpe,
-                                            durationSeconds: Double(field(row, "duration_seconds"))))
+                                            durationSeconds: Double(field(row, "duration_seconds")),
+                                            distanceMeters: distanceMeters))
             workout.exercises[exercise] = item
             grouped[key] = workout
         }
