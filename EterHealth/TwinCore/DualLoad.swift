@@ -14,6 +14,66 @@ struct DualLoad: Equatable {
     // dos EWMA por separado son el mismo número. Por eso partir el canal no
     // mueve ni un decimal de lo que ya se mostraba (hay un test que lo fija).
     var combined: Double { aerobic + strength }
+
+    // Reparto heurístico y documentado por tipo de sesión: un híbrido/brick
+    // aporta a los dos canales, el resto a uno solo.
+    static func split(total: Double, kind: PlannedSessionKind) -> DualLoad {
+        switch kind {
+        case .strength: return DualLoad(aerobic: 0, strength: total)
+        case .hybrid, .brick: return DualLoad(aerobic: total * 0.6, strength: total * 0.4)
+        default: return DualLoad(aerobic: total, strength: 0)
+        }
+    }
+
+    // ESTÍMULO: lo que de verdad entrena. Un día de descanso no entrena
+    // nada, y por eso `recovery` es cero aquí — el "8" de
+    // forecastSessionLoad representa actividad residual de un día normal,
+    // que es otra cosa (ver ratioLoad abajo). Alimentar los canales de
+    // fitness/fatiga de step() con ese residuo dejaba la fatiga sin bajar
+    // nunca por debajo de la fitness en una semana simulada.
+    static func forecast(_ kind: PlannedSessionKind) -> DualLoad {
+        if kind == .recovery { return .none }
+        return split(total: TrainingPlanEngine.forecastSessionLoad(kind), kind: kind)
+    }
+
+    // CARGA para el ratio agudo:crónico, que sí cuenta el residuo de un día
+    // normal: es el mismo número que ese modelo ha usado siempre, sólo
+    // repartido en canales. Dos funciones y no una porque son dos modelos
+    // distintos con dos preguntas distintas ("¿esto me entrena?" vs "¿cuánta
+    // carga llevo encima?"), y tenerlas separadas y nombradas es lo que evita
+    // que alguien las cruce por descuido.
+    // Por debajo de esta carga habitual semanal-equivalente un canal no
+    // tiene ratio con el que juzgar nada: es el mismo suelo, y por la misma
+    // razón, que TwinReadout.derive's minimumTrustedFitness. El agudo (τ7)
+    // reacciona muchísimo más rápido que el habitual (τ28) sube, así que
+    // contra un canal casi vacío —alguien cuyo historial real es todo fuerza
+    // y empieza a correr— el ratio se dispara a un valor que ninguna semana
+    // de descanso puede deshacer, y el gate lo dejaría en recuperación
+    // permanente. Sin evidencia no hay penalización, que es la misma
+    // honestidad que esta app ya aplica en otros sitios.
+    static let minimumTrustedHabitual = 15.0
+
+    // ÚNICA definición del ratio que gobierna los gates de carga. La usan
+    // tanto DualLoadSummary (hoy, real) como la simulación hacia delante de
+    // TrainingPlanEngine.weekAhead, para que no puedan discrepar.
+    static func governingRatio(acute: DualLoad, habitual: DualLoad) -> Double {
+        Swift.max(ratio(acute: acute.aerobic, habitual: habitual.aerobic),
+                  ratio(acute: acute.strength, habitual: habitual.strength))
+    }
+
+    static func governingChannel(acute: DualLoad, habitual: DualLoad) -> String {
+        ratio(acute: acute.aerobic, habitual: habitual.aerobic) >= ratio(acute: acute.strength, habitual: habitual.strength)
+            ? "aeróbica" : "de fuerza"
+    }
+
+    static func ratio(acute: Double, habitual: Double) -> Double {
+        habitual >= minimumTrustedHabitual ? acute / habitual : 0
+    }
+
+    static func ratioLoad(_ kind: PlannedSessionKind) -> DualLoad {
+        // El residuo de un día de descanso es movimiento diario, no fuerza.
+        split(total: TrainingPlanEngine.forecastSessionLoad(kind), kind: kind == .recovery ? .easyRun : kind)
+    }
 }
 
 // Un día de historial con los dos canales separados en el origen, en vez de
@@ -42,8 +102,29 @@ struct DualLoadSummary: Equatable {
     static let none = DualLoadSummary(acuteAerobic: 0, habitualAerobic: 0, acuteStrength: 0, habitualStrength: 0,
                                       observedDays: 0, sustainedAerobicWeeks: 0, sustainedStrengthWeeks: 0)
 
-    var aerobicRatio: Double { habitualAerobic > 0 ? acuteAerobic / habitualAerobic : 0 }
-    var strengthRatio: Double { habitualStrength > 0 ? acuteStrength / habitualStrength : 0 }
+    // El suelo de confianza va aquí, en el ratio de cada canal, y no sólo en
+    // el que gobierna el gate: así `aerobicGuidance`/`strengthGuidance` lo
+    // heredan y no hay dos reglas distintas de "cuándo un canal tiene ratio".
+    // Sin él, un canal con una pizca de historial (habitual 5, agudo 60) leía
+    // "sobrecarga probable" con evidencia de una sola semana.
+    var aerobicRatio: Double { DualLoad.ratio(acute: acuteAerobic, habitual: habitualAerobic) }
+    var strengthRatio: Double { DualLoad.ratio(acute: acuteStrength, habitual: habitualStrength) }
+
+    // El ratio que gobierna los gates de carga (exceedsPaceCeiling y la
+    // divulgación de riesgo de Agresivo): el canal que realmente pica, no la
+    // mezcla. Sumar los dos canales antes de dividir hacía dos cosas mal a la
+    // vez — un pico real de un solo canal quedaba diluido por el otro canal
+    // tranquilo, y una subida moderada simultánea en los dos se leía como un
+    // pico que ninguno de los dos tenía. Es estrictamente más sensible que el
+    // combinado, y eso es la corrección, no un efecto secundario.
+    var governingRatio: Double { Swift.max(aerobicRatio, strengthRatio) }
+
+    // Qué canal manda, para poder decirlo en el rationale en vez de hablar de
+    // "la carga" en abstracto.
+    var governingChannel: String { DualLoad.governingChannel(acute: acuteChannels, habitual: habitualChannels) }
+
+    var acuteChannels: DualLoad { DualLoad(aerobic: acuteAerobic, strength: acuteStrength) }
+    var habitualChannels: DualLoad { DualLoad(aerobic: habitualAerobic, strength: habitualStrength) }
 
     var aerobicGuidance: LoadGuidance {
         PerformanceEngine.loadGuidance(ratio: aerobicRatio, sustainedWeeks: sustainedAerobicWeeks, observedDays: observedDays)

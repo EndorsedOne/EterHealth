@@ -583,7 +583,11 @@ enum TrainingPlanEngine {
         let loadSummary = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         // A competition day is execution, not a deload session, even if the
         // preceding taper has reduced chronic volume.
-        let isDeload = loadSummary.loadGuidance == .deload && eventToday(now, profile: profile) == nil
+        // dual.guidance, no la combinada: el peor de los dos canales, que es
+        // la regla que el brief pide explícitamente. Con la mezcla, una
+        // semana sostenida de fuerza y un fondo suave se cancelaban y la
+        // descarga que la fuerza pedía no llegaba nunca.
+        let isDeload = loadSummary.dual.guidance == .deload && eventToday(now, profile: profile) == nil
         let adjustedTargets = deloadAdjustment(
             runningSessions: targetRuns, strengthSessions: targetStrength,
             qualitySessions: targetQuality, enabled: isDeload
@@ -713,9 +717,11 @@ enum TrainingPlanEngine {
         // "absorber" threshold). Agresivo is the only one that can
         // genuinely exceed 1.55 — see ProgressionPace's own comment for
         // why that's bounded at 1.80, not unbounded.
-        } else if exceedsPaceCeiling(ratio: loadSummary.loadRatio, pace: profile.effectiveProgressionPace) {
+        } else if exceedsPaceCeiling(ratio: loadSummary.dual.governingRatio, pace: profile.effectiveProgressionPace) {
             next = .recovery
-            rationale = "Con tu ritmo de progresión (\(profile.effectiveProgressionPace.rawValue.lowercased())), la carga aguda de \(loadSummary.loadRatio.formatted(.number.precision(.fractionLength(2)))) ya pide absorber antes de sumar otra sesión exigente."
+            // Dice QUÉ canal pide absorber: "la carga" en abstracto era
+            // justo lo que el ratio combinado no sabía distinguir.
+            rationale = "Con tu ritmo de progresión (\(profile.effectiveProgressionPace.rawValue.lowercased())), tu carga \(loadSummary.dual.governingChannel) aguda de \(loadSummary.dual.governingRatio.formatted(.number.precision(.fractionLength(2)))) ya pide absorber antes de sumar otra sesión exigente."
         } else if let hoursSinceLong, hoursSinceLong < 36 {
             next = .recovery
             rationale = "La tirada larga anterior terminó hace \(Int(hoursSinceLong.rounded())) h. El estímulo sigue dentro de su ventana principal de recuperación."
@@ -772,7 +778,7 @@ enum TrainingPlanEngine {
         // ratio that Óptimo/Conservador would already have stopped at
         // (1.55) — say so explicitly every time, not just in a settings
         // screen the user isn't looking at right now.
-        if let riskDisclosure = aggressiveRiskDisclosure(ratio: loadSummary.loadRatio, pace: profile.effectiveProgressionPace, kind: next) {
+        if let riskDisclosure = aggressiveRiskDisclosure(ratio: loadSummary.dual.governingRatio, pace: profile.effectiveProgressionPace, kind: next) {
             rationale = "\(riskDisclosure) \(rationale)"
         }
 
@@ -899,8 +905,11 @@ enum TrainingPlanEngine {
     // session and every simulated day after it, so there's one place this
     // mechanic lives instead of two copies drifting apart.
     private struct ForwardState {
-        var acute: Double
-        var chronic: Double
+        // PR3b: los dos canales, no la mezcla. Esto es lo que el #6 dejó
+        // explícitamente aplazado — el gate real de "hoy toca descanso"
+        // vivía en un ratio combinado que diluía un pico de un solo canal.
+        var acute: DualLoad
+        var chronic: DualLoad
         var readiness: Int
         // PR2, actually wired now (not just documented as the intent):
         // readiness below evolves through the SAME step()/TwinReadout.derive
@@ -908,14 +917,11 @@ enum TrainingPlanEngine {
         // from today's real assessment.physiology — so the plan's own
         // forward simulation and the "mañana" prediction on Hoy can no
         // longer silently disagree about how fatigue/fitness evolve.
-        // acute/chronic above deliberately stay on the old combined-channel
-        // EWMA: splitting that ratio into separate aerobic/strength
-        // channels for the pace-ceiling gate (exceedsPaceCeiling) is PR3's
-        // job (DualLoad), not redone here — this only fixes the readiness/
-        // score side of the promise, not the ratio-gate side.
         var physiology: TwinPhysiology
         let anchor: PersonalReadinessAnchor
         let calibration: TwinCalibration
+        // La misma y única definición que usa DualLoadSummary para hoy.
+        var governingRatio: Double { DualLoad.governingRatio(acute: acute, habitual: chronic) }
         var runs: Int
         var strength: Int
         var quality: Int
@@ -947,10 +953,17 @@ enum TrainingPlanEngine {
         // top of it. Not a second, competing muscle-fatigue tracker: this
         // is what keeps physiology.muscleFatigue in sync with the one real
         // source instead of silently diverging from it.
-        mutating func apply(_ kind: PlannedSessionKind, on date: Date, load: Double, muscleFatigue: [String: Double]) {
-            acute = PerformanceEngine.stepWeeklyEquivalent(acute, dayLoad: load, timeConstant: 7)
-            chronic = PerformanceEngine.stepWeeklyEquivalent(chronic, dayLoad: load, timeConstant: 28)
-            var stepped = step(physiology, session: SessionLoad.forecast(kind), recoverySignals: .none, dtDays: 1)
+        // ratioLoad, no forecast: este es el modelo del ratio agudo:crónico,
+        // que sí cuenta el residuo de un día de descanso — el mismo número
+        // que ha usado siempre, ahora repartido en canales. El estímulo que
+        // alimenta step() más abajo es el otro (forecast), y por eso son dos
+        // llamadas distintas y no una.
+        mutating func apply(_ kind: PlannedSessionKind, on date: Date, load: DualLoad, muscleFatigue: [String: Double]) {
+            acute = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(acute.aerobic, dayLoad: load.aerobic, timeConstant: 7),
+                             strength: PerformanceEngine.stepWeeklyEquivalent(acute.strength, dayLoad: load.strength, timeConstant: 7))
+            chronic = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(chronic.aerobic, dayLoad: load.aerobic, timeConstant: 28),
+                               strength: PerformanceEngine.stepWeeklyEquivalent(chronic.strength, dayLoad: load.strength, timeConstant: 28))
+            var stepped = step(physiology, session: DualLoad.forecast(kind), recoverySignals: .none, dtDays: 1)
             stepped.muscleFatigue = muscleFatigue
             physiology = stepped
             readiness = TwinReadout.derive(from: physiology, anchor: anchor, calibration: calibration).score
@@ -982,7 +995,9 @@ enum TrainingPlanEngine {
             // run would, so letting them re-arm the 24h gate is the safer
             // (more conservative) direction of error, not a looser one.
             hoursSinceQuality = [.qualityRun, .hybrid, .brick].contains(kind) ? 0 : (hoursSinceQuality ?? 240) + 24
-            recentDailyLoads.append(DailyTraining(date: date, sessions: kind == .recovery ? 0 : 1, load: load))
+            // Combinado a propósito: meaningfulTrainingDays72h juzga "¿hubo
+            // carga real este día?", una pregunta que no distingue canal.
+            recentDailyLoads.append(DailyTraining(date: date, sessions: kind == .recovery ? 0 : 1, load: load.combined))
         }
     }
 
@@ -1055,7 +1070,8 @@ enum TrainingPlanEngine {
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
         var state = ForwardState(
-            acute: loadSummary.acuteLoad, chronic: loadSummary.habitualLoad,
+            acute: DualLoad(aerobic: loadSummary.dual.acuteAerobic, strength: loadSummary.dual.acuteStrength),
+            chronic: DualLoad(aerobic: loadSummary.dual.habitualAerobic, strength: loadSummary.dual.habitualStrength),
             readiness: assessment.readout.score,
             physiology: assessment.physiology, anchor: context.personalAnchor, calibration: context.calibration,
             runs: real.completedRuns, strength: real.completedStrength, quality: real.completedQuality,
@@ -1077,7 +1093,11 @@ enum TrainingPlanEngine {
         // day+1's decision would ignore that today's real (or overridden)
         // session is actually happening, and e.g. still see the *previous*
         // long run as the most recent one instead of today's.
-        state.apply(todayKind, on: today, load: override?.load ?? forecastSessionLoad(todayKind), muscleFatigue: assessment.physiology.muscleFatigue)
+        // El override trae una carga escalar; se reparte con la misma regla
+        // por tipo de sesión que todo lo demás, no con una segunda.
+        state.apply(todayKind, on: today,
+                    load: override.map { DualLoad.split(total: $0.load, kind: todayKind) } ?? DualLoad.ratioLoad(todayKind),
+                    muscleFatigue: assessment.physiology.muscleFatigue)
         // The override's own model (fatigue/recovery for a training swap,
         // or habit-learned impact for a lifestyle choice) already computed
         // tomorrow's readiness more precisely than apply()'s generic bump
@@ -1256,7 +1276,7 @@ enum TrainingPlanEngine {
             // day's own session — if any — adds fresh load on top.
             for muscle in muscleFatigue.keys { muscleFatigue[muscle]! *= pow(0.5, 24.0 / defaultHalfLifeHours) }
             let block = activeBlock(on: date, profile: profile)
-            let ratio = state.chronic > 0 ? state.acute / state.chronic : 0
+            let ratio = state.governingRatio
             let weekday = calendar.component(.weekday, from: date)
             let lateWeek = weekday == profile.preferredLongRunWeekday || weekday == 1 || weekday == 7
             let tomorrowWeekday = calendar.component(.weekday, from: calendar.date(byAdding: .day, value: 1, to: date) ?? date)
@@ -1323,7 +1343,7 @@ enum TrainingPlanEngine {
 
             applyMuscleLoad(kind, on: date, phase: block.phase, avoidLegs: avoidLegsTomorrow)
             applyDoseProgress(kind, phase: block.phase)
-            state.apply(kind, on: date, load: forecastSessionLoad(kind), muscleFatigue: muscleFatigue)
+            state.apply(kind, on: date, load: DualLoad.ratioLoad(kind), muscleFatigue: muscleFatigue)
             // Same informed-not-hidden disclosure status() applies to
             // today — a simulated day this far ahead can equally be one
             // Agresivo's extra margin (over 1.55) is what actually let
