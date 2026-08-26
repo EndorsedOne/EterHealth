@@ -882,8 +882,8 @@ final class EngineTests: XCTestCase {
 
     func testQualitySessionRampsRepsByPhaseProgressAndNeverInventsAPaceWithoutHistory() {
         let noHistory = HealthStore()
-        let earlyBase = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0, health: noHistory, hrFloor: "")
-        let lateBase = WorkoutPlanner.intervalPrescription(phase: .base, progress: 1, health: noHistory, hrFloor: "")
+        let earlyBase = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0, health: noHistory, hrFloor: "", reviews: [])
+        let lateBase = WorkoutPlanner.intervalPrescription(phase: .base, progress: 1, health: noHistory, hrFloor: "", reviews: [])
         // With zero run history, RunningPerformanceEngine has no forecast to
         // anchor a pace on — this must fall back to the generic prescription
         // rather than inventing a number, same principle as the forecast fix
@@ -908,7 +908,7 @@ final class EngineTests: XCTestCase {
                          elevationMeters: nil, activity: "Carrera", muscleGroups: ["Piernas": 1], source: "Apple Watch")
         }
         health.recentWorkouts = health.workoutHistory
-        let build = WorkoutPlanner.intervalPrescription(phase: .buildSpecific, progress: 0.5, health: health, hrFloor: "")
+        let build = WorkoutPlanner.intervalPrescription(phase: .buildSpecific, progress: 0.5, health: health, hrFloor: "", reviews: [])
         XCTAssertTrue(build.prescription.contains("min/km"), "Should compute a real target pace once a forecast exists, not the generic fallback.")
         XCTAssertTrue(build.prescription.contains("1000 m"), "Build-specific phase should prescribe threshold-length reps, not base's short 400m ones.")
         XCTAssertTrue(build.basisNote.localizedCaseInsensitiveContains("riegel"))
@@ -943,7 +943,7 @@ final class EngineTests: XCTestCase {
         // Helgerud/Wisløff's protocol was validated against heart rate,
         // not a flat-ground pace — must never claim a pace, and must name
         // the actual 4×4 structure.
-        let prescription = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0.5, health: HealthStore(), hrFloor: " · >165 ppm", modality: .vo2Max4x4)
+        let prescription = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0.5, health: HealthStore(), hrFloor: " · >165 ppm", modality: .vo2Max4x4, reviews: [])
         XCTAssertTrue(prescription.prescription.contains("4 × 4 min"))
         XCTAssertTrue(prescription.prescription.contains("90–95%"))
         XCTAssertTrue(prescription.prescription.contains(">165 ppm"))
@@ -954,8 +954,8 @@ final class EngineTests: XCTestCase {
         // Sprints are about neuromuscular power and economy, not aerobic
         // load — this must never touch the Riegel pace forecast at all,
         // with or without run history.
-        let earlySprints = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0, health: HealthStore(), hrFloor: "", modality: .sprints)
-        let lateSprints = WorkoutPlanner.intervalPrescription(phase: .base, progress: 1, health: HealthStore(), hrFloor: "", modality: .sprints)
+        let earlySprints = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0, health: HealthStore(), hrFloor: "", modality: .sprints, reviews: [])
+        let lateSprints = WorkoutPlanner.intervalPrescription(phase: .base, progress: 1, health: HealthStore(), hrFloor: "", modality: .sprints, reviews: [])
         XCTAssertTrue(earlySprints.prescription.contains("100 m"))
         XCTAssertFalse(earlySprints.prescription.contains("min/km"), "Sprints must never invent a flat-ground pace.")
         XCTAssertTrue(earlySprints.prescription.hasPrefix("6 "))
@@ -966,8 +966,8 @@ final class EngineTests: XCTestCase {
         // A gradient invalidates any flat-ground pace claim — this must be
         // effort/time-based, never a pace number this app can't compute
         // honestly on a hill.
-        let earlyHills = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0, health: HealthStore(), hrFloor: "", modality: .hillRepeats)
-        let lateHills = WorkoutPlanner.intervalPrescription(phase: .base, progress: 1, health: HealthStore(), hrFloor: "", modality: .hillRepeats)
+        let earlyHills = WorkoutPlanner.intervalPrescription(phase: .base, progress: 0, health: HealthStore(), hrFloor: "", modality: .hillRepeats, reviews: [])
+        let lateHills = WorkoutPlanner.intervalPrescription(phase: .base, progress: 1, health: HealthStore(), hrFloor: "", modality: .hillRepeats, reviews: [])
         XCTAssertTrue(earlyHills.prescription.contains("cuesta arriba"))
         XCTAssertTrue(earlyHills.prescription.contains("45–60 s"))
         XCTAssertFalse(earlyHills.prescription.contains("min/km"), "Hill repeats must never invent a flat-ground pace.")
@@ -1532,7 +1532,7 @@ final class EngineTests: XCTestCase {
         imports.restore(workouts: [session], labs: [])
         defer { imports.deleteWorkout(id: session.id) }
 
-        let proposed = WorkoutPlanner.gym(for: "Empuje", imports: imports, light: false, muscles: muscles(legs: 80))
+        let proposed = WorkoutPlanner.gym(for: "Empuje", imports: imports, light: false, muscles: muscles(legs: 80), goals: [])
         let patterns = proposed.exercises.map { ExerciseCatalog.descriptor(for: $0.name).pattern }
 
         XCTAssertEqual(proposed.exercises.count, 5)
@@ -2586,8 +2586,8 @@ final class EngineTests: XCTestCase {
         // that weekAhead's forward simulation reads real muscle
         // involvement from these exact names for a brand-new athlete with
         // no logged history yet.
-        let pushDay = WorkoutPlanner.gym(for: "Empuje", imports: ImportStore(), light: false, muscles: [])
-        let legDay = WorkoutPlanner.gym(for: "Pierna", imports: ImportStore(), light: false, muscles: [])
+        let pushDay = WorkoutPlanner.gym(for: "Empuje", imports: ImportStore(), light: false, muscles: [], goals: [])
+        let legDay = WorkoutPlanner.gym(for: "Pierna", imports: ImportStore(), light: false, muscles: [], goals: [])
         XCTAssertTrue(pushDay.exercises.contains { MuscleMap.groups(for: $0.name).contains("Pecho") },
                       "Expected at least one fallback push exercise to resolve to Pecho, got \(pushDay.exercises.map(\.name)).")
         XCTAssertTrue(legDay.exercises.contains { MuscleMap.groups(for: $0.name).contains("Cuádriceps") },
@@ -3588,7 +3588,7 @@ final class EngineTests: XCTestCase {
                                     muscleSets: ["Pecho": 4])
         imports.restore(workouts: [recent, older], labs: [])
 
-        let workout = WorkoutPlanner.gym(for: "Empuje", imports: imports, light: false, muscles: [])
+        let workout = WorkoutPlanner.gym(for: "Empuje", imports: imports, light: false, muscles: [], goals: [])
         XCTAssertEqual(workout.exercises.first?.name, "Bench Press (Barbell)",
                        "The tracked lift must be pinned first, not displaced by a more recently trained equivalent variation.")
     }

@@ -162,7 +162,8 @@ enum WorkoutPlanner {
         }
         if assessment.recommendation.localizedCaseInsensitiveContains("calidad") {
             let modality = qualitySessionModality(phase: plan.block.phase, block: plan.block, now: now)
-            let interval = intervalPrescription(phase: plan.block.phase, progress: progress, health: health, hrFloor: floor(zones?.z3z4), modality: modality)
+            let interval = intervalPrescription(phase: plan.block.phase, progress: progress, health: health, hrFloor: floor(zones?.z3z4),
+                                                modality: modality, reviews: context.reviews)
             return ProposedWorkout(title: "Calidad de carrera", duration: "40–55 min", intent: "Estimular velocidad o umbral con volumen controlado", exercises: [
                 ProposedExercise(name: "Calentamiento", prescription: "12–15 min suave", cue: "Añade movilidad y 3 progresivos"),
                 ProposedExercise(name: "Bloque principal", prescription: interval.prescription, cue: interval.cue),
@@ -231,7 +232,8 @@ enum WorkoutPlanner {
             return hyroxWorkout(phase: plan.block.phase, progress: progress, deload: deload, muscles: assessment.muscles, profile: profile, now: now)
         }
         if bodyweightOnly { return bodyweight(for: assessment.recommendation, light: assessment.score < 62 || deload, muscles: assessment.muscles) }
-        return gym(for: assessment.recommendation, imports: imports, light: assessment.score < 62 || deload, muscles: assessment.muscles)
+        return gym(for: assessment.recommendation, imports: imports, light: assessment.score < 62 || deload, muscles: assessment.muscles,
+                   goals: profile.goals)
     }
 
     static func ramp(_ low: Double, _ high: Double, _ progress: Double) -> Double { low + (high - low) * min(1, max(0, progress)) }
@@ -398,7 +400,13 @@ enum WorkoutPlanner {
     // Internal (not private) so EngineTests can exercise the tracked-lift
     // pinning behavior directly, without needing a full status()-driven
     // .strength decision plus real gym-availability plumbing just to reach it.
-    static func gym(for recommendation: String, imports: ImportStore, light: Bool, muscles: [MuscleReadiness]) -> ProposedWorkout {
+    // goals inyectado, no GoalStore.shared: el propose() de arriba ya recibe
+    // el perfil por TwinContext, pero estos tres usos de dentro seguían
+    // leyendo el singleton global — así que un perfil inyectado (un test, o
+    // una simulación con otro perfil) elegía ejercicios según los objetivos
+    // reales de la app, no según los que se le pasaron.
+    static func gym(for recommendation: String, imports: ImportStore, light: Bool, muscles: [MuscleReadiness],
+                    goals: [TrainingGoal]) -> ProposedWorkout {
         let target: [String]
         if recommendation.localizedCaseInsensitiveContains("pierna") { target = ["Cuádriceps", "Glúteos", "Isquios"] }
         else if recommendation.localizedCaseInsensitiveContains("tirón") { target = ["Espalda", "Bíceps"] }
@@ -448,9 +456,9 @@ enum WorkoutPlanner {
         // "(barbell)" matters for bench press: bare "bench press" also
         // matches Incline/Dumbbell variations that aren't the tracked
         // flat-barbell lift a "100 kg de press banca" goal actually means.
-        if target.first == "Pecho", GoalStore.shared.profile.goals.contains(where: { $0.isActive && $0.kind == .benchPress }) {
+        if target.first == "Pecho", goals.contains(where: { $0.isActive && $0.kind == .benchPress }) {
             trackedLiftTerms = ["bench press (barbell)", "press banca"]
-        } else if target.first == "Cuádriceps", GoalStore.shared.profile.goals.contains(where: { $0.isActive && $0.kind == .squat }) {
+        } else if target.first == "Cuádriceps", goals.contains(where: { $0.isActive && $0.kind == .squat }) {
             trackedLiftTerms = ["squat (barbell)", "sentadilla"]
         } else {
             trackedLiftTerms = nil
@@ -463,7 +471,6 @@ enum WorkoutPlanner {
                 pool.insert(trackedLiftTerms[0].contains("bench press") ? "Bench Press (Barbell)" : "Squat (Barbell)", at: 0)
             }
         }
-        let goals = GoalStore.shared.profile.goals
         let exercises = Self.diversifiedTop(pool, count: 5).map { name in
             let last = imports.workouts.sorted(by: { $0.start > $1.start })
                 .lazy.flatMap(\.exercises)
@@ -587,8 +594,11 @@ enum WorkoutPlanner {
     // function used to have) — sprints/hills are opted into explicitly by
     // the caller once it knows the phase and block, via
     // `qualitySessionModality`.
+    // reviews inyectado por el mismo motivo, y con la misma forma que los
+    // raceDayProtocol de más abajo ya usan — no WorkoutReviewStore.shared.
     static func intervalPrescription(phase: TrainingPhase, progress: Double, health: HealthStore, hrFloor: String,
-                                     modality: QualitySessionModality = .flatIntervals)
+                                     modality: QualitySessionModality = .flatIntervals,
+                                     reviews: [WorkoutReview])
         -> (prescription: String, cue: String, basisNote: String) {
         switch modality {
         case .sprints: return sprintPrescription(progress: progress)
@@ -610,7 +620,7 @@ enum WorkoutPlanner {
         }
         let reps = Int(ramp(Double(template.minReps), Double(template.maxReps), progress).rounded())
 
-        let summary = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: WorkoutReviewStore.shared.reviews)
+        let summary = RunningPerformanceEngine.summarize(workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: reviews)
         // 5K forecast preferred (closest to a real interval effort); 10K only
         // as a fallback when 5K itself has no basis yet. No forecast at all
         // means no invented pace — the generic prescription stays instead.
