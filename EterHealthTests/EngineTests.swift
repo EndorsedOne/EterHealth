@@ -2070,6 +2070,131 @@ final class EngineTests: XCTestCase {
                        "A single point has no consecutive step to measure.")
     }
 
+    // MARK: - "¿Qué pasa si...?" combinable simulator
+
+    func testStandardDrinkCalculatorUsesRealNIAAAEquivalentsNotABareDrinkCount() {
+        let twoBeers = [DrinkSelection(type: .beer, count: 2)]
+        let twoMartinis = [DrinkSelection(type: .martini, count: 2)]
+        XCTAssertEqual(StandardDrinkCalculator.totalStandardDrinks(twoBeers), 2.0, accuracy: 0.001)
+        XCTAssertEqual(StandardDrinkCalculator.totalStandardDrinks(twoMartinis), 4.0, accuracy: 0.001)
+        XCTAssertGreaterThan(StandardDrinkCalculator.totalStandardDrinks(twoMartinis), StandardDrinkCalculator.totalStandardDrinks(twoBeers),
+                             "2 martinis must carry real more alcohol than 2 beers — the whole point of moving off a bare drink count.")
+        XCTAssertEqual(StandardDrinkCalculator.totalEthanolGrams(twoBeers), 28, accuracy: 0.001)
+    }
+
+    func testCaffeinePharmacokineticsResidualFractionHalvesAtOneHalfLife() {
+        XCTAssertEqual(CaffeinePharmacokinetics.residualFraction(hoursElapsed: 0), 1.0, accuracy: 0.001)
+        XCTAssertEqual(CaffeinePharmacokinetics.residualFraction(hoursElapsed: 5), 0.5, accuracy: 0.001)
+        XCTAssertEqual(CaffeinePharmacokinetics.residualFraction(hoursElapsed: 10), 0.25, accuracy: 0.001)
+        XCTAssertEqual(CaffeinePharmacokinetics.residualFraction(hoursElapsed: -1), 1.0, accuracy: 0.001,
+                       "Must never blow up or exceed the full dose for a nonsensical negative elapsed time.")
+    }
+
+    func testCaffeinePharmacokineticsHoursUntilBedtimeWrapsPastMidnightInsteadOfGoingNegative() {
+        XCTAssertEqual(CaffeinePharmacokinetics.hoursUntilBedtime(intakeHour: 17, bedtimeHour: 23), 6, accuracy: 0.001)
+        XCTAssertEqual(CaffeinePharmacokinetics.hoursUntilBedtime(intakeHour: 22, bedtimeHour: 0.5), 2.5, accuracy: 0.001,
+                       "A bedtime after midnight must wrap forward, not read as before the intake.")
+    }
+
+    func testLateBedtimeOccurrencesFlagsNightsMeaningfullyAfterPersonalMedian() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        var schedule: [NightlySleepSchedule] = []
+        for dayOffset in 1...11 {
+            let day = calendar.date(byAdding: .day, value: -dayOffset, to: today)!
+            let bedtime = calendar.date(bySettingHour: 23, minute: 0, second: 0, of: day)!
+            schedule.append(NightlySleepSchedule(night: day, bedtime: bedtime, wakeTime: bedtime.addingTimeInterval(7 * 3_600)))
+        }
+        // One night clearly later than the 23:00 personal median (01:00 — 2h later).
+        let lateDay = calendar.date(byAdding: .day, value: -12, to: today)!
+        let lateBedtime = calendar.date(bySettingHour: 1, minute: 0, second: 0, of: lateDay)!
+        schedule.append(NightlySleepSchedule(night: lateDay, bedtime: lateBedtime, wakeTime: lateBedtime.addingTimeInterval(6 * 3_600)))
+
+        let occurrences = HabitAssociationEngine.lateBedtimeOccurrences(schedule: schedule)
+        XCTAssertEqual(occurrences.count, 1)
+        XCTAssertEqual(occurrences.first?.kind, .lateBedtime)
+    }
+
+    func testLateBedtimeOccurrencesNeedsAtLeastTenRealNightsBeforeAMedianMeansAnything() {
+        let calendar = Calendar.current
+        let schedule = (0..<5).map { offset -> NightlySleepSchedule in
+            let day = calendar.date(byAdding: .day, value: -offset, to: Date())!
+            return NightlySleepSchedule(night: day, bedtime: day, wakeTime: day)
+        }
+        XCTAssertTrue(HabitAssociationEngine.lateBedtimeOccurrences(schedule: schedule).isEmpty)
+    }
+
+    func testSleepArchitectureDailyShareSeriesSkipsNightsWithoutARealStageSplit() {
+        let night1 = NightlySleepStages(night: Date(), deepHours: 1.5, remHours: 1.0, coreHours: 4.0, unspecifiedHours: 0, awakeHours: 0.2)
+        let night2 = NightlySleepStages(night: Date().addingTimeInterval(-86_400), deepHours: 0, remHours: 0, coreHours: 0, unspecifiedHours: 6.5, awakeHours: 0.1)
+        let deepSeries = SleepArchitectureEngine.dailyDeepShareSeries([night1, night2])
+        XCTAssertEqual(deepSeries.count, 1, "Night2 has no real deep/REM split — must be excluded, not averaged in as 0%.")
+        XCTAssertEqual(deepSeries.first?.value ?? -1, 1.5 / 6.5 * 100, accuracy: 0.01)
+        let remSeries = SleepArchitectureEngine.dailyRemShareSeries([night1, night2])
+        XCTAssertEqual(remSeries.count, 1)
+        XCTAssertEqual(remSeries.first?.value ?? -1, 1.0 / 6.5 * 100, accuracy: 0.01)
+    }
+
+    func testWhatIfAlcoholImpactScalesByRealStandardDrinksWithoutALearnedAssociation() {
+        let referenceDose = WhatIfSimulatorEngine.alcoholImpact(standardDrinks: 2.0, association: nil)
+        XCTAssertEqual(referenceDose.readinessImpact, -6)
+        XCTAssertFalse(referenceDose.isLearned)
+        // 8 standard drinks: ratio 8/2=4, capped at 3x -> -6*3 = -18, not a runaway extrapolation.
+        let heavyDose = WhatIfSimulatorEngine.alcoholImpact(standardDrinks: 8.0, association: nil)
+        XCTAssertEqual(heavyDose.readinessImpact, -18)
+    }
+
+    func testWhatIfAlcoholImpactUsesLearnedAssociationWhenConfidentScaledByDose() {
+        let association = HabitAssociation(
+            kind: .alcohol, samples: 8,
+            effects: [HabitMetricEffect(name: "HRV", changePercent: -10), HabitMetricEffect(name: "REM", changePercent: -8)],
+            compositeChange: -9, direction: .adverse,
+            confidence: ConfidenceAssessment(score: 80, level: .high, reason: "test"),
+            headline: "test"
+        )
+        // HabitAssociationEngine.readinessImpact(-9 composite, high confidence) = -2; doubled dose (4 standard drinks vs. the 2-drink reference) -> -4.
+        let impact = WhatIfSimulatorEngine.alcoholImpact(standardDrinks: 4.0, association: association)
+        XCTAssertTrue(impact.isLearned)
+        XCTAssertEqual(impact.readinessImpact, -4)
+    }
+
+    func testWhatIfCaffeineImpactIsSmallerTheFurtherBeforeBedtimeItsHad() {
+        let earlyMorning = WhatIfSimulatorEngine.caffeineImpact(mg: 80, hour: 8, schedule: [], association: nil)
+        let rightBeforeBed = WhatIfSimulatorEngine.caffeineImpact(mg: 80, hour: 21, schedule: [], association: nil)
+        XCTAssertGreaterThan(earlyMorning.readinessImpact, rightBeforeBed.readinessImpact,
+                             "Caffeine hours before the default bedtime must cost less than the same dose right before it.")
+    }
+
+    func testWhatIfLateBedtimeImpactScalesByExtraMinutes() {
+        let oneHour = WhatIfSimulatorEngine.lateBedtimeImpact(extraMinutes: 60, association: nil)
+        XCTAssertEqual(oneHour.readinessImpact, -4)
+        let twoHours = WhatIfSimulatorEngine.lateBedtimeImpact(extraMinutes: 120, association: nil)
+        XCTAssertEqual(twoHours.readinessImpact, -8)
+    }
+
+    func testWhatIfScenarioIsEmptyRequiresARealActiveFactor() {
+        var scenario = WhatIfScenario()
+        XCTAssertTrue(scenario.isEmpty)
+        scenario.drinks = [DrinkSelection(type: .beer, count: 1)]
+        XCTAssertFalse(scenario.isEmpty)
+
+        scenario = WhatIfScenario()
+        scenario.extraBedtimeMinutes = 30
+        XCTAssertFalse(scenario.isEmpty)
+
+        scenario = WhatIfScenario()
+        scenario.lateOrHeavyDinner = true
+        XCTAssertFalse(scenario.isEmpty)
+
+        // Caffeine needs BOTH a dose and an hour — a dangling dose with no
+        // hour selected must not silently count as an active factor.
+        scenario = WhatIfScenario()
+        scenario.caffeineMg = 80
+        XCTAssertTrue(scenario.isEmpty)
+        scenario.caffeineHour = 17
+        XCTAssertFalse(scenario.isEmpty)
+    }
+
     func testCardioMuscleLoadClampsExtremeDurationsInsteadOfDistorting() {
         // A 5-minute jog shouldn't erase fatigue accounting, and a
         // multi-hour outlier shouldn't blow the model up either.

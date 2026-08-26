@@ -169,7 +169,10 @@ enum DecisionSimulatorEngine {
         let associations = HabitAssociationEngine.analyze(
             events: LifestyleFactorStore.shared.events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory, sleep: health.sleepHistory,
-            respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory, now: now
+            respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory,
+            deepShare: SleepArchitectureEngine.dailyDeepShareSeries(health.sleepStagesHistory),
+            remShare: SleepArchitectureEngine.dailyRemShareSeries(health.sleepStagesHistory),
+            sleepSchedule: health.sleepScheduleHistory, now: now
         )
         let kind: HabitKind
         let genericImmediate: Int

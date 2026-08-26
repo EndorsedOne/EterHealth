@@ -131,6 +131,20 @@ enum SleepArchitectureEngine {
         )
     }
 
+    // Per-night deep/REM share as a daily TrendPoint series — the same
+    // per-night hasStageSplit-filtered shares `evaluate` above averages,
+    // just exposed one night at a time so HabitAssociationEngine can
+    // correlate a habit against architecture specifically (deep sleep,
+    // REM) instead of only total duration. A night with no real stage
+    // split contributes nothing, same exclusion `evaluate` already applies.
+    nonisolated static func dailyDeepShareSeries(_ nights: [NightlySleepStages]) -> [TrendPoint] {
+        nights.filter(\.hasStageSplit).map { TrendPoint(date: $0.night, value: $0.deepHours / $0.asleepHours * 100) }
+    }
+
+    nonisolated static func dailyRemShareSeries(_ nights: [NightlySleepStages]) -> [TrendPoint] {
+        nights.filter(\.hasStageSplit).map { TrendPoint(date: $0.night, value: $0.remHours / $0.asleepHours * 100) }
+    }
+
     private static func percent(_ value: Double) -> Int { Int((value * 100).rounded()) }
 
     private static func average(_ values: [Double]) -> Double {

@@ -278,6 +278,7 @@ struct ContentView: View {
                 // "¿qué pasaría si...?" primero, "así queda tu semana
                 // resultante" después — no al revés.
                 decisionSimulatorCard
+                WhatIfSimulatorCardView()
                 weekAheadCard
                 LazyVGrid(columns: columns, spacing: 12) {
                     metric("Sueño", value: String(format: "%.1f", health.snapshot.sleepHours), unit: "h", icon: "moon.fill",

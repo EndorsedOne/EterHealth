@@ -15,7 +15,10 @@ struct HabitInsightsCardView: View {
             events: lifestyle.events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory,
             sleep: health.sleepHistory,
-            respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory
+            respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory,
+            deepShare: SleepArchitectureEngine.dailyDeepShareSeries(health.sleepStagesHistory),
+            remShare: SleepArchitectureEngine.dailyRemShareSeries(health.sleepStagesHistory),
+            sleepSchedule: health.sleepScheduleHistory
         )
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {

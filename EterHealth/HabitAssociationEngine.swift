@@ -3,6 +3,12 @@ import Foundation
 enum HabitKind: String, CaseIterable, Hashable, Identifiable {
     case alcohol, lateCaffeine, sauna, cold, travel, indulgentFood, healthyFood
     case fasting, lateOrHeavyDinner, lowHydration
+    // Real, not self-reported like the others above — derived by comparing
+    // each night's actual HealthKit-recorded bedtime (HealthStore.
+    // sleepScheduleHistory) against this person's own recent median, not
+    // from a LifestyleEvent field. See WhatIfSimulatorEngine.
+    // lateBedtimeOccurrences.
+    case lateBedtime
     // Each supplement gets its own kind rather than one generic
     // "suplementos" bucket — mixing magnesium and creatine into a single
     // learned association would average away two effects that have
@@ -26,6 +32,7 @@ enum HabitKind: String, CaseIterable, Hashable, Identifiable {
         case .fasting: return "Ayuno"
         case .lateOrHeavyDinner: return "Cena tardía o copiosa"
         case .lowHydration: return "Hidratación baja"
+        case .lateBedtime: return "Acostarse tarde"
         case .magnesiumGlycinate: return SupplementKind.magnesiumGlycinate.rawValue
         case .melatonin: return SupplementKind.melatonin.rawValue
         case .ashwagandha: return SupplementKind.ashwagandha.rawValue
@@ -42,6 +49,7 @@ enum HabitKind: String, CaseIterable, Hashable, Identifiable {
         case .indulgentFood, .healthyFood, .lateOrHeavyDinner: return "fork.knife"
         case .fasting: return "clock"
         case .lowHydration: return "drop"
+        case .lateBedtime: return "moon.zzz.fill"
         case .magnesiumGlycinate, .melatonin, .ashwagandha, .lTheanine:
             return SupplementKind(rawValue: title)?.icon ?? "pills.fill"
         }
@@ -112,12 +120,22 @@ enum HabitAssociationEngine {
         events: [LifestyleEvent], alcohol: [AlcoholSample],
         hrv: [TrendPoint], restingHeartRate: [TrendPoint], sleep: [TrendPoint],
         respiratoryRate: [TrendPoint] = [], wristTemperature: [TrendPoint] = [],
+        // deepShare/remShare: daily %-of-total-sleep TrendPoints (see
+        // SleepArchitectureEngine.dailyDeepShareSeries/dailyRemShareSeries)
+        // — lets a habit's association name "sueño profundo" or "REM"
+        // specifically as the metric that moved, not just total duration.
+        // sleepSchedule powers .lateBedtime occurrences (see
+        // lateBedtimeOccurrences below) — both default empty so every
+        // existing caller keeps behaving exactly as before.
+        deepShare: [TrendPoint] = [], remShare: [TrendPoint] = [],
+        sleepSchedule: [NightlySleepSchedule] = [],
         now: Date = Date()
     ) -> [HabitAssociation] {
         analyze(
-            occurrences: occurrences(events: events, alcohol: alcohol),
+            occurrences: occurrences(events: events, alcohol: alcohol) + lateBedtimeOccurrences(schedule: sleepSchedule, now: now),
             hrv: hrv, restingHeartRate: restingHeartRate, sleep: sleep,
-            respiratoryRate: respiratoryRate, wristTemperature: wristTemperature, now: now
+            respiratoryRate: respiratoryRate, wristTemperature: wristTemperature,
+            deepShare: deepShare, remShare: remShare, now: now
         )
     }
 
@@ -136,7 +154,8 @@ enum HabitAssociationEngine {
     nonisolated static func analyze(
         occurrences: [HabitOccurrence], hrv: [TrendPoint],
         restingHeartRate: [TrendPoint], sleep: [TrendPoint],
-        respiratoryRate: [TrendPoint] = [], wristTemperature: [TrendPoint] = [], now: Date = Date()
+        respiratoryRate: [TrendPoint] = [], wristTemperature: [TrendPoint] = [],
+        deepShare: [TrendPoint] = [], remShare: [TrendPoint] = [], now: Date = Date()
     ) -> [HabitAssociation] {
         let completed = occurrences.filter { $0.date < now.addingTimeInterval(-6 * 3_600) }
         return HabitKind.allCases.compactMap { kind in
@@ -150,13 +169,18 @@ enum HabitAssociationEngine {
                 if let value = relativeOutcome(after: exposure.date, points: sleep, favorableHigh: true) { row["Sueño"] = value }
                 if let value = relativeOutcome(after: exposure.date, points: respiratoryRate, favorableHigh: false) { row["Respiración"] = value }
                 if let value = relativeOutcome(after: exposure.date, points: wristTemperature, favorableHigh: false) { row["Temperatura de muñeca"] = value }
+                // Architecture, not just duration — a habit can leave total
+                // sleep hours untouched while still cutting deep/REM share,
+                // exactly Walker's point (see SleepArchitectureEngine).
+                if let value = relativeOutcome(after: exposure.date, points: deepShare, favorableHigh: true) { row["Sueño profundo"] = value }
+                if let value = relativeOutcome(after: exposure.date, points: remShare, favorableHigh: true) { row["REM"] = value }
                 guard !row.isEmpty else { continue }
                 rows.append(row)
                 if exposure.overlapsOtherFactors { overlapCount += 1 }
             }
             guard rows.count >= 2 else { return nil }
 
-            let names = ["HRV", "Pulso", "Sueño", "Respiración", "Temperatura de muñeca"]
+            let names = ["HRV", "Pulso", "Sueño", "Respiración", "Temperatura de muñeca", "Sueño profundo", "REM"]
             let effects = names.compactMap { name -> HabitMetricEffect? in
                 let values = rows.compactMap { $0[name] }
                 guard values.count >= 2 else { return nil }
@@ -223,6 +247,38 @@ enum HabitAssociationEngine {
             result.append(HabitOccurrence(kind: .alcohol, date: sample.date, overlapsOtherFactors: false))
         }
         return result
+    }
+
+    // Real, not self-reported: a night counts as ".lateBedtime" when its
+    // actual HealthKit bedtime lands meaningfully after this person's own
+    // recent median — not a fixed clock time, since "late" means
+    // something different for a 22:00-habitual sleeper than a 00:30 one.
+    // 45 minutes past personal median is the same order of magnitude as
+    // this app's other "meaningfully different from your own habitual"
+    // dead zones, not a separately tuned number. Needs >=10 real nights
+    // before a median means anything — same floor SleepArchitectureEngine
+    // uses for its own personal-baseline comparison.
+    nonisolated static func lateBedtimeOccurrences(schedule: [NightlySleepSchedule], now: Date = Date()) -> [HabitOccurrence] {
+        guard schedule.count >= 10 else { return [] }
+        let anchoredHours = schedule.map { nightAnchoredBedtimeHour($0.bedtime) }
+        guard let medianHour = median(anchoredHours) else { return [] }
+        let lateThresholdHours = 0.75
+        return schedule.compactMap { night in
+            let hour = nightAnchoredBedtimeHour(night.bedtime)
+            guard hour - medianHour >= lateThresholdHours else { return nil }
+            return HabitOccurrence(kind: .lateBedtime, date: night.bedtime, overlapsOtherFactors: false)
+        }
+    }
+
+    // Maps a bedtime's hour-of-day onto an 18..<30 "night-anchored" scale
+    // (a 00:30 bedtime becomes 24.5, a 23:15 one stays 23.25) so the
+    // median/threshold comparison above doesn't break across midnight —
+    // a naive clock-hour average of 23:00 and 01:00 would wrongly land
+    // at noon.
+    private nonisolated static func nightAnchoredBedtimeHour(_ date: Date) -> Double {
+        let calendar = Calendar.current
+        let hour = Double(calendar.component(.hour, from: date)) + Double(calendar.component(.minute, from: date)) / 60.0
+        return hour < 12 ? hour + 24 : hour
     }
 
     private nonisolated static func uniqueDays(_ values: [HabitOccurrence]) -> [HabitOccurrence] {
