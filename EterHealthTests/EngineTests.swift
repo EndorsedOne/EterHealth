@@ -1474,6 +1474,50 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(hybrid.combined, TrainingPlanEngine.forecastSessionLoad(.hybrid), accuracy: 0.001)
     }
 
+    // PR3d. El score que ves en Hoy penalizaba con la guidance COMBINADA
+    // mientras el plan ya gateaba por canal: podía decir "todo bien" el mismo
+    // día que la recomendación decía recuperar. Historial: fuerza sostenida
+    // baja + una semana de golpe (su canal se va a sobrecarga) y carrera
+    // estable (el aeróbico tranquilo, que es lo que diluía la mezcla).
+    func testTwinScorePenalizesASingleChannelOverloadThePlanAlreadyGatesOn() {
+        let now = Date()
+        let health = HealthStore()
+        health.recentWorkouts = (0..<84).map { offset in
+            healthWorkout(activity: "Carrera", kilometers: 8, minutes: 45,
+                          date: Calendar.current.date(byAdding: .day, value: -offset, to: now)!)
+        }
+        let imports = ImportStore(persistToDisk: false)
+        let sets = (0..<10).map { _ in ImportedSet(weight: 100, reps: 5, type: "normal", rpe: 8) }
+        // 12 semanas de una sesión ligera por semana, y esta semana cuatro
+        // sesiones grandes seguidas.
+        var strengthDays: [Int] = stride(from: 7, to: 84, by: 7).map { $0 }
+        strengthDays.append(contentsOf: [0, 1, 2, 3])
+        imports.restore(workouts: strengthDays.map { offset in
+            let day = Calendar.current.date(byAdding: .day, value: -offset, to: now)!
+            let exercises = offset < 7 ? 4 : 1
+            return ImportedWorkout(
+                title: "Fuerza", start: day, end: day.addingTimeInterval(4_500),
+                exercises: (0..<exercises).map { index in
+                    ImportedExercise(name: "Squat (Barbell) \(index)", sets: 10, volume: 5_000,
+                                     totalReps: 50, averageWeight: 100, setDetails: sets)
+                }, muscleSets: [:])
+        }, labs: [])
+
+        let summary = PerformanceEngine.summarize(health: health, imports: imports, now: now)
+        XCTAssertEqual(summary.dual.strengthGuidance, .overload, "El canal de fuerza está en sobrecarga real.")
+        XCTAssertNotEqual(summary.loadGuidance, .overload,
+                          "Y la mezcla no lo ve — este es el caso que el PR arregla, no un supuesto.")
+        XCTAssertEqual(summary.dual.governingChannel, "de fuerza")
+
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: nil, context: neutralContext, now: now)
+        guard let signal = assessment.signals.first(where: { $0.name == "Carga acumulada" }) else {
+            XCTFail("El score tiene que ver la sobrecarga del canal: \(assessment.signals.map(\.name))")
+            return
+        }
+        XCTAssertEqual(signal.impact, -10, "Sobrecarga probable son -10 pt, los mismos de siempre.")
+        XCTAssertTrue(signal.value.contains("de fuerza"), "Y dice de qué canal: \(signal.value)")
+    }
+
     func testLoadGuidanceSeparatesAccumulatedDeloadFromAcuteOverload() {
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: 1.12, sustainedWeeks: 3, observedDays: 24), .deload)
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: 1.60, sustainedWeeks: 1, observedDays: 12), .overload)

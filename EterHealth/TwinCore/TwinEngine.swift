@@ -291,8 +291,14 @@ enum TwinEngine {
         }
 
         let trainingLoad = PerformanceEngine.summarize(health: health, imports: imports, now: now)
+        // PR3d: la misma guidance por canal que gatea el plan
+        // (TrainingPlanEngine.status via governingRatio), no la combinada.
+        // Con la mezcla, el score podía no penalizar una sobrecarga real de
+        // un solo canal que el plan sí frenaba: el número que ves en Hoy
+        // decía "todo bien" y la recomendación del mismo día decía recuperar.
+        let loadGuidance = trainingLoad.dual.guidance
         let loadImpact: Int
-        switch trainingLoad.loadGuidance {
+        switch loadGuidance {
         case .absorb: loadImpact = -3
         case .deload: loadImpact = -5
         case .overload: loadImpact = -10
@@ -302,9 +308,11 @@ enum TwinEngine {
             score += loadImpact
             signals.append(TwinSignal(
                 name: "Carga acumulada",
-                value: "×\(trainingLoad.loadRatio.formatted(.number.precision(.fractionLength(2))))",
+                // Dice de qué canal, porque "×1.60" a secas era justo lo que
+                // el ratio combinado no sabía atribuir.
+                value: "×\(trainingLoad.dual.governingRatio.formatted(.number.precision(.fractionLength(2)))) \(trainingLoad.dual.governingChannel)",
                 impact: loadImpact,
-                detail: trainingLoad.loadAdvice
+                detail: loadGuidance.advice
             ))
         }
 
