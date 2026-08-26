@@ -31,9 +31,16 @@ enum MuscleVolumeLandmarkTable {
     // matches MuscleRadar's own prior fallback for the same situation.
     private static let fallbackMAV = 14.0
 
-    nonisolated static func landmarks(for muscle: String) -> MuscleVolumeLandmarks {
+    // PR6: la tabla se queda como PRIOR. Cuando VolumeLandmarkLearning ha
+    // podido estimar un MRV real para este músculo, ese manda; el MEV sigue
+    // siendo 0.5 × MAV, que el brief mantiene explícitamente como prior
+    // válido. Sin aprendizaje, exactamente el mismo número que antes.
+    nonisolated static func landmarks(for muscle: String,
+                                      learned: [String: LearnedVolumeLandmark] = [:]) -> MuscleVolumeLandmarks {
         let mav = weeklyMAV[muscle] ?? fallbackMAV
-        return MuscleVolumeLandmarks(mev: (mav * 0.5).rounded(), mav: mav, mrv: (mav * 1.5).rounded())
+        let priorMRV = (mav * 1.5).rounded()
+        return MuscleVolumeLandmarks(mev: (mav * 0.5).rounded(), mav: mav,
+                                     mrv: learned[muscle]?.mrv ?? priorMRV)
     }
 
     // Same bucket names MuscleRadar's own radar axes use — its displayed
