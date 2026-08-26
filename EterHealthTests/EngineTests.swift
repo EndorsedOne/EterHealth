@@ -1391,6 +1391,89 @@ final class EngineTests: XCTestCase {
         XCTAssertGreaterThan(ratios.strength, 1.05, "Y sí tiene que mover el suyo.")
     }
 
+    // PR3b. El gate de carga mira el canal que pica, no la mezcla. Este es el
+    // caso que el ratio combinado no podía ver: un pico aeróbico real de 1.60
+    // diluido por un canal de fuerza tranquilo hasta un combinado de 0.93 —
+    // "carga productiva" mientras el fondo está en sobrecarga.
+    func testLoadGateFiresOnTheSpikingChannelNotTheDilutedMix() {
+        let spikingAerobic = DualLoadSummary(acuteAerobic: 160, habitualAerobic: 100,
+                                             acuteStrength: 120, habitualStrength: 200,
+                                             observedDays: 40, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 1)
+        let combinedRatio = (160.0 + 120) / (100 + 200)
+
+        XCTAssertEqual(spikingAerobic.aerobicRatio, 1.6, accuracy: 0.001)
+        XCTAssertEqual(combinedRatio, 0.933, accuracy: 0.001)
+        XCTAssertEqual(spikingAerobic.governingRatio, 1.6, accuracy: 0.001)
+        XCTAssertEqual(spikingAerobic.governingChannel, "aeróbica")
+        XCTAssertTrue(TrainingPlanEngine.exceedsPaceCeiling(ratio: spikingAerobic.governingRatio, pace: .optimal),
+                      "Un pico real de 1.60 en un canal tiene que frenar el plan.")
+        XCTAssertFalse(TrainingPlanEngine.exceedsPaceCeiling(ratio: combinedRatio, pace: .optimal),
+                       "Y el combinado de 0.93 es exactamente lo que lo dejaba pasar.")
+    }
+
+    // El gate de descarga (TrainingPlanEngine.status -> isDeload) también
+    // pasa a leer el peor de los dos canales. Con la mezcla, tres semanas
+    // sostenidas de fuerza y un fondo suave se cancelaban y la descarga que
+    // la fuerza pedía no llegaba nunca.
+    func testDeloadGateSeesASustainedStrengthBlockThroughAQuietAerobicChannel() {
+        let sustainedStrength = DualLoadSummary(acuteAerobic: 90, habitualAerobic: 100,   // 0.90 -> productive
+                                               acuteStrength: 112, habitualStrength: 100, // 1.12, 3 semanas -> deload
+                                               observedDays: 40, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 3)
+        XCTAssertEqual(sustainedStrength.aerobicGuidance, .productive)
+        XCTAssertEqual(sustainedStrength.strengthGuidance, .deload)
+        XCTAssertEqual(sustainedStrength.guidance, .deload, "La descarga la pide un canal; no hace falta que la pidan los dos.")
+    }
+
+    // El suelo de confianza por canal, misma razón que
+    // TwinReadout.derive's minimumTrustedFitness: el agudo (τ7) reacciona
+    // mucho antes de que el habitual (τ28) suba, así que contra un canal casi
+    // vacío el ratio se dispara a algo que ninguna semana de descanso deshace.
+    func testAChannelWithoutEnoughRealHistoryDoesNotGovernTheGate() {
+        // Historial real de fuerza, canal aeróbico casi vacío: alguien que
+        // solo levanta y empieza a correr esta semana.
+        let startingToRun = DualLoadSummary(acuteAerobic: 60, habitualAerobic: 5,
+                                            acuteStrength: 100, habitualStrength: 100,
+                                            observedDays: 40, sustainedAerobicWeeks: 0, sustainedStrengthWeeks: 2)
+
+        XCTAssertEqual(startingToRun.aerobicRatio, 0, accuracy: 0.001,
+                       "Sin base aeróbica real ese canal no tiene ratio — el crudo sería un absurdo 12.")
+        XCTAssertEqual(startingToRun.aerobicGuidance, .learning, "Y su guidance es 'sin datos', no 'sobrecarga'.")
+        XCTAssertEqual(startingToRun.governingRatio, 1, accuracy: 0.001, "Manda el canal con historial real.")
+        XCTAssertFalse(TrainingPlanEngine.exceedsPaceCeiling(ratio: startingToRun.governingRatio, pace: .optimal),
+                       "Sin base aeróbica real no hay evidencia que justifique recuperación permanente.")
+    }
+
+    // Los dos modelos de carga por sesión son distintos a propósito y sólo
+    // difieren en `recovery`. Cruzarlos por descuido es el fallo que este test
+    // existe para cazar: con `forecast` en el ratio, un día de descanso dejaba
+    // de contar el movimiento residual de un día normal; con `ratioLoad` en
+    // step(), la fatiga no bajaba nunca (la regresión que arregló el #6).
+    func testStimulusAndRatioLoadDifferOnlyOnRestDays() {
+        XCTAssertEqual(DualLoad.forecast(.recovery), .none, "Un día de descanso no entrena nada.")
+        XCTAssertEqual(DualLoad.ratioLoad(.recovery).aerobic,
+                       TrainingPlanEngine.forecastSessionLoad(.recovery), accuracy: 0.001,
+                       "Pero sí lleva el residuo de un día normal, y es movimiento, no fuerza.")
+        XCTAssertEqual(DualLoad.ratioLoad(.recovery).strength, 0)
+
+        for kind: PlannedSessionKind in [.easyRun, .qualityRun, .longRun, .strength, .hybrid, .brick, .swim, .bike, .raceDay] {
+            XCTAssertEqual(DualLoad.forecast(kind), DualLoad.ratioLoad(kind),
+                           "Fuera del descanso los dos modelos tienen que coincidir: \(kind)")
+        }
+    }
+
+    // El reparto por tipo de sesión es uno, no uno por sitio.
+    func testSessionSplitSendsEachKindToItsOwnChannel() {
+        XCTAssertEqual(DualLoad.forecast(.strength).aerobic, 0, "La fuerza no entrena el canal aeróbico.")
+        XCTAssertGreaterThan(DualLoad.forecast(.strength).strength, 0)
+        XCTAssertEqual(DualLoad.forecast(.longRun).strength, 0, "Una tirada larga no entrena el canal de fuerza.")
+        XCTAssertGreaterThan(DualLoad.forecast(.longRun).aerobic, 0)
+        // Híbrido/brick son los únicos que reparten, y suman el total.
+        let hybrid = DualLoad.forecast(.hybrid)
+        XCTAssertGreaterThan(hybrid.aerobic, 0)
+        XCTAssertGreaterThan(hybrid.strength, 0)
+        XCTAssertEqual(hybrid.combined, TrainingPlanEngine.forecastSessionLoad(.hybrid), accuracy: 0.001)
+    }
+
     func testLoadGuidanceSeparatesAccumulatedDeloadFromAcuteOverload() {
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: 1.12, sustainedWeeks: 3, observedDays: 24), .deload)
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: 1.60, sustainedWeeks: 1, observedDays: 12), .overload)

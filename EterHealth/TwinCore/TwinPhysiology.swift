@@ -73,37 +73,11 @@ struct TwinReadout: Equatable {
 // los dos canales con un historial dual EWMA completo (DualLoadSummary);
 // por ahora cada sesión real solo aporta a UNO de los dos canales según su
 // tipo (ver `forecast(_:)` abajo), no una mezcla inventada.
-struct SessionLoad: Equatable {
-    var aerobic: Double
-    var strength: Double
-    static let none = SessionLoad(aerobic: 0, strength: 0)
+// PR3b: SessionLoad y DualLoad eran la misma forma con dos nombres —
+// exactamente la clase de duplicado que el brief prohíbe. Un solo tipo, y
+// este nombre se queda porque es el que lee step() en su firma.
+typealias SessionLoad = DualLoad
 
-    // Reparto heurístico y documentado (no un DualLoadSummary real todavía)
-    // de forecastSessionLoad — un híbrido/brick aporta a ambos canales, el
-    // resto de sesiones a uno solo. Mismo número total que
-    // TrainingPlanEngine.forecastSessionLoad siempre ha usado para el
-    // ratio agudo:crónico combinado, EXCEPTO recovery: ese "8" ahí
-    // representa actividad residual de un día normal para ESE modelo
-    // distinto (ratio combinado, sigue en ForwardState.acute/chronic) —
-    // aquí, para los canales de fitness/fatiga que step() evoluciona, un
-    // día de descanso real no debe seguir "entrenando" el canal aeróbico
-    // cada vez que se simula uno: con eso, la fatiga nunca terminaba de
-    // bajar por debajo de la fitness en una semana simulada con poco
-    // historial aeróbico previo, y la disponibilidad prevista se quedaba
-    // clavada por debajo del umbral de recuperación toda la semana.
-    static func forecast(_ kind: PlannedSessionKind) -> SessionLoad {
-        if kind == .recovery { return .none }
-        let total = TrainingPlanEngine.forecastSessionLoad(kind)
-        switch kind {
-        case .strength:
-            return SessionLoad(aerobic: 0, strength: total)
-        case .hybrid, .brick:
-            return SessionLoad(aerobic: total * 0.6, strength: total * 0.4)
-        default:
-            return SessionLoad(aerobic: total, strength: 0)
-        }
-    }
-}
 
 // Lo que step() necesita para mover el estado de hoy a mañana que no está
 // ya en fitness/fatiga — los mismos tipos de señal que TwinEngine.assess ya
