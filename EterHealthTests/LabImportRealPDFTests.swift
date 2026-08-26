@@ -27,8 +27,18 @@ final class LabImportRealPDFTests: XCTestCase {
 
     private func requireSaludFolder() throws -> URL {
         let folder = saludFolder
-        guard FileManager.default.fileExists(atPath: folder.path) else {
-            throw XCTSkip("Salud folder not present on this machine — skipping real-PDF import test.")
+        // Requires actual PDFs inside, not merely that the directory exists:
+        // /tmp is purged periodically by macOS, which leaves the copy folder
+        // behind as an empty shell. A `fileExists` check on the directory
+        // alone then passed the guard and the assertions below failed with
+        // "expected at least some markers" — reported as a parser regression
+        // when nothing was wrong with the parser. No documents to read means
+        // this machine can't run the test, which is exactly what XCTSkip is
+        // for.
+        let pdfs = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?
+            .filter { $0.lowercased().hasSuffix(".pdf") } ?? []
+        guard !pdfs.isEmpty else {
+            throw XCTSkip("Salud folder has no PDFs on this machine — skipping real-PDF import test.")
         }
         return folder
     }

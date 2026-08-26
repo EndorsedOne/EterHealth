@@ -2876,7 +2876,11 @@ final class EngineTests: XCTestCase {
         // ferritin and transferrin saturation weren't part of it at all,
         // even though ImportStore already parses both.
         let date = Date()
-        let imports = ImportStore()
+        // persistToDisk: false — this asserts an exact marker count, so the
+        // machine's own persisted lab history must not add to it (it made the
+        // dimension read 7/8 instead of 4/5 here), and restore()'s save() must
+        // not write these synthetic labs back over the real store.
+        let imports = ImportStore(persistToDisk: false)
         imports.restore(workouts: [], labs: [
             labResult("Hemoglobina", 15, date: date, low: 13.0, high: 17.5),
             labResult("Hematocrito", 45, date: date, low: 40.0, high: 52.0),
