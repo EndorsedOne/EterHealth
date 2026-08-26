@@ -423,6 +423,16 @@ enum TrainingPlanEngine {
             reviews: reviews, now: now
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
+        // PR4: un solo clasificador de calidad, configurado una vez con la
+        // evidencia real de este atleta (su forecast y su suelo de Z4) y
+        // repartido a todos los sitios que preguntan. Antes cada uno
+        // reimplementaba kcal/min por su cuenta.
+        let isQualityRun = SessionClassification.qualityRunPredicate(
+            reviews: reviews,
+            thresholdPace: SessionClassification.thresholdPaceSecondsPerKm(
+                fiveK: runningSummaryForIntensity.fiveK, tenK: runningSummaryForIntensity.tenK),
+            thresholdHeartRate: health.currentHeartRateZoneBoundaries().map { Double($0.z3z4) }
+        )
         // A rolling microcycle avoids the artificial reset produced by Monday.
         let windowStart = calendar.date(byAdding: .day, value: -7, to: now) ?? now
         let importedStrength = imports.workouts.filter { $0.start >= windowStart && $0.start <= now }
@@ -467,7 +477,7 @@ enum TrainingPlanEngine {
             session.effectiveMuscleSets.contains { legMuscleNames.contains($0.key) && $0.value > 0 }
         } ?? true
         let hoursSinceLong = hoursSinceLastCompleted(matching: isLongRun, health: health, imports: imports, now: now)
-        let hoursSinceQuality = hoursSinceLastCompleted(matching: { $0.activity == "Carrera" && isQualityRun($0) }, health: health, imports: imports, now: now)
+        let hoursSinceQuality = hoursSinceLastCompleted(matching: isQualityRun, health: health, imports: imports, now: now)
         let hoursSinceLongSwim = hoursSinceLastCompleted(matching: isLongSwim, health: health, imports: imports, now: now)
         let hoursSinceLongBike = hoursSinceLastCompleted(matching: isLongBike, health: health, imports: imports, now: now)
         let daysSinceStrength = daysSinceStrength(health: health, imports: imports, now: now)
@@ -1082,6 +1092,13 @@ enum TrainingPlanEngine {
             reviews: reviews, now: now
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
+        // El mismo clasificador configurado que status(), por el mismo motivo.
+        let isQualityRun = SessionClassification.qualityRunPredicate(
+            reviews: reviews,
+            thresholdPace: SessionClassification.thresholdPaceSecondsPerKm(
+                fiveK: runningSummaryForIntensity.fiveK, tenK: runningSummaryForIntensity.tenK),
+            thresholdHeartRate: health.currentHeartRateZoneBoundaries().map { Double($0.z3z4) }
+        )
         var state = ForwardState(
             acute: DualLoad(aerobic: loadSummary.dual.acuteAerobic, strength: loadSummary.dual.acuteStrength),
             chronic: DualLoad(aerobic: loadSummary.dual.habitualAerobic, strength: loadSummary.dual.habitualStrength),
@@ -1090,7 +1107,7 @@ enum TrainingPlanEngine {
             runs: real.completedRuns, strength: real.completedStrength, quality: real.completedQuality,
             swim: real.completedSwim, bike: real.completedBike,
             hoursSinceLong: hoursSinceLastCompleted(matching: isLongRun, health: health, imports: imports, now: now),
-            hoursSinceQuality: hoursSinceLastCompleted(matching: { $0.activity == "Carrera" && isQualityRun($0) }, health: health, imports: imports, now: now),
+            hoursSinceQuality: hoursSinceLastCompleted(matching: isQualityRun, health: health, imports: imports, now: now),
             hoursSinceLongSwim: hoursSinceLastCompleted(matching: isLongSwim, health: health, imports: imports, now: now),
             hoursSinceLongBike: hoursSinceLastCompleted(matching: isLongBike, health: health, imports: imports, now: now),
             daysSinceStrength: daysSinceStrength(health: health, imports: imports, now: now),
@@ -2078,12 +2095,12 @@ enum TrainingPlanEngine {
         return average(legs.map(\.readiness)) < 58
     }
 
-    // Shared with DecisionSimulatorEngine so "Intervalos"/"Tirada larga" there
-    // classify sessions with the exact same rule the weekly plan already uses —
-    // one definition of what counts as a quality run or a long run, not two.
-    static func isQualityRun(_ workout: HealthWorkout) -> Bool {
-        workout.durationMinutes <= 50 && (workout.calories ?? 0) / max(workout.durationMinutes, 1) >= 10
-    }
+    // PR4: la definición de calidad por kcal/min vivía aquí (y una segunda
+    // copia en RunningPerformanceEngine.coverage). Ahora es
+    // SessionClassification.qualityRunPredicate, que se configura con la
+    // evidencia real del atleta y se pasa a quien pregunte. isLongRun y
+    // compañía se quedan: son geometría (distancia/duración), no intensidad
+    // inferida, así que no tienen el problema que tenía isQualityRun.
     // Not private (nor a second definition): TwinPhysiology.derive reuses
     // this exact same rule to split real history into aerobic/strength
     // channels, instead of guessing "Fuerza" activities a second time.
