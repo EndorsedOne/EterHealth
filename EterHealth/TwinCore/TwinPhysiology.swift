@@ -211,31 +211,14 @@ extension TwinPhysiology {
     // ImportStore, which are themselves main-actor-isolated.
     @MainActor static func derive(health: HealthStore, imports: ImportStore, muscleReadiness: [MuscleReadiness],
                        sleepDebtHours: Double, illness: Bool, now: Date = Date()) -> TwinPhysiology {
-        let calendar = Calendar.current
-        let start = calendar.date(byAdding: .day, value: -84, to: now) ?? now
-
-        // Mismo filtro de "real, no Hevy-espejado" que PerformanceEngine.
-        // summarize ya usa para su historial combinado — aquí se separa en
-        // dos series (aeróbico/fuerza) en vez de sumarlas, sin construir
-        // todavía el DualLoadSummary completo de PR3.
-        var aerobicByDay: [Date: Double] = [:]
-        var strengthByDay: [Date: Double] = [:]
-        for workout in imports.workouts where workout.start >= start && workout.start <= now {
-            let day = calendar.startOfDay(for: workout.start)
-            strengthByDay[day, default: 0] += Double(workout.exercises.reduce(0) { $0 + $1.sets }) * 3
-        }
-        for workout in health.recentWorkouts where workout.date >= start && workout.date <= now &&
-            !workout.source.localizedCaseInsensitiveContains("hevy") && !imports.isHealthKitMirror(workout) {
-            let day = calendar.startOfDay(for: workout.date)
-            let load = workout.durationMinutes * PerformanceEngine.cardioFactor(workout.activity)
-            if TrainingPlanEngine.isStrengthWorkout(workout) { strengthByDay[day, default: 0] += load }
-            else { aerobicByDay[day, default: 0] += load }
-        }
-        let days = (0..<84).compactMap { offset in
-            calendar.date(byAdding: .day, value: -83 + offset, to: calendar.startOfDay(for: now))
-        }
-        let aerobicLoads = days.map { aerobicByDay[$0] ?? 0 }
-        let strengthLoads = days.map { strengthByDay[$0] ?? 0 }
+        // PR3: el mismo historial dual que PerformanceEngine.summarize usa.
+        // Antes esto repetía aquí el bucle de separación aeróbico/fuerza
+        // (mismo filtro de Hevy-espejado, mismo isStrengthWorkout, mismas
+        // unidades) — dos copias de "qué cuenta como fuerza" que podían
+        // divergir sin que nada avisara.
+        let history = PerformanceEngine.dailyDualHistory(health: health, imports: imports, days: 84, now: now)
+        let aerobicLoads = history.map(\.aerobic)
+        let strengthLoads = history.map(\.strength)
 
         return TwinPhysiology(
             fitnessAerobic: PerformanceEngine.ewmaWeeklyEquivalent(loads: aerobicLoads, timeConstant: 42),

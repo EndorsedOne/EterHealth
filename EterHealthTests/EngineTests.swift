@@ -1137,7 +1137,14 @@ final class EngineTests: XCTestCase {
     private func performanceSummary(acuteLoad: Double, habitualLoad: Double, observedLoadDays: Int = 20) -> PerformanceSummary {
         PerformanceSummary(
             sessions: 5, minutes: 300, calories: 2_000, strengthSets: 20, strengthVolume: 4_000,
-            previousSessions: 5, daily: [], acuteLoad: acuteLoad, habitualLoad: habitualLoad,
+            previousSessions: 5, daily: [],
+            // PR3: la carga combinada que estos tests fijan es ahora la
+            // lectura derivada de los dos canales. Va entera al aeróbico, así
+            // el ratio combinado sale exactamente el mismo número de antes.
+            dual: DualLoadSummary(acuteAerobic: acuteLoad, habitualAerobic: habitualLoad,
+                                  acuteStrength: 0, habitualStrength: 0,
+                                  observedDays: observedLoadDays,
+                                  sustainedAerobicWeeks: 0, sustainedStrengthWeeks: 0),
             lowAerobic: 70, highAerobic: 25, anaerobic: 5,
             observedLoadDays: observedLoadDays, sustainedLoadWeeks: 0
         )
@@ -1263,6 +1270,125 @@ final class EngineTests: XCTestCase {
 
         XCTAssertEqual(acute / chronic, 1, accuracy: 0.001)
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: acute / chronic, sustainedWeeks: 2, observedDays: 30), .productive)
+    }
+
+    // PR3, criterio de aceptación del brief: un bloque de bici no puede
+    // disparar "sobrecarga" de fuerza. Con la carga única (sets * 3 sumados a
+    // durationMinutes * cardioFactor en el mismo día) no había forma de
+    // distinguirlo: el ratio subía y la sobrecarga se atribuía a todo.
+    func testThreeHourBikeBlockDoesNotTriggerStrengthOverload() {
+        let now = Date()
+        let health = HealthStore()
+        // 8 semanas de bici moderada + una semana de bloques de 3 h.
+        health.recentWorkouts = (0..<56).map { offset in
+            let day = Calendar.current.date(byAdding: .day, value: -offset, to: now)!
+            let minutes: Double = offset < 7 ? 180 : 60
+            return healthWorkout(activity: "Ciclismo", kilometers: minutes / 2, minutes: minutes, date: day)
+        }
+        let summary = PerformanceEngine.summarize(health: health, imports: ImportStore(persistToDisk: false), now: now)
+
+        XCTAssertEqual(summary.dual.strengthRatio, 0, "Sin una sola serie registrada, el canal de fuerza no tiene ratio.")
+        XCTAssertEqual(summary.dual.strengthGuidance, .learning,
+                       "Cero evidencia de fuerza debe leerse como 'sin datos', no como sobrecarga.")
+        XCTAssertGreaterThan(summary.dual.aerobicRatio, 1.2, "El pico aeróbico sí es real y debe verse en su canal.")
+        XCTAssertEqual(summary.dual.guidance, summary.dual.aerobicGuidance,
+                       "Manda el canal que pide cautela; el que no tiene datos no diluye.")
+    }
+
+    // El simétrico, el otro criterio del brief: una semana de press banca no
+    // puede disparar "sobrecarga" aeróbica.
+    func testBenchPressWeekDoesNotTriggerAerobicOverload() {
+        let now = Date()
+        let imports = ImportStore(persistToDisk: false)
+        let sets = (0..<5).map { _ in ImportedSet(weight: 100, reps: 5, type: "normal", rpe: 8) }
+        imports.restore(workouts: (0..<56).map { offset in
+            let day = Calendar.current.date(byAdding: .day, value: -offset, to: now)!
+            let count = offset < 7 ? 6 : 2
+            return ImportedWorkout(
+                title: "Empuje", start: day, end: day.addingTimeInterval(4_500),
+                exercises: (0..<count).map { index in
+                    ImportedExercise(name: "Bench Press (Barbell) \(index)", sets: 5, volume: 2_500,
+                                     totalReps: 25, averageWeight: 100, setDetails: sets)
+                }, muscleSets: [:])   // no se lee: la fuente canónica es effectiveMuscleSets
+        }, labs: [])
+        let summary = PerformanceEngine.summarize(health: HealthStore(), imports: imports, now: now)
+
+        XCTAssertEqual(summary.dual.aerobicRatio, 0, "Sin cardio registrado, el canal aeróbico no tiene ratio.")
+        XCTAssertEqual(summary.dual.aerobicGuidance, .learning)
+        XCTAssertGreaterThan(summary.dual.strengthRatio, 1.2, "El pico de fuerza sí es real y debe verse en su canal.")
+    }
+
+    // El número combinado que ya se mostraba no se mueve ni un decimal al
+    // partir el canal: el EWMA es lineal, así que la suma de los dos canales
+    // y el EWMA de la suma son idénticos. Esto es lo que permite que UI y
+    // widgets sigan igual en este PR.
+    func testCombinedLoadIsExactlyTheSumOfTheTwoChannels() {
+        let now = Date()
+        let health = HealthStore()
+        health.recentWorkouts = (0..<40).map { offset in
+            healthWorkout(activity: "Carrera", kilometers: 8, minutes: 45,
+                          date: Calendar.current.date(byAdding: .day, value: -offset, to: now)!)
+        }
+        let imports = ImportStore(persistToDisk: false)
+        let sets = (0..<4).map { _ in ImportedSet(weight: 80, reps: 8, type: "normal", rpe: 8) }
+        imports.restore(workouts: (0..<20).map { offset in
+            let day = Calendar.current.date(byAdding: .day, value: -offset * 2, to: now)!
+            return ImportedWorkout(title: "Pierna", start: day, end: day.addingTimeInterval(3_600),
+                                   exercises: [ImportedExercise(name: "Squat (Barbell)", sets: 4, volume: 2_560,
+                                                                totalReps: 32, averageWeight: 80, setDetails: sets)],
+                                   muscleSets: [:])   // no se lee: la fuente canónica es effectiveMuscleSets
+        }, labs: [])
+        let summary = PerformanceEngine.summarize(health: health, imports: imports, now: now)
+
+        let history = PerformanceEngine.dailyDualHistory(health: health, imports: imports, days: 84, now: now)
+        let combinedEWMA = PerformanceEngine.ewmaWeeklyEquivalent(loads: history.map(\.load), timeConstant: 7)
+
+        XCTAssertGreaterThan(summary.dual.acuteAerobic, 0)
+        XCTAssertGreaterThan(summary.dual.acuteStrength, 0)
+        XCTAssertEqual(summary.acuteLoad, summary.dual.acuteAerobic + summary.dual.acuteStrength, accuracy: 0.0001)
+        XCTAssertEqual(summary.acuteLoad, combinedEWMA, accuracy: 0.0001,
+                       "Partir el canal no puede cambiar el número combinado que la UI ya mostraba.")
+    }
+
+    // La regla de combinación es explícita: manda el canal más cauteloso.
+    // Promediar los dos ratios es el error que cometía el canal único — una
+    // semana dura de fuerza y un fondo suave se cancelaban y salía
+    // "productiva" con la fuerza en sobrecarga.
+    func testGuidanceTakesTheMoreCautiousChannelNeverAnAverage() {
+        let mixed = DualLoadSummary(acuteAerobic: 60, habitualAerobic: 100,   // ratio 0.60 -> low
+                                    acuteStrength: 170, habitualStrength: 100, // ratio 1.70 -> overload
+                                    observedDays: 30, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 1)
+        XCTAssertEqual(mixed.aerobicGuidance, .low)
+        XCTAssertEqual(mixed.strengthGuidance, .overload)
+        XCTAssertEqual(mixed.guidance, .overload, "El promedio de 0.60 y 1.70 sería 1.15: 'productiva' con un canal en sobrecarga.")
+    }
+
+    // El de siempre, parametrizado a los dos canales.
+    func testStableLoadProducesAcuteChronicRatioNearOneOnBothChannels() {
+        let stable = (0..<84).map { _ in DailyDualTraining(date: Date(), sessions: 1, aerobic: 30, strength: 20) }
+        let summary = DualLoadSummary(
+            acuteAerobic: PerformanceEngine.ewmaWeeklyEquivalent(loads: stable.map(\.aerobic), timeConstant: 7),
+            habitualAerobic: PerformanceEngine.ewmaWeeklyEquivalent(loads: stable.map(\.aerobic), timeConstant: 28),
+            acuteStrength: PerformanceEngine.ewmaWeeklyEquivalent(loads: stable.map(\.strength), timeConstant: 7),
+            habitualStrength: PerformanceEngine.ewmaWeeklyEquivalent(loads: stable.map(\.strength), timeConstant: 28),
+            observedDays: 84, sustainedAerobicWeeks: 2, sustainedStrengthWeeks: 2)
+
+        XCTAssertEqual(summary.aerobicRatio, 1, accuracy: 0.001)
+        XCTAssertEqual(summary.strengthRatio, 1, accuracy: 0.001)
+        XCTAssertEqual(summary.aerobicGuidance, .productive)
+        XCTAssertEqual(summary.strengthGuidance, .productive)
+        XCTAssertEqual(summary.guidance, .productive)
+    }
+
+    // Proyectar una sesión concreta también es dual: una sesión de fuerza no
+    // puede mover el ratio aeróbico, que es lo que hacía el canal único.
+    func testProjectingASessionOnlyMovesItsOwnChannel() {
+        let base = DualLoadSummary(acuteAerobic: 100, habitualAerobic: 100, acuteStrength: 100, habitualStrength: 100,
+                                   observedDays: 30, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 1)
+        let ratios = base.projectedRatios(adding: DualLoad(aerobic: 0, strength: 60))
+
+        XCTAssertEqual(ratios.aerobic, 1, accuracy: 0.0001, "Una sesión de fuerza no toca el ratio aeróbico.")
+        XCTAssertGreaterThan(ratios.strength, 1.05, "Y sí tiene que mover el suyo.")
     }
 
     func testLoadGuidanceSeparatesAccumulatedDeloadFromAcuteOverload() {

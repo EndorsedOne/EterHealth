@@ -8,13 +8,19 @@ struct PerformanceSummary {
     let strengthVolume: Double
     let previousSessions: Int
     let daily: [DailyTraining]
-    let acuteLoad: Double
-    let habitualLoad: Double
+    // PR3: los dos canales son ahora la fuente. acuteLoad/habitualLoad de
+    // abajo son la LECTURA combinada de siempre, derivada de ellos — el
+    // mismo número exacto (el EWMA es lineal), no una tercera serie que
+    // pueda separarse en silencio de los canales que deciden.
+    let dual: DualLoadSummary
     let lowAerobic: Double
     let highAerobic: Double
     let anaerobic: Double
     let observedLoadDays: Int
     let sustainedLoadWeeks: Int
+
+    var acuteLoad: Double { dual.acuteAerobic + dual.acuteStrength }
+    var habitualLoad: Double { dual.habitualAerobic + dual.habitualStrength }
 
     var sessionChange: Int { sessions - previousSessions }
     var loadRatio: Double { habitualLoad > 0 ? acuteLoad / habitualLoad : 0 }
@@ -88,7 +94,6 @@ enum PerformanceEngine {
         let calendar = Calendar.current
         let seven = calendar.date(byAdding: .day, value: -7, to: now)!
         let fourteen = calendar.date(byAdding: .day, value: -14, to: now)!
-        let eightyFour = calendar.date(byAdding: .day, value: -84, to: now)!
         let hevyCurrent = imports.workouts.filter { $0.start >= seven && $0.start <= now }
         let hevyPrevious = imports.workouts.filter { $0.start >= fourteen && $0.start < seven }
         let healthCurrent = health.recentWorkouts.filter {
@@ -104,32 +109,16 @@ enum PerformanceEngine {
         let healthMinutes = healthCurrent.reduce(0.0) { $0 + $1.durationMinutes }
         let calories = healthCurrent.compactMap(\.calories).reduce(0, +)
 
-        var dailyCounts: [Date: Int] = [:]
-        var dailyLoads: [Date: Double] = [:]
-        for workout in imports.workouts where workout.start >= eightyFour && workout.start <= now {
-            let day = calendar.startOfDay(for: workout.start)
-            dailyCounts[day, default: 0] += 1
-            dailyLoads[day, default: 0] += Double(workout.exercises.reduce(0) { $0 + $1.sets }) * 3
-        }
-        for workout in health.recentWorkouts where workout.date >= eightyFour && workout.date <= now &&
-            !workout.source.localizedCaseInsensitiveContains("hevy") && !imports.isHealthKitMirror(workout) {
-            let day = calendar.startOfDay(for: workout.date)
-            dailyCounts[day, default: 0] += 1
-            dailyLoads[day, default: 0] += workout.durationMinutes * cardioFactor(workout.activity)
-        }
-        let loadHistory = (0..<84).compactMap { offset -> DailyTraining? in
-            guard let date = calendar.date(byAdding: .day, value: -83 + offset, to: calendar.startOfDay(for: now)) else { return nil }
-            return DailyTraining(date: date, sessions: dailyCounts[date] ?? 0, load: dailyLoads[date] ?? 0)
-        }
+        // Un solo historial, ya separado en el origen — el bucle combinado
+        // que había aquí y el suyo propio de TwinPhysiology.derive eran la
+        // misma separación escrita dos veces.
+        let dualHistory = dailyDualHistory(health: health, imports: imports, days: 84, now: now)
+        let loadHistory = dualHistory.map { DailyTraining(date: $0.date, sessions: $0.sessions, load: $0.load) }
         let daily = Array(loadHistory.suffix(28))
-        let loads = loadHistory.map(\.load)
-        let observedLoadDays = loadHistory.filter { $0.sessions > 0 }.count
-        let acute = ewmaWeeklyEquivalent(loads: loads, timeConstant: 7)
-        let habitualWeekly = ewmaWeeklyEquivalent(loads: loads, timeConstant: 28)
-        let rollingWeeks = stride(from: max(0, loadHistory.count - 28), to: loadHistory.count, by: 7).map { start in
-            loadHistory[start..<min(start + 7, loadHistory.count)].reduce(0) { $0 + $1.load }
-        }
-        let sustainedWeeks = habitualWeekly > 0 ? rollingWeeks.suffix(3).filter { $0 >= habitualWeekly * 0.85 }.count : 0
+        let combinedLoads = loadHistory.map(\.load)
+        let dual = dualSummary(history: dualHistory)
+        let sustainedCombinedWeeks = sustainedWeeks(loads: combinedLoads,
+                                                    habitualWeekly: dual.habitualAerobic + dual.habitualStrength)
 
         let zone = Dictionary(uniqueKeysWithValues: health.heartRateZones.map { ($0.zone, $0.percentage) })
         let low = (zone[1] ?? 0) + (zone[2] ?? 0)
@@ -142,9 +131,9 @@ enum PerformanceEngine {
             strengthSets: sets,
             strengthVolume: volume,
             previousSessions: hevyPrevious.count + healthPrevious.count,
-            daily: daily, acuteLoad: acute, habitualLoad: habitualWeekly,
+            daily: daily, dual: dual,
             lowAerobic: low, highAerobic: high, anaerobic: anaerobic,
-            observedLoadDays: observedLoadDays, sustainedLoadWeeks: sustainedWeeks
+            observedLoadDays: dual.observedDays, sustainedLoadWeeks: sustainedCombinedWeeks
         )
     }
 
