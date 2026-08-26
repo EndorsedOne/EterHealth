@@ -79,10 +79,30 @@ final class WatchMetricsStore: NSObject, ObservableObject {
 
     // Último resumen enviado, para reenviarlo cuando el reloj aparezca.
     private var lastTwinPayload: [String: Any]?
+    /// Por qué no llegó el último envío. Visible para poder diagnosticar un
+    /// reloj en "Esperando datos" sin adivinar.
+    @Published private(set) var lastWatchSyncError: String?
 
     private func send(_ payload: [String: Any]) {
         let session = WCSession.default
-        try? session.updateApplicationContext(payload)
+        // `try?` a secas era el fallo silencioso que hizo esto difícil de
+        // encontrar: updateApplicationContext LANZA si la sesión no está
+        // activada todavía, o si el reloj no tiene la app instalada, y el
+        // error se tiraba a la basura. Cada intento deja rastro.
+        let diagnostic = "activation=\(session.activationState.rawValue) paired=\(session.isPaired) installed=\(session.isWatchAppInstalled) reachable=\(session.isReachable)"
+        guard session.activationState == .activated else {
+            lastWatchSyncError = "Sesión no activada todavía · \(diagnostic)"
+            print("[éter/watch] envío descartado: \(lastWatchSyncError ?? "")")
+            return
+        }
+        do {
+            try session.updateApplicationContext(payload)
+            lastWatchSyncError = nil
+            print("[éter/watch] contexto enviado · \(diagnostic)")
+        } catch {
+            lastWatchSyncError = "\(error.localizedDescription) · \(diagnostic)"
+            print("[éter/watch] updateApplicationContext falló: \(lastWatchSyncError ?? "")")
+        }
         if session.isReachable { session.sendMessage(payload, replyHandler: nil) }
     }
 
