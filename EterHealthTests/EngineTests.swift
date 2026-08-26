@@ -88,6 +88,68 @@ final class EngineTests: XCTestCase {
                              "A real rest day must predict a HIGHER readiness tomorrow than staying just as fatigued would.")
     }
 
+    // El vector ignoraba el HRV por completo: dos atletas con la misma carga
+    // y un HRV muy distinto predecían EL MISMO mañana. Ahora la desviación
+    // medida hoy entra en el estado.
+    func testTwoAthletesWithTheSameLoadButDifferentHRVPredictDifferentTomorrows() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        func state(hrv: Double) -> TwinPhysiology {
+            TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 40, fitnessStrength: 150, fatigueStrength: 20,
+                           muscleFatigue: [:], hrvDeviation: hrv, restingHeartRateDeviation: 0,
+                           sleepDebtHours: 0, illness: false, asOf: today)
+        }
+        let suppressed = step(state(hrv: -1.5), session: DualLoad.forecast(.longRun), recoverySignals: .none, dtDays: 1)
+        let normal = step(state(hrv: 0), session: DualLoad.forecast(.longRun), recoverySignals: .none, dtDays: 1)
+
+        let suppressedReadout = TwinReadout.derive(from: suppressed, anchor: neutralAnchor, calibration: neutralCalibration)
+        let normalReadout = TwinReadout.derive(from: normal, anchor: neutralAnchor, calibration: neutralCalibration)
+        XCTAssertLessThan(suppressedReadout.score, normalReadout.score,
+                          "Un HRV hundido dice que arrastras más fatiga de la que la carga explica.")
+    }
+
+    // Y el HRV de MAÑANA sigue sin inventarse: la medición de hoy se arrastra
+    // decayendo hacia la base, no como constante. Asumir que la supresión de
+    // hoy dura para siempre sería afirmar un dato que nadie ha medido.
+    func testMeasuredHRVDecaysTowardBaselineInsteadOfBeingAssumedConstant() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        var state = TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 40, fitnessStrength: 150, fatigueStrength: 20,
+                                   muscleFatigue: [:], hrvDeviation: -2.0, restingHeartRateDeviation: 1.0,
+                                   sleepDebtHours: 0, illness: false, asOf: today)
+        let initial = state.hrvDeviation
+        for _ in 0..<4 { state = step(state, session: .none, recoverySignals: .none, dtDays: 1) }
+
+        XCTAssertGreaterThan(state.hrvDeviation, initial, "Se acerca a la base...")
+        XCTAssertLessThan(state.hrvDeviation, 0, "...sin cruzarla ni volverse favorable por sí sola.")
+        XCTAssertLessThan(state.restingHeartRateDeviation, 1.0, "El pulso en reposo, igual.")
+
+        // Una medición nueva manda sobre lo arrastrado, en los dos sentidos.
+        let measured = step(state, session: .none,
+                            recoverySignals: RecoverySignals(hrvDeviation: 0.8, restingHeartRateDeviation: nil,
+                                                             sleepDeficitHours: nil, checkIn: nil, physiologicalAlert: nil),
+                            dtDays: 1)
+        XCTAssertEqual(measured.hrvDeviation, 0.8, "Un dato medido no se mezcla con el que venía decayendo.")
+    }
+
+    // La escala es la de assess(), no una nueva: deviation × 7 con los mismos
+    // topes (-15...12 en HRV, -15...10 en pulso). Un HRV hundido tiene que
+    // costar en el mañana previsto lo mismo que cuesta en la puntuación de hoy.
+    func testAutonomicTermReusesAssessOwnScaleAndCaps() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        func readout(hrv: Double) -> Int {
+            TwinReadout.derive(from: TwinPhysiology(fitnessAerobic: 0, fatigueAerobic: 0, fitnessStrength: 0,
+                                                    fatigueStrength: 0, muscleFatigue: [:], hrvDeviation: hrv,
+                                                    restingHeartRateDeviation: 0, sleepDebtHours: 0,
+                                                    illness: false, asOf: today),
+                               anchor: neutralAnchor, calibration: neutralCalibration).score
+        }
+        // Sin carga ni fatiga, el único término activo es el autonómico.
+        XCTAssertEqual(readout(hrv: -1), neutralAnchor.score - 7, "deviation × 7, la misma escala de assess().")
+        XCTAssertEqual(readout(hrv: 1), neutralAnchor.score + 7)
+        // Y acotado: una desviación extrema no puede hundir la predicción.
+        XCTAssertEqual(readout(hrv: -10), neutralAnchor.score - 15, "Tope inferior -15, el de assess().")
+        XCTAssertEqual(readout(hrv: 10), neutralAnchor.score + 12, "Tope superior +12, el de assess().")
+    }
+
     func testStepIsPureAndDeterministic() {
         let state = TwinPhysiology(fitnessAerobic: 100, fatigueAerobic: 50, fitnessStrength: 80, fatigueStrength: 30,
                                    muscleFatigue: ["Pecho": 20], sleepDebtHours: 1, illness: false, asOf: Date(timeIntervalSince1970: 1_700_000_000))

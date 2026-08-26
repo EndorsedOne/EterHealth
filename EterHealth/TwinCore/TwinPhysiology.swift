@@ -44,13 +44,31 @@ struct TwinPhysiology: Equatable {
     // step() sólo decae este valor para proyectar hacia delante cuando no
     // hay historial real de ejercicios (p.ej. la predicción de mañana).
     var muscleFatigue: [String: Double]
+    // Desviación autonómica MEDIDA hoy, con el mismo signo favorable que usa
+    // PersonalMetricBaseline: positivo = mejor que tu línea base. 0 significa
+    // "en tu base, o sin medición", nunca "malo".
+    //
+    // Por qué está en el estado y no sólo en la lectura: un HRV hundido hoy
+    // dice que arrastras más fatiga de la que la carga explica, y eso es
+    // información sobre el estado actual. Sigue siendo cierto que el HRV de
+    // MAÑANA no se puede conocer (ver TwinEngine, donde predictedTomorrow pasa
+    // RecoverySignals.none a propósito) — y por eso step() no lo asume
+    // constante: lo decae hacia la base, igual que hace con sleepDebtHours.
+    // Proyectar una medición que decae no es inventar un dato; asumir que la
+    // supresión de hoy dura para siempre sí lo sería.
+    // Con valor por defecto (mismo patrón que HealthWorkout.maxHeartRate): 0
+    // es "en tu base, o sin medición", así que los sitios que no tienen
+    // opinión sobre el HRV no tienen que fingir una.
+    var hrvDeviation: Double = 0
+    var restingHeartRateDeviation: Double = 0
     var sleepDebtHours: Double
     var illness: Bool
     var asOf: Date
 
     static func baseline(asOf: Date) -> TwinPhysiology {
         TwinPhysiology(fitnessAerobic: 0, fatigueAerobic: 0, fitnessStrength: 0, fatigueStrength: 0,
-                       muscleFatigue: [:], sleepDebtHours: 0, illness: false, asOf: asOf)
+                       muscleFatigue: [:], hrvDeviation: 0, restingHeartRateDeviation: 0,
+                       sleepDebtHours: 0, illness: false, asOf: asOf)
     }
 }
 
@@ -148,6 +166,14 @@ func step(_ state: TwinPhysiology, session: SessionLoad?, recoverySignals: Recov
     let decay = pow(0.5, dtDays / defaultHalfLifeDays)
     let muscleFatigue = state.muscleFatigue.mapValues { max(0, $0 * decay) }
 
+    // Misma regla que el sueño de abajo: una medición nueva manda, y sin ella
+    // la desviación de hoy decae hacia la base con la misma vida media por
+    // defecto que la fatiga muscular. Una supresión autonómica se resuelve en
+    // horas o días, no se queda fija; y proyectarla como constante sería
+    // afirmar un HRV futuro que nadie ha medido.
+    let hrvDeviation = recoverySignals.hrvDeviation ?? state.hrvDeviation * decay
+    let restingHeartRateDeviation = recoverySignals.restingHeartRateDeviation ?? state.restingHeartRateDeviation * decay
+
     let sleepDebtHours: Double
     if let deficit = recoverySignals.sleepDeficitHours {
         sleepDebtHours = max(0, deficit)
@@ -170,7 +196,9 @@ func step(_ state: TwinPhysiology, session: SessionLoad?, recoverySignals: Recov
     return TwinPhysiology(
         fitnessAerobic: fitnessAerobic, fatigueAerobic: fatigueAerobic,
         fitnessStrength: fitnessStrength, fatigueStrength: fatigueStrength,
-        muscleFatigue: muscleFatigue, sleepDebtHours: sleepDebtHours, illness: illness,
+        muscleFatigue: muscleFatigue, hrvDeviation: hrvDeviation,
+        restingHeartRateDeviation: restingHeartRateDeviation,
+        sleepDebtHours: sleepDebtHours, illness: illness,
         asOf: state.asOf.addingTimeInterval(dtDays * 86_400)
     )
 }
@@ -184,6 +212,7 @@ extension TwinPhysiology {
     // @MainActor (not nonisolated like step() above): reads HealthStore/
     // ImportStore, which are themselves main-actor-isolated.
     @MainActor static func derive(health: HealthStore, imports: ImportStore, muscleReadiness: [MuscleReadiness],
+                       hrvDeviation: Double = 0, restingHeartRateDeviation: Double = 0,
                        sleepDebtHours: Double, illness: Bool, now: Date = Date()) -> TwinPhysiology {
         // PR3: el mismo historial dual que PerformanceEngine.summarize usa.
         // Antes esto repetía aquí el bucle de separación aeróbico/fuerza
@@ -200,6 +229,7 @@ extension TwinPhysiology {
             fitnessStrength: PerformanceEngine.ewmaWeeklyEquivalent(loads: strengthLoads, timeConstant: 28),
             fatigueStrength: PerformanceEngine.ewmaWeeklyEquivalent(loads: strengthLoads, timeConstant: 5),
             muscleFatigue: Dictionary(uniqueKeysWithValues: muscleReadiness.map { ($0.name, Double(100 - $0.readiness)) }),
+            hrvDeviation: hrvDeviation, restingHeartRateDeviation: restingHeartRateDeviation,
             sleepDebtHours: sleepDebtHours, illness: illness, asOf: now
         )
     }
@@ -261,6 +291,14 @@ extension TwinReadout {
         let muscleValues = Array(physiology.muscleFatigue.values)
         let averageMuscleFatigue = muscleValues.isEmpty ? 0 : muscleValues.reduce(0, +) / Double(muscleValues.count)
         score -= averageMuscleFatigue * 0.12
+        // Misma escala y mismos topes que TwinEngine.assess aplica al HRV y al
+        // pulso en reposo (deviation × 7, acotado a -15...12 y -15...10): un
+        // HRV hundido tiene que costar en el mañana previsto lo mismo que
+        // cuesta en la puntuación de hoy. No es doble conteo: la puntuación
+        // real de hoy no pasa por aquí (sale de las señales en vivo dentro de
+        // assess), y esta lectura sólo se usa para predecir.
+        score += min(12, max(-15, physiology.hrvDeviation * 7))
+        score += min(10, max(-15, physiology.restingHeartRateDeviation * 7))
         score -= min(12, physiology.sleepDebtHours * 3)
         score += Double(calibration.scoreAdjustment)
         let finalScore = min(100, max(0, Int(score.rounded())))

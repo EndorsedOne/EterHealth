@@ -346,7 +346,12 @@ enum TwinEngine {
         let sleepDebtHours = (personal.sleep.current).flatMap { current in
             personal.sleep.expected.map { expected in max(0, expected - current) }
         } ?? 0
+        // Las desviaciones de HOY, medidas, entran en el estado: son la misma
+        // PersonalBaselineProfile que las señales de arriba ya usan, así que no
+        // hay una segunda pasada sobre HRV/pulso que pueda discrepar.
         let physiology = TwinPhysiology.derive(health: health, imports: imports, muscleReadiness: muscleReadiness,
+                                               hrvDeviation: personal.hrv.deviation ?? 0,
+                                               restingHeartRateDeviation: personal.restingHeartRate.deviation ?? 0,
                                                sleepDebtHours: sleepDebtHours, illness: checkIn?.illness ?? false, now: now)
         let readout = TwinReadout(score: score, state: state, confidence: personal.confidence)
         // No hay forma honesta de conocer hoy el HRV/sueño/check-in reales
@@ -354,6 +359,13 @@ enum TwinEngine {
         // información nueva", no "todo normal". El único dato real que
         // step() sí tiene es la sesión que el plan propone para hoy, la
         // misma que folded into el propio weekAhead.
+        //
+        // Eso sigue siendo cierto y por eso se pasa .none. Lo que SÍ llega a
+        // mañana es la desviación autonómica medida hoy, que ya viaja dentro
+        // de `physiology` y que step() decae hacia la base: no se asume un HRV
+        // futuro, se arrastra el de hoy perdiendo peso. Antes esa medición no
+        // entraba en el vector en absoluto, así que dos atletas con la misma
+        // carga y un HRV muy distinto predecían el mismo mañana.
         let tomorrowPhysiology = step(physiology, session: SessionLoad.forecast(plan.nextSession), recoverySignals: .none, dtDays: 1)
         let predictedTomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: anchor, calibration: calibration)
 
