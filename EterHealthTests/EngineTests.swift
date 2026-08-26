@@ -206,8 +206,8 @@ final class EngineTests: XCTestCase {
 
     func testMultiDayProjectionRecoversWhileAcuteLoadDecays() {
         let trajectory = DecisionSimulatorEngine.projectTrajectory(
-            tomorrowReadiness: 48, projectedAcuteLoad: 150,
-            projectedChronicLoad: 100, days: 4
+            tomorrowReadiness: 48, projectedAcuteLoad: aerobicOnly(150),
+            projectedChronicLoad: aerobicOnly(100), days: 4
         )
 
         XCTAssertEqual(trajectory.count, 4)
@@ -2191,13 +2191,49 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(value, 280, accuracy: 1)
     }
 
+    // PR3c. Lo que este PR arregla: al pasar el gate del plan a canales
+    // (PR3b) el simulador se quedó proyectando con el ratio combinado, así
+    // que podía decir "esto no te pasa factura" mientras status() manda a
+    // recuperar. Escenario: base aeróbica grande y base de fuerza pequeña —
+    // una sesión de fuerza dispara SU canal y el combinado ni se entera.
+    func testSimulatorProjectsTheSameGoverningRatioThePlanGatesOn() {
+        let base = DualLoadSummary(acuteAerobic: 180, habitualAerobic: 200,
+                                   acuteStrength: 20, habitualStrength: 20,
+                                   observedDays: 40, sustainedAerobicWeeks: 2, sustainedStrengthWeeks: 1)
+        let strengthSession = DualLoad(aerobic: 0, strength: 60)
+
+        let governing = base.projectedGoverningRatio(adding: strengthSession)
+        let projectedAcute = base.projectedAcute(adding: strengthSession)
+        let projectedHabitual = base.projectedHabitual(adding: strengthSession)
+        let combined = projectedAcute.combined / projectedHabitual.combined
+
+        XCTAssertGreaterThan(governing, 1.55, "El canal de fuerza se va por encima del techo...")
+        XCTAssertLessThan(combined, 1.30, "...y el combinado se queda en 1.09, sin enterarse.")
+        XCTAssertTrue(TrainingPlanEngine.exceedsPaceCeiling(ratio: governing, pace: .optimal))
+        XCTAssertFalse(TrainingPlanEngine.exceedsPaceCeiling(ratio: combined, pace: .optimal),
+                       "Esta es exactamente la discrepancia entre simulador y plan que el PR cierra.")
+    }
+
+    // Y la trayectoria de varios días lo hereda: un pico de un solo canal
+    // tiene que leerse "Recuperar", no "Reevaluar sesión prevista".
+    func testTrajectoryGuidanceSeesASingleChannelSpike() {
+        let spiked = DecisionSimulatorEngine.projectTrajectory(
+            tomorrowReadiness: 70,
+            projectedAcuteLoad: DualLoad(aerobic: 180, strength: 76),
+            projectedChronicLoad: DualLoad(aerobic: 200, strength: 35), days: 1)
+
+        XCTAssertEqual(spiked.first?.guidance, "Recuperar")
+        XCTAssertGreaterThan(spiked.first?.loadRatio ?? 0, 1.55,
+                             "El ratio que reporta la trayectoria es el que gobierna, no la mezcla.")
+    }
+
     func testProjectTrajectoryUsesFutureLoadsInsteadOfAssumingRest() {
         let rested = DecisionSimulatorEngine.projectTrajectory(
-            tomorrowReadiness: 80, projectedAcuteLoad: 150, projectedChronicLoad: 140, days: 3
+            tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3
         )
         let trained = DecisionSimulatorEngine.projectTrajectory(
-            tomorrowReadiness: 80, projectedAcuteLoad: 150, projectedChronicLoad: 140, days: 3,
-            futureLoads: [60, 60]
+            tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3,
+            futureLoads: [aerobicOnly(60), aerobicOnly(60)]
         )
         // Assuming real training on days 2-3 instead of silent rest must
         // read as more fatigue, not less — both lower readiness and a
@@ -2208,7 +2244,8 @@ final class EngineTests: XCTestCase {
         // to the original rest-only projection — no regression for
         // existing callers.
         let explicitRest = DecisionSimulatorEngine.projectTrajectory(
-            tomorrowReadiness: 80, projectedAcuteLoad: 150, projectedChronicLoad: 140, days: 3, futureLoads: [0, 0]
+            tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3,
+            futureLoads: [.none, .none]
         )
         XCTAssertEqual(explicitRest.map(\.readiness), rested.map(\.readiness))
     }
@@ -4451,6 +4488,12 @@ final class EngineTests: XCTestCase {
     private func testDate(_ year: Int, _ month: Int, _ day: Int) -> Date {
         Calendar.current.date(from: DateComponents(year: year, month: month, day: day))!
     }
+
+    // PR3c: estos tests fijan comportamiento combinado (la readiness se
+    // recupera, el agudo decae), así que la carga va entera a un canal — con
+    // el habitual por encima del suelo de confianza, el ratio que gobierna es
+    // exactamente el mismo número que el combinado de antes.
+    private func aerobicOnly(_ load: Double) -> DualLoad { DualLoad(aerobic: load, strength: 0) }
 
     private func labResult(_ name: String, _ value: Double, date: Date, unit: String = "", low: Double? = nil, high: Double? = nil) -> LabResult {
         LabResult(date: date, name: name, value: value, unit: unit, low: low, high: high, previous: nil)

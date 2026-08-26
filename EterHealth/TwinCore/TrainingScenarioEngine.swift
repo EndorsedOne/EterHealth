@@ -80,9 +80,18 @@ enum TrainingScenarioEngine {
     }
 
     nonisolated static func scenario(name: String, growth: Double, isCurrentPace: Bool = false, baseline: PerformanceSummary, weeks: Int, now: Date) -> TrainingScenario {
-        var acute = baseline.acuteLoad
-        var habitual = baseline.habitualLoad
+        // PR3c: los dos canales. La rampa sigue siendo un objetivo semanal
+        // agregado — este motor no sabe cómo repartirá el atleta la semana —
+        // así que crece manteniendo la MEZCLA aeróbico/fuerza que ya tiene.
+        // Con un reparto proporcional los números apenas se mueven respecto
+        // al combinado, y eso es lo honesto: una rampa proporcional no crea
+        // interferencia entre canales. Lo que se gana es que ya no hay una
+        // segunda definición del ratio, y que el suelo de confianza por canal
+        // aplica también aquí.
+        var acute = baseline.dual.acuteChannels
+        var habitual = baseline.dual.habitualChannels
         var weeklyTargetLoad = baseline.habitualLoad
+        let aerobicShare = baseline.habitualLoad > 0 ? baseline.dual.habitualAerobic / baseline.habitualLoad : 1
         var points: [ScenarioWeekPoint] = []
         let calendar = Calendar.current
         for weekIndex in 0..<max(1, weeks) {
@@ -91,7 +100,7 @@ enum TrainingScenarioEngine {
             // scenario that ramped every single week with no relief would
             // model a straight line to overtraining, not a real block.
             let isDeloadWeek = weekIndex > 0 && weekIndex % 4 == 0
-            let priorRatio = habitual > 0 ? acute / habitual : 0
+            let priorRatio = DualLoad.governingRatio(acute: acute, habitual: habitual)
             // Even "Agresivo" holds flat, never compounds further, once
             // its own trajectory has already reached overload — the point
             // of comparing scenarios is to show WHEN each one hits that
@@ -101,12 +110,15 @@ enum TrainingScenarioEngine {
             } else if priorRatio < 1.55 {
                 weeklyTargetLoad *= (1 + growth)
             }
-            let dayLoad = weeklyTargetLoad / 7
+            let dayLoad = DualLoad(aerobic: weeklyTargetLoad / 7 * aerobicShare,
+                                   strength: weeklyTargetLoad / 7 * (1 - aerobicShare))
             for _ in 0..<7 {
-                acute = PerformanceEngine.stepWeeklyEquivalent(acute, dayLoad: dayLoad, timeConstant: 7)
-                habitual = PerformanceEngine.stepWeeklyEquivalent(habitual, dayLoad: dayLoad, timeConstant: 28)
+                acute = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(acute.aerobic, dayLoad: dayLoad.aerobic, timeConstant: 7),
+                                 strength: PerformanceEngine.stepWeeklyEquivalent(acute.strength, dayLoad: dayLoad.strength, timeConstant: 7))
+                habitual = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(habitual.aerobic, dayLoad: dayLoad.aerobic, timeConstant: 28),
+                                    strength: PerformanceEngine.stepWeeklyEquivalent(habitual.strength, dayLoad: dayLoad.strength, timeConstant: 28))
             }
-            let ratio = habitual > 0 ? acute / habitual : 0
+            let ratio = DualLoad.governingRatio(acute: acute, habitual: habitual)
             let guidance = PerformanceEngine.loadGuidance(ratio: ratio, sustainedWeeks: weekIndex, observedDays: minimumObservedDays + weekIndex * 7)
             let date = calendar.date(byAdding: .weekOfYear, value: weekIndex + 1, to: now) ?? now
             points.append(ScenarioWeekPoint(weekIndex: weekIndex, date: date, weeklyLoad: weeklyTargetLoad, loadRatio: ratio, guidance: guidance, isDeloadWeek: isDeloadWeek))
@@ -114,7 +126,7 @@ enum TrainingScenarioEngine {
         let weeksAtRisk = points.filter { $0.guidance == .overload || $0.guidance == .absorb }.count
         let peak = points.map(\.loadRatio).max() ?? 0
         let final = points.last?.loadRatio ?? 0
-        let habitualChangePercent = baseline.habitualLoad > 0 ? ((habitual / baseline.habitualLoad) - 1) * 100 : 0
+        let habitualChangePercent = baseline.habitualLoad > 0 ? ((habitual.combined / baseline.habitualLoad) - 1) * 100 : 0
         let paceRange = paceChangeBand(habitualLoadChangePercent: habitualChangePercent)
         let firstRisk = points.first { $0.guidance == .overload }
         let summary: String
