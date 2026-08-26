@@ -33,17 +33,17 @@ struct MuscleReadiness: Identifiable {
 
 @MainActor
 enum TwinEngine {
+    // TwinCore: every value below that used to be read from a singleton
+    // instance inside this function (LifestyleFactorStore, WorkoutReviewStore,
+    // InjuryStore, TwinStateStore's calibration/personalAnchor, GoalStore's
+    // profile) is now a required argument instead — the caller (outside
+    // TwinCore) reads the real store and passes the value in. No defaults
+    // on any of them: a call site that forgets one should fail to compile,
+    // not silently fall back to a store this function can no longer see.
     static func assess(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil,
-                       factors: LifestyleFactorStore? = nil, reviews: WorkoutReviewStore? = nil,
-                       injuries: InjuryStore? = nil,
-                       calibration suppliedCalibration: TwinCalibration? = nil,
-                       personalAnchor suppliedAnchor: PersonalReadinessAnchor? = nil,
-                       now: Date = Date()) -> TwinAssessment {
-        let factors = factors ?? .shared
-        let reviews = reviews ?? .shared
-        let injuries = injuries ?? .shared
-        let calibration = suppliedCalibration ?? TwinStateStore.shared.calibration
-        let anchor = suppliedAnchor ?? TwinStateStore.shared.personalAnchor(now: now)
+                       events: [LifestyleEvent], reviews: [WorkoutReview], activeInjuries: [InjuryRecord],
+                       calibration: TwinCalibration, personalAnchor anchor: PersonalReadinessAnchor,
+                       profile: AthletePlanProfile, now: Date = Date()) -> TwinAssessment {
         var score = anchor.score
         var signals: [TwinSignal] = []
         let personal = PersonalBaselineEngine.profile(health: health, imports: imports, now: now)
@@ -53,7 +53,7 @@ enum TwinEngine {
         // recuperación" alert can never coexist with a demanding proposal.
         let physiologicalAlert = PhysiologicalAlertEngine.evaluate(profile: personal, checkIn: checkIn, now: now)
         let habitAssociations = Dictionary(uniqueKeysWithValues: HabitAssociationEngine.analyze(
-            events: factors.events, alcohol: health.alcoholHistory,
+            events: events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory,
             sleep: health.sleepHistory,
             respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory, now: now
@@ -129,7 +129,7 @@ enum TwinEngine {
             signals.append(TwinSignal(name: "Check-in", value: "\(checkIn.energy)/5 energía", impact: subjectiveImpact, detail: status))
         }
 
-        for event in factors.events where event.date <= now && now.timeIntervalSince(event.date) <= 7 * 86_400 {
+        for event in events where event.date <= now && now.timeIntervalSince(event.date) <= 7 * 86_400 {
             let ageHours = now.timeIntervalSince(event.date) / 3600
             if event.alcoholDrinks > 0 && ageHours <= 36 {
                 let learned = learnedHabit(.alcohol)
@@ -252,7 +252,7 @@ enum TwinEngine {
             }
         }
 
-        if let review = reviews.reviews.first(where: { $0.workoutDate <= now && now.timeIntervalSince($0.workoutDate) <= 36 * 3600 }) {
+        if let review = reviews.first(where: { $0.workoutDate <= now && now.timeIntervalSince($0.workoutDate) <= 36 * 3600 }) {
             var impact = review.effort >= 9 ? -6 : review.effort >= 7 ? -3 : 0
             if review.outcome == .worse { impact -= 3 }
             if review.pain { impact -= 8 }
@@ -261,7 +261,7 @@ enum TwinEngine {
             signals.append(TwinSignal(name: "Post-entreno", value: "RPE \(review.effort)/10", impact: impact, detail: detail))
         }
 
-        for injury in injuries.active {
+        for injury in activeInjuries {
             let impact = -min(12, injury.severity * 2)
             score += impact
             signals.append(TwinSignal(name: "Restricción activa", value: injury.area, impact: impact,
@@ -312,11 +312,11 @@ enum TwinEngine {
         }
         score = clamp(score, 0, 100)
 
-        let physicalRecommendation = recommendation(score: score, muscles: muscleReadiness, urgentPattern: urgentLiftPattern(imports: imports, now: now))
+        let physicalRecommendation = recommendation(score: score, muscles: muscleReadiness, urgentPattern: urgentLiftPattern(imports: imports, profile: profile, now: now))
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: score, muscles: muscleReadiness, checkIn: checkIn,
-                                             physiologicalAlert: physiologicalAlert, now: now)
+                                             profile: profile, reviews: reviews, physiologicalAlert: physiologicalAlert, now: now)
         let plannedRecommendation = plan.nextSession == .strength ? physicalRecommendation : plan.nextSession.rawValue
-        let recommendation = safeRecommendation(plannedRecommendation, injuries: injuries.active)
+        let recommendation = safeRecommendation(plannedRecommendation, injuries: activeInjuries)
         let state = score >= 80 ? "Preparado" : score >= 62 ? "Disponible" : score >= 45 ? "Carga moderada" : "Recuperación prioritaria"
         let explanation = explanation(score: score, signals: signals, muscles: muscleReadiness) + " " + plan.rationale
         return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert)
@@ -413,8 +413,8 @@ enum TwinEngine {
     // within a strength day already decided elsewhere; never invents a
     // strength day that wasn't otherwise warranted.
     // Internal (not private) for the same test-seam reason as recommendation above.
-    static func urgentLiftPattern(imports: ImportStore, now: Date) -> String? {
-        let goals = GoalStore.shared.profile.goals.filter(\.isActive)
+    static func urgentLiftPattern(imports: ImportStore, profile: AthletePlanProfile, now: Date) -> String? {
+        let goals = profile.goals.filter(\.isActive)
         var candidates: [(pattern: String, daysSince: Double)] = []
         if goals.contains(where: { $0.kind == .benchPress }) {
             // "(barbell)" matters: bare "bench press" also matches Incline/

@@ -133,8 +133,6 @@ struct GoalTrainingFocus {
 
 @MainActor
 enum TrainingPlanEngine {
-    static var blocks: [TrainingBlock] { blocks(for: GoalStore.shared.profile) }
-
     // The exact goal blocks(for:) periodizes around — same selection (primary
     // events preferred, earliest first). Anything that needs to know the
     // goal's own kind/distance (WorkoutPlanner scaling long-run volume by
@@ -220,8 +218,8 @@ enum TrainingPlanEngine {
     // balancedDecision's own trackedLiftDaysSince parameter. nil when no
     // such goal is active, so this never invents urgency for a lift
     // nobody is tracking.
-    static func trackedLiftDaysSince(imports: ImportStore, now: Date) -> Double? {
-        let goals = GoalStore.shared.profile.goals.filter(\.isActive)
+    static func trackedLiftDaysSince(imports: ImportStore, profile: AthletePlanProfile, now: Date) -> Double? {
+        let goals = profile.goals.filter(\.isActive)
         var values: [Double] = []
         if goals.contains(where: { $0.kind == .benchPress }) {
             // "(barbell)" matters: bare "bench press" also matches Incline/
@@ -393,10 +391,14 @@ enum TrainingPlanEngine {
                               targetLongSessionMinutes: longSession, isPersonalizedProgression: isPersonalized)
     }
 
+    // TwinCore: profile/reviews used to be read straight from the GoalStore/
+    // WorkoutReviewStore singleton instances throughout this function — both required
+    // params now, no default, same reasoning as TwinEngine.assess.
     static func status(health: HealthStore, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness], checkIn: DailyCheckIn?,
+                       profile: AthletePlanProfile, reviews: [WorkoutReview],
                        physiologicalAlert: PhysiologicalAlert? = nil, now: Date = Date()) -> WeeklyPlanStatus {
         let calendar = Calendar.current
-        let block = activeBlock(on: now)
+        let block = activeBlock(on: now, profile: profile)
         // Same pattern WorkoutPlanner already uses to read real recent
         // intensity distribution without threading it through every
         // caller's parameter list. Without real zone data, hardPercentage
@@ -405,7 +407,7 @@ enum TrainingPlanEngine {
         // never reach the gate as if it were a measured value.
         let runningSummaryForIntensity = RunningPerformanceEngine.summarize(
             workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-            reviews: WorkoutReviewStore.shared.reviews, now: now
+            reviews: reviews, now: now
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
         // A rolling microcycle avoids the artificial reset produced by Monday.
@@ -421,7 +423,7 @@ enum TrainingPlanEngine {
         let completedSwim = healthWorkouts.filter { $0.activity == "Natación" }.count
         let completedBike = healthWorkouts.filter { $0.activity == "Ciclismo" }.count
         let day = calendar.component(.weekday, from: now)
-        let preferredLongRunDay = GoalStore.shared.profile.preferredLongRunWeekday
+        let preferredLongRunDay = profile.preferredLongRunWeekday
         let lateWeek = day == preferredLongRunDay || day == 1 || day == 7
         let sessionsToday = healthWorkouts.filter { calendar.isDate($0.date, inSameDayAs: now) && $0.date.addingTimeInterval($0.durationMinutes * 60) <= now }
         // "Already trained today" used to mean *any* completed session at
@@ -458,10 +460,10 @@ enum TrainingPlanEngine {
         let daysSinceStrength = daysSinceStrength(health: health, imports: imports, now: now)
         let daysSinceSwim = daysSince("Natación", health: health, imports: imports, now: now)
         let daysSinceBike = daysSince("Ciclismo", health: health, imports: imports, now: now)
-        let trackedLiftDaysSince = trackedLiftDaysSince(imports: imports, now: now)
+        let trackedLiftDaysSince = trackedLiftDaysSince(imports: imports, profile: profile, now: now)
 
-        let availableSessions = GoalStore.shared.profile.trainingDaysPerWeek
-        let goalFocus = goalFocus(for: GoalStore.shared.profile, on: now)
+        let availableSessions = profile.trainingDaysPerWeek
+        let goalFocus = goalFocus(for: profile, on: now)
         // Session allocation follows the user's complete goal portfolio. Hybrid
         // demand is partly fulfilled by both running and strength, leaving room
         // for a genuinely combined session when it becomes specific. Triathlon
@@ -502,7 +504,7 @@ enum TrainingPlanEngine {
         // outperforms 1x/week for continued 1RM gains at matched volume —
         // the floor once that same lift is actually being progressed
         // (Principal/Secundario), not just held.
-        var trackedLiftMinimumSessions = GoalStore.shared.profile.goals
+        var trackedLiftMinimumSessions = profile.goals
             .filter { $0.isActive && ($0.kind == .benchPress || $0.kind == .squat || $0.kind == .deadlift) }
             .reduce(0) { $0 + ($1.priority == .maintenance ? 1 : 2) }
         // Hypertrophy isn't a tracked lift (no single number to protect),
@@ -513,7 +515,7 @@ enum TrainingPlanEngine {
         // full-body split already covers hypertrophy volume in the same
         // sessions that maintain/progress bench and squat, unlike two
         // distinct lifts which genuinely need their own separate attention.
-        if GoalStore.shared.profile.goals.contains(where: { $0.isActive && $0.kind == .hypertrophy }) {
+        if profile.goals.contains(where: { $0.isActive && $0.kind == .hypertrophy }) {
             trackedLiftMinimumSessions = max(trackedLiftMinimumSessions, 2)
         }
         // Running has the exact same kind of floor problem, just less
@@ -528,7 +530,7 @@ enum TrainingPlanEngine {
         // easy volume (unlike two independent lifts), so this doesn't
         // scale with how many are active — one active running-type goal
         // already needs the same 3, not 3 more per extra goal.
-        let hasRunningGoal = GoalStore.shared.profile.goals.contains {
+        let hasRunningGoal = profile.goals.contains {
             $0.isActive && [.marathon, .halfMarathon, .fiveK, .tenK, .hyrox].contains($0.kind)
         }
         let runningMinimumSessions = hasRunningGoal ? min(availableSessions, 3) : 0
@@ -568,7 +570,7 @@ enum TrainingPlanEngine {
         let loadSummary = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         // A competition day is execution, not a deload session, even if the
         // preceding taper has reduced chronic volume.
-        let isDeload = loadSummary.loadGuidance == .deload && eventToday(now) == nil
+        let isDeload = loadSummary.loadGuidance == .deload && eventToday(now, profile: profile) == nil
         let adjustedTargets = deloadAdjustment(
             runningSessions: targetRuns, strengthSessions: targetStrength,
             qualitySessions: targetQuality, enabled: isDeload
@@ -649,7 +651,7 @@ enum TrainingPlanEngine {
         // the same hard-override tier as illness/very-low readiness.
         if checkIn?.illness == true || readiness < 42 || physiologicalAlert?.severity == .recover {
             next = .recovery; rationale = "Tus señales actuales tienen prioridad sobre el calendario."
-        } else if let event = eventToday(now) {
+        } else if let event = eventToday(now, profile: profile) {
             // Not a training kind of any sport — a real event today needs
             // a race-day execution protocol (pacing, nutrition, transition,
             // stop criteria), never a workout to perform. WorkoutPlanner
@@ -695,9 +697,9 @@ enum TrainingPlanEngine {
         // "absorber" threshold). Agresivo is the only one that can
         // genuinely exceed 1.55 — see ProgressionPace's own comment for
         // why that's bounded at 1.80, not unbounded.
-        } else if exceedsPaceCeiling(ratio: loadSummary.loadRatio, pace: GoalStore.shared.profile.effectiveProgressionPace) {
+        } else if exceedsPaceCeiling(ratio: loadSummary.loadRatio, pace: profile.effectiveProgressionPace) {
             next = .recovery
-            rationale = "Con tu ritmo de progresión (\(GoalStore.shared.profile.effectiveProgressionPace.rawValue.lowercased())), la carga aguda de \(loadSummary.loadRatio.formatted(.number.precision(.fractionLength(2)))) ya pide absorber antes de sumar otra sesión exigente."
+            rationale = "Con tu ritmo de progresión (\(profile.effectiveProgressionPace.rawValue.lowercased())), la carga aguda de \(loadSummary.loadRatio.formatted(.number.precision(.fractionLength(2)))) ya pide absorber antes de sumar otra sesión exigente."
         } else if let hoursSinceLong, hoursSinceLong < 36 {
             next = .recovery
             rationale = "La tirada larga anterior terminó hace \(Int(hoursSinceLong.rounded())) h. El estímulo sigue dentro de su ventana principal de recuperación."
@@ -754,11 +756,11 @@ enum TrainingPlanEngine {
         // ratio that Óptimo/Conservador would already have stopped at
         // (1.55) — say so explicitly every time, not just in a settings
         // screen the user isn't looking at right now.
-        if let riskDisclosure = aggressiveRiskDisclosure(ratio: loadSummary.loadRatio, pace: GoalStore.shared.profile.effectiveProgressionPace, kind: next) {
+        if let riskDisclosure = aggressiveRiskDisclosure(ratio: loadSummary.loadRatio, pace: profile.effectiveProgressionPace, kind: next) {
             rationale = "\(riskDisclosure) \(rationale)"
         }
 
-        let event = nextEvent(after: now)
+        let event = nextEvent(after: now, profile: profile)
         let recommendation = prescription(
             for: next, block: block, readiness: readiness, muscles: muscles,
             volumeFactor: adjustedTargets.volumeFactor, avoidLegsTomorrow: avoidLegsTomorrow
@@ -941,13 +943,22 @@ enum TrainingPlanEngine {
     // session from today's real count would eventually roll out of a live
     // 7-day window — so by day 6 this can slightly overstate how "covered"
     // the week already is, never understate it.
+    // TwinCore: same required-injection reasoning as status()/assess()
+    // above — every value here used to come from a singleton instance
+    // read somewhere inside this function's own call chain (directly, or
+    // via the TwinEngine.assess/status calls it makes internally).
     static func weekAhead(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
+                          profile: AthletePlanProfile, reviews: [WorkoutReview], events: [LifestyleEvent],
+                          activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
                           now: Date = Date(), days: Int = 7, override: DecisionOverride? = nil) -> [DayForecast] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
+                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
+                                           calibration: calibration, personalAnchor: personalAnchor, profile: profile, now: now)
         let real = status(health: health, imports: imports, readiness: assessment.score, muscles: assessment.muscles,
-                          checkIn: checkIn, physiologicalAlert: assessment.physiologicalAlert, now: now)
+                          checkIn: checkIn, profile: profile, reviews: reviews,
+                          physiologicalAlert: assessment.physiologicalAlert, now: now)
         let todayKind = override?.kind ?? real.nextSession
         let todayRationale = override?.todayRationale ?? real.rationale
         var results = [DayForecast(date: today, kind: todayKind, isDeload: override == nil && real.isDeload, rationale: todayRationale,
@@ -960,7 +971,7 @@ enum TrainingPlanEngine {
         // to weekly targets and muscle readiness above.
         let runningSummaryForIntensity = RunningPerformanceEngine.summarize(
             workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-            reviews: WorkoutReviewStore.shared.reviews, now: now
+            reviews: reviews, now: now
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
         var state = ForwardState(
@@ -975,7 +986,7 @@ enum TrainingPlanEngine {
             daysSinceStrength: daysSinceStrength(health: health, imports: imports, now: now),
             daysSinceSwim: daysSince("Natación", health: health, imports: imports, now: now),
             daysSinceBike: daysSince("Ciclismo", health: health, imports: imports, now: now),
-            trackedLiftDaysSince: trackedLiftDaysSince(imports: imports, now: now),
+            trackedLiftDaysSince: trackedLiftDaysSince(imports: imports, profile: profile, now: now),
             // Seeded from the real 72h/28-day load history so the "3
             // meaningful days in 72h" rule still sees real training that
             // happened just before today, not a history reset to empty.
@@ -993,7 +1004,7 @@ enum TrainingPlanEngine {
         // never show two different answers for the same hypothetical.
         if let override { state.readiness = override.tomorrowReadiness }
 
-        let goalFocus = goalFocus(for: GoalStore.shared.profile, on: now)
+        let goalFocus = goalFocus(for: profile, on: now)
         // balancedDecision's per-muscle readiness gates (quality/long run/
         // hybrid/bike/brick all require effectiveLegReadiness >= 55-65)
         // exist to catch REAL fatigue from something the run-spacing rules
@@ -1053,7 +1064,7 @@ enum TrainingPlanEngine {
         func applyStrengthLoad(avoidLegs: Bool = false) {
             let muscles = simulatedMuscles()
             let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegs)
-            let goals = GoalStore.shared.profile.goals
+            let goals = profile.goals
             let proposed = WorkoutPlanner.gym(for: pattern, imports: imports, light: false, muscles: muscles)
             for exercise in proposed.exercises {
                 let context = StrengthPrescriptionEngine.goalContext(for: exercise.name, goals: goals)
@@ -1107,8 +1118,8 @@ enum TrainingPlanEngine {
             let intensityFactor = Self.realIntensityFactor(
                 matches: realMatches, restingHRHistory: health.restingHeartRateHistory.suffix(14).map(\.value),
                 restingHRSnapshot: Double(health.snapshot.restingHeartRate),
-                configuredMaxHR: GoalStore.shared.profile.maximumHeartRate.map(Double.init),
-                birthDate: GoalStore.shared.profile.birthDate, manualBoundaries: GoalStore.shared.profile.manualHeartRateZones
+                configuredMaxHR: profile.maximumHeartRate.map(Double.init),
+                birthDate: profile.birthDate, manualBoundaries: profile.manualHeartRateZones
             )
             for (muscle, sets) in Self.cardioMuscleLoad(for: kind, durationMinutes: durationMinutes, elevationMeters: elevationMeters,
                                                         elevationDescendedMeters: elevationDescendedMeters, intensityFactor: intensityFactor) {
@@ -1119,9 +1130,9 @@ enum TrainingPlanEngine {
         // needs to load the muscle model before day+1 decays it — otherwise
         // a real strength session logged/proposed for today would vanish
         // from tomorrow's simulated fatigue entirely.
-        let todayBlock = activeBlock(on: today)
+        let todayBlock = activeBlock(on: today, profile: profile)
         let tomorrowWeekdayFromToday = calendar.component(.weekday, from: calendar.date(byAdding: .day, value: 1, to: today) ?? today)
-        let tomorrowLateWeekFromToday = tomorrowWeekdayFromToday == GoalStore.shared.profile.preferredLongRunWeekday || tomorrowWeekdayFromToday == 1 || tomorrowWeekdayFromToday == 7
+        let tomorrowLateWeekFromToday = tomorrowWeekdayFromToday == profile.preferredLongRunWeekday || tomorrowWeekdayFromToday == 1 || tomorrowWeekdayFromToday == 7
         let avoidLegsAfterToday = legSensitiveRunLikelyTomorrow(
             hoursSinceQuality: state.hoursSinceQuality, hoursSinceLong: state.hoursSinceLong,
             tomorrowIsLateWeek: tomorrowLateWeekFromToday, qualityDeficit: max(0, real.targetQuality - state.quality),
@@ -1156,12 +1167,12 @@ enum TrainingPlanEngine {
             // simulated (or today's real) session left behind, before this
             // day's own session — if any — adds fresh load on top.
             for muscle in muscleFatigue.keys { muscleFatigue[muscle]! *= pow(0.5, 24.0 / defaultHalfLifeHours) }
-            let block = activeBlock(on: date)
+            let block = activeBlock(on: date, profile: profile)
             let ratio = state.chronic > 0 ? state.acute / state.chronic : 0
             let weekday = calendar.component(.weekday, from: date)
-            let lateWeek = weekday == GoalStore.shared.profile.preferredLongRunWeekday || weekday == 1 || weekday == 7
+            let lateWeek = weekday == profile.preferredLongRunWeekday || weekday == 1 || weekday == 7
             let tomorrowWeekday = calendar.component(.weekday, from: calendar.date(byAdding: .day, value: 1, to: date) ?? date)
-            let tomorrowLateWeek = tomorrowWeekday == GoalStore.shared.profile.preferredLongRunWeekday || tomorrowWeekday == 1 || tomorrowWeekday == 7
+            let tomorrowLateWeek = tomorrowWeekday == profile.preferredLongRunWeekday || tomorrowWeekday == 1 || tomorrowWeekday == 7
             let avoidLegsTomorrow = legSensitiveRunLikelyTomorrow(
                 hoursSinceQuality: state.hoursSinceQuality, hoursSinceLong: state.hoursSinceLong,
                 tomorrowIsLateWeek: tomorrowLateWeek, qualityDeficit: max(0, real.targetQuality - state.quality),
@@ -1170,7 +1181,7 @@ enum TrainingPlanEngine {
 
             let kind: PlannedSessionKind
             let rationale: String
-            if let event = eventToday(date) {
+            if let event = eventToday(date, profile: profile) {
                 kind = .raceDay
                 rationale = "Día de \(event.title): el objetivo es ejecutar, no añadir otro entrenamiento."
             } else if state.readiness < 58 {
@@ -1181,9 +1192,9 @@ enum TrainingPlanEngine {
             // old unconditional "ratio >= 1.55" check: Óptimo's ceiling IS
             // 1.55, so this reproduces the exact old behavior by default;
             // only Agresivo can genuinely go further.
-            } else if exceedsPaceCeiling(ratio: ratio, pace: GoalStore.shared.profile.effectiveProgressionPace) {
+            } else if exceedsPaceCeiling(ratio: ratio, pace: profile.effectiveProgressionPace) {
                 kind = .recovery
-                rationale = "Con tu ritmo de progresión (\(GoalStore.shared.profile.effectiveProgressionPace.rawValue.lowercased())), la carga acumulada prevista ya pide absorber antes de sumar otra sesión exigente."
+                rationale = "Con tu ritmo de progresión (\(profile.effectiveProgressionPace.rawValue.lowercased())), la carga acumulada prevista ya pide absorber antes de sumar otra sesión exigente."
             } else if let hoursSinceLong = state.hoursSinceLong, hoursSinceLong < 36 {
                 kind = .recovery
                 rationale = "Sigue dentro de la ventana de recuperación de la tirada larga prevista."
@@ -1230,7 +1241,7 @@ enum TrainingPlanEngine {
             // Agresivo's extra margin (over 1.55) is what actually let
             // through.
             let finalRationale: String
-            if let riskDisclosure = aggressiveRiskDisclosure(ratio: ratio, pace: GoalStore.shared.profile.effectiveProgressionPace, kind: kind) {
+            if let riskDisclosure = aggressiveRiskDisclosure(ratio: ratio, pace: profile.effectiveProgressionPace, kind: kind) {
                 finalRationale = "\(riskDisclosure) \(rationale)"
             } else {
                 finalRationale = rationale
@@ -1271,10 +1282,11 @@ enum TrainingPlanEngine {
         return daily.filter { $0.date >= cutoff && $0.date <= now && $0.load >= threshold }.count
     }
 
-    static func activeBlock(on date: Date) -> TrainingBlock {
+    static func activeBlock(on date: Date, profile: AthletePlanProfile) -> TrainingBlock {
+        let blocks = blocks(for: profile)
         if let exact = blocks.first(where: { date >= $0.start && date < Calendar.current.date(byAdding: .day, value: 1, to: $0.end)! }) { return exact }
         if date < blocks[0].start { return blocks[0] }
-        return generalBlock(on: date, profile: GoalStore.shared.profile)
+        return generalBlock(on: date, profile: profile)
     }
 
     private static func generalBlock(on date: Date, profile: AthletePlanProfile) -> TrainingBlock {
@@ -1913,10 +1925,10 @@ enum TrainingPlanEngine {
     // Not private: WorkoutPlanner needs the actual TrainingGoal (kind,
     // resolvedTriathlonDistance, courseDetails, hyroxDivision) to build a
     // race-day protocol, not just the PlannedSessionKind that resulted from it.
-    static func eventToday(_ date: Date) -> TrainingGoal? {
-        GoalStore.shared.activeGoals.first { goal in goal.date.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false }
+    static func eventToday(_ date: Date, profile: AthletePlanProfile) -> TrainingGoal? {
+        profile.activeGoals.first { goal in goal.date.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false }
     }
-    private static func nextEvent(after date: Date) -> (name: String, date: Date)? {
-        GoalStore.shared.nextEvent(after: date).flatMap { goal in goal.date.map { (goal.title, $0) } }
+    private static func nextEvent(after date: Date, profile: AthletePlanProfile) -> (name: String, date: Date)? {
+        profile.nextEvent(after: date).flatMap { goal in goal.date.map { (goal.title, $0) } }
     }
 }

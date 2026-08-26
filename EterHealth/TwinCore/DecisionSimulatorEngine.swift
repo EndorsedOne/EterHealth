@@ -72,12 +72,24 @@ struct DecisionProjectionDay: Identifiable {
 
 @MainActor
 enum DecisionSimulatorEngine {
-    static func simulate(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?, now: Date = Date()) -> DecisionSimulation {
+    // TwinCore: profile/events/reviews/activeInjuries/calibration/
+    // personalAnchor used to come from GoalStore/LifestyleFactorStore/
+    // WorkoutReviewStore/InjuryStore/TwinStateStore singleton instances,
+    // needed here both directly (TwinEngine.assess below) and via
+    // forwardPlanLoads' own call into TrainingPlanEngine.weekAhead.
+    static func simulate(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
+                        profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
+                        activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
+                        now: Date = Date()) -> DecisionSimulation {
         if decision.isLifestyle {
-            return simulateLifestyle(decision, health: health, imports: imports, checkIn: checkIn, now: now)
+            return simulateLifestyle(decision, health: health, imports: imports, checkIn: checkIn,
+                                     profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
+                                     calibration: calibration, personalAnchor: personalAnchor, now: now)
         }
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
+                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
+                                           calibration: calibration, personalAnchor: personalAnchor, profile: profile, now: now)
         let added: Double
         let fatigue: Int
         let recovery: Int
@@ -142,7 +154,9 @@ enum DecisionSimulatorEngine {
         let trajectory = projectTrajectory(
             tomorrowReadiness: tomorrow, projectedAcuteLoad: projectedLoad,
             projectedChronicLoad: projectedChronic, days: 4,
-            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, now: now, count: 3)
+            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn,
+                                          profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
+                                          calibration: calibration, personalAnchor: personalAnchor, now: now, count: 3)
         )
         let explanation = basis.map { basis in
             basis.isPersonal
@@ -163,11 +177,16 @@ enum DecisionSimulatorEngine {
     // same generic same-day modifiers TwinEngine already applies for these —
     // so "what if I do this tonight" and "what actually happened after I did
     // this" are one consistent model, not two disconnected guesses.
-    private static func simulateLifestyle(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?, now: Date = Date()) -> DecisionSimulation {
+    private static func simulateLifestyle(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
+                                          profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
+                                          activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
+                                          now: Date = Date()) -> DecisionSimulation {
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
+                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
+                                           calibration: calibration, personalAnchor: personalAnchor, profile: profile, now: now)
         let associations = HabitAssociationEngine.analyze(
-            events: LifestyleFactorStore.shared.events, alcohol: health.alcoholHistory,
+            events: events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory, sleep: health.sleepHistory,
             respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory,
             deepShare: SleepArchitectureEngine.dailyDeepShareSeries(health.sleepStagesHistory),
@@ -208,7 +227,9 @@ enum DecisionSimulatorEngine {
         let confidence = association?.confidence.level ?? ConfidenceEngine.level(score: 0)
         let trajectory = projectTrajectory(
             tomorrowReadiness: tomorrow, projectedAcuteLoad: performance.acuteLoad, projectedChronicLoad: performance.habitualLoad, days: 4,
-            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn, now: now, count: 3)
+            futureLoads: forwardPlanLoads(health: health, imports: imports, checkIn: checkIn,
+                                          profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
+                                          calibration: calibration, personalAnchor: personalAnchor, now: now, count: 3)
         )
         let explanation = "Parte de tu disponibilidad actual (\(assessment.score)/100)" +
             (genericImmediate != 0 ? " y aplica la misma cautela inmediata que el gemelo ya usaría (\(genericImmediate) pt)" : "") +
@@ -272,8 +293,13 @@ enum DecisionSimulatorEngine {
     // simplification: what changes with the decision is the acute/chronic
     // starting point (already reflected above), not what gets recommended
     // several days out.
-    private static func forwardPlanLoads(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?, now: Date, count: Int) -> [Double] {
-        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIn, now: now, days: min(7, count + 2))
+    private static func forwardPlanLoads(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
+                                         profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
+                                         activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
+                                         now: Date, count: Int) -> [Double] {
+        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIn,
+                                                profile: profile, reviews: reviews, events: events, activeInjuries: activeInjuries,
+                                                calibration: calibration, personalAnchor: personalAnchor, now: now, days: min(7, count + 2))
         guard week.count > 2 else { return [] }
         return week.dropFirst(2).prefix(count).map { TrainingPlanEngine.forecastSessionLoad($0.kind) }
     }

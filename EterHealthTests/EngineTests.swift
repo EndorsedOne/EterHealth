@@ -3,6 +3,21 @@ import XCTest
 
 @MainActor
 final class EngineTests: XCTestCase {
+    // TwinCore PR1: assess/status/weekAhead/balance no longer read the
+    // GoalStore/LifestyleFactorStore/WorkoutReviewStore/InjuryStore/
+    // TwinStateStore singleton instances internally — tests supply
+    // neutral, deterministic defaults for these below instead of
+    // depending on whatever real state happens to be persisted on this
+    // machine (the actual mechanism behind this suite's own pre-existing,
+    // hard-to-reproduce flakiness before this refactor). A test that
+    // needs specific goal-portfolio behavior still constructs its own
+    // AthletePlanProfile value and passes it directly — same intent as
+    // the old GoalStore.shared.save(...) pattern, just an explicit
+    // argument now instead of a hidden global read.
+    private let neutralProfile = AthletePlanProfile.angelDefault
+    private let neutralCalibration = TwinCalibration.none
+    private let neutralAnchor = PersonalReadinessAnchor.provisional
+
     func testPersonalAnchorNeedsSevenMorningsBeforeLearning() {
         let anchor = PersonalReadinessAnchor.derive(scores: [52, 55, 54, 53, 56, 10])
         XCTAssertEqual(anchor.score, 70)
@@ -273,7 +288,13 @@ final class EngineTests: XCTestCase {
         LifestyleFactorStore.shared.save(event)
         defer { LifestyleFactorStore.shared.delete(event) }
 
-        let assessment = TwinEngine.assess(health: HealthStore(), imports: ImportStore(), checkIn: nil, now: now)
+        // TwinCore PR1: assess no longer reads LifestyleFactorStore.shared
+        // internally — the saved event above is passed explicitly instead,
+        // same real data, just an explicit argument now.
+        let assessment = TwinEngine.assess(health: HealthStore(), imports: ImportStore(), checkIn: nil,
+                                           events: LifestyleFactorStore.shared.events, reviews: [], activeInjuries: [],
+                                           calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                           profile: neutralProfile, now: now)
         XCTAssertTrue(assessment.signals.contains { $0.name == "Cafeína" },
                       "Caffeine with no explicit caffeineDate override must still be counted, falling back to the event's own date instead of being silently skipped.")
     }
@@ -1716,6 +1737,11 @@ final class EngineTests: XCTestCase {
     }
 
     func testPhysiologicalAlertHardOverridesTheProposedSession() {
+        // Pre-existing flake, unrelated to TwinCore's injection: HealthStore()/
+        // ImportStore() below read real, disk-persisted data (not proper test
+        // doubles), so this test's outcome depends on this machine's actual
+        // saved history. Confirmed to fail identically on main before PR1 —
+        // not something this refactor introduced or is meant to fix.
         let recoverAlert = PhysiologicalAlert(
             severity: .recover, title: "Prioriza recuperación",
             summary: "HRV y pulso en reposo se apartan a la vez de tu rango personal reciente.",
@@ -1727,8 +1753,10 @@ final class EngineTests: XCTestCase {
         // Same call, same inputs, only the alert differs — proves the override
         // actually changes the outcome rather than the empty fixture already
         // landing on .recovery for unrelated reasons.
-        let withoutAlert = TrainingPlanEngine.status(health: health, imports: imports, readiness: 85, muscles: [], checkIn: nil)
-        let withAlert = TrainingPlanEngine.status(health: health, imports: imports, readiness: 85, muscles: [], checkIn: nil, physiologicalAlert: recoverAlert)
+        let withoutAlert = TrainingPlanEngine.status(health: health, imports: imports, readiness: 85, muscles: [], checkIn: nil,
+                                                      profile: neutralProfile, reviews: [])
+        let withAlert = TrainingPlanEngine.status(health: health, imports: imports, readiness: 85, muscles: [], checkIn: nil,
+                                                   profile: neutralProfile, reviews: [], physiologicalAlert: recoverAlert)
 
         XCTAssertNotEqual(withoutAlert.nextSession, .recovery, "High readiness with no alert should not already be recovery, or this test proves nothing.")
         XCTAssertEqual(withAlert.nextSession, .recovery, "A 'recover' severity alert must hard-override the proposal exactly like illness/very-low readiness does — this is the fix for the gap where the alert card and the actual plan could disagree.")
@@ -1797,7 +1825,9 @@ final class EngineTests: XCTestCase {
         let health = HealthStore()
         let imports = ImportStore()
         let now = Date()
-        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil, now: now)
+        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil,
+                                                profile: neutralProfile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: now)
 
         XCTAssertEqual(week.count, 7)
         let calendar = Calendar.current
@@ -1809,15 +1839,24 @@ final class EngineTests: XCTestCase {
         // Today's forecast must be the exact same recommendation status()
         // itself would give right now — not a second, silently-diverging
         // computation of "today".
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: nil, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: nil,
+                                           events: [], reviews: [], activeInjuries: [],
+                                           calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                           profile: neutralProfile, now: now)
         let real = TrainingPlanEngine.status(health: health, imports: imports, readiness: assessment.score,
                                              muscles: assessment.muscles, checkIn: nil,
+                                             profile: neutralProfile, reviews: [],
                                              physiologicalAlert: assessment.physiologicalAlert, now: now)
         XCTAssertEqual(week[0].kind, real.nextSession)
         for day in week { XCTAssertFalse(day.rationale.isEmpty) }
     }
 
     func testWeekAheadCanProposeQualityOrLongRunNotOnlyEasyRun() {
+        // Pre-existing flake, unrelated to TwinCore's injection — see the
+        // comment on testPhysiologicalAlertHardOverridesTheProposedSession.
+        // health/imports below still read real disk-persisted state even
+        // though profile is now passed explicitly; confirmed identical on
+        // main before PR1.
         let originalProfile = GoalStore.shared.profile
         defer { GoalStore.shared.save(originalProfile) }
         var profile = originalProfile
@@ -1827,7 +1866,12 @@ final class EngineTests: XCTestCase {
         profile.trainingDaysPerWeek = 5
         GoalStore.shared.save(profile)
 
-        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil, now: Date())
+        // TwinCore PR1: weekAhead no longer re-reads GoalStore.shared
+        // internally — passing the same `profile` constructed above
+        // directly is what actually exercises it now, not the save() call.
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil,
+                                                profile: profile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: Date())
         let kinds = Set(week.map(\.kind))
         // Passing `muscles: []` into balancedDecision's own shared fallback
         // used to resolve to a neutral 50/100 — below the 55-65 threshold
@@ -1841,6 +1885,10 @@ final class EngineTests: XCTestCase {
     }
 
     func testWeekAheadDecaysRealMuscleFatigueInsteadOfAssumingConstantFreshness() {
+        // Pre-existing flake, unrelated to TwinCore's injection — see the
+        // comment on testPhysiologicalAlertHardOverridesTheProposedSession.
+        // Confirmed identical on main before PR1.
+        //
         // weekAhead's forward simulation used to hand balancedDecision a
         // constant "everything at 75/100" for legs on every single one of
         // the 6 simulated days, regardless of what actually happened today
@@ -1876,7 +1924,9 @@ final class EngineTests: XCTestCase {
         imports.restore(workouts: [heavyLegDay], labs: [])
         defer { imports.deleteWorkout(id: heavyLegDay.id) }
 
-        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: imports, checkIn: nil, now: now)
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: imports, checkIn: nil,
+                                                profile: profile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: now)
 
         let legSensitive: Set<PlannedSessionKind> = [.hybrid, .qualityRun, .longRun]
         XCTAssertFalse(legSensitive.contains(week[1].kind),
@@ -2345,7 +2395,9 @@ final class EngineTests: XCTestCase {
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
         GoalStore.shared.save(profile)
 
-        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil, now: Date())
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil,
+                                                profile: profile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: Date())
         XCTAssertEqual(week.count, 7)
         XCTAssertLessThan(week.filter { $0.kind == .swim }.count, 7,
                           "Closing a real weekly swim shortfall shouldn't require filling every single day of the week with swimming.")
@@ -2900,7 +2952,7 @@ final class EngineTests: XCTestCase {
         let lightSwim = healthWorkout(activity: "Natación", kilometers: 1.0, minutes: 15, date: now.addingTimeInterval(-30 * 60))
         health.recentWorkouts = [lightSwim]
         let status = TrainingPlanEngine.status(health: health, imports: imports, readiness: 80, muscles: [],
-                                               checkIn: nil, physiologicalAlert: nil, now: now)
+                                               checkIn: nil, profile: neutralProfile, reviews: [], physiologicalAlert: nil, now: now)
         XCTAssertNotEqual(status.rationale, "Ya has entrenado hoy. La recomendación se centra ahora en asimilar esa carga.")
     }
 
@@ -2916,14 +2968,16 @@ final class EngineTests: XCTestCase {
         let hiit = healthWorkout(activity: "Intervalos de alta intensidad", kilometers: 0, minutes: 20, date: now.addingTimeInterval(-90 * 60))
         health.recentWorkouts = [hiit]
         let status = TrainingPlanEngine.status(health: health, imports: imports, readiness: 80, muscles: [],
-                                               checkIn: nil, physiologicalAlert: nil, now: now)
+                                               checkIn: nil, profile: neutralProfile, reviews: [], physiologicalAlert: nil, now: now)
         XCTAssertEqual(status.nextSession, .recovery)
         XCTAssertFalse(status.rationale.localizedCaseInsensitiveContains("tren superior"),
                        "This must be the generic 'ya has entrenado hoy' fallback, not the upper-body-specific branch.")
         XCTAssertTrue(status.alreadyTrainedToday,
                       "A completed HIIT session must still be flagged as already-trained-today, even though it isn't the upper-body-strength-specific case.")
 
-        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil, now: now)
+        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil,
+                                                profile: neutralProfile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: now)
         XCTAssertEqual(week[0].alreadyTrainedToday, status.alreadyTrainedToday,
                        "weekAhead's own real (non-simulated) first day must carry the same flag status() itself computed.")
     }
@@ -2935,7 +2989,7 @@ final class EngineTests: XCTestCase {
         let realSwim = healthWorkout(activity: "Natación", kilometers: 2.5, minutes: 45, date: now.addingTimeInterval(-60 * 60))
         health.recentWorkouts = [realSwim]
         let status = TrainingPlanEngine.status(health: health, imports: imports, readiness: 80, muscles: [],
-                                               checkIn: nil, physiologicalAlert: nil, now: now)
+                                               checkIn: nil, profile: neutralProfile, reviews: [], physiologicalAlert: nil, now: now)
         XCTAssertEqual(status.nextSession, .recovery)
         XCTAssertEqual(status.rationale, "Ya has entrenado hoy. La recomendación se centra ahora en asimilar esa carga.")
     }
@@ -3081,6 +3135,10 @@ final class EngineTests: XCTestCase {
     }
 
     func testWeekAheadStillIncludesRunningWhenTwoProgressingLiftsCompeteWithThreeRunningGoals() {
+        // Pre-existing flake, unrelated to TwinCore's injection — see the
+        // comment on testPhysiologicalAlertHardOverridesTheProposedSession.
+        // Confirmed identical on main before PR1.
+        //
         // The exact reported shape: bench press and squat both moved to a
         // "progressing" tier (2x/week each = 4 dedicated strength slots)
         // alongside three concurrent running-type goals in a small
@@ -3101,7 +3159,9 @@ final class EngineTests: XCTestCase {
         profile.trainingDaysPerWeek = 5
         GoalStore.shared.save(profile)
 
-        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil, now: Date())
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil,
+                                                profile: profile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: Date())
         let runningKinds: Set<PlannedSessionKind> = [.easyRun, .qualityRun, .longRun]
         XCTAssertTrue(week.contains { runningKinds.contains($0.kind) },
                      "Three active running-type goals must still get real representation across the week, even while two tracked lifts genuinely need their own dedicated slots.")
@@ -3129,7 +3189,7 @@ final class EngineTests: XCTestCase {
         GoalStore.shared.save(profile)
 
         let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 80, muscles: [],
-                                               checkIn: nil, physiologicalAlert: nil, now: Date())
+                                               checkIn: nil, profile: profile, reviews: [], physiologicalAlert: nil, now: Date())
         XCTAssertLessThan(status.targetRuns, 3, "Sanity check: this scenario must actually trigger the fairness trim below 3, or the test proves nothing.")
         XCTAssertGreaterThan(status.targetQuality, 0,
                              "Quality-run must stay enabled based on the plan's real running demand, not get silently zeroed by an unrelated strength-side capacity trim.")
@@ -3154,7 +3214,7 @@ final class EngineTests: XCTestCase {
         XCTAssertGreaterThan(focus.strength, 0, "An active hypertrophy goal must contribute to strength focus the same way a tracked lift or HYROX's strength share does.")
 
         let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 80, muscles: [],
-                                               checkIn: nil, physiologicalAlert: nil, now: Date())
+                                               checkIn: nil, profile: profile, reviews: [], physiologicalAlert: nil, now: Date())
         XCTAssertGreaterThanOrEqual(status.targetStrength, 2)
     }
 
@@ -3178,7 +3238,7 @@ final class EngineTests: XCTestCase {
         defer { imports.deleteWorkout(id: pushToday.id) }
 
         let status = TrainingPlanEngine.status(health: HealthStore(), imports: imports, readiness: 80,
-                                               muscles: [], checkIn: nil, physiologicalAlert: nil, now: now)
+                                               muscles: [], checkIn: nil, profile: neutralProfile, reviews: [], physiologicalAlert: nil, now: now)
         XCTAssertEqual(status.nextSession, .recovery)
         XCTAssertTrue(status.rationale.localizedCaseInsensitiveContains("tren superior"),
                       "A push day (no leg involvement) must be recognized as such, not folded into the generic 'already trained today' message.")
@@ -3195,7 +3255,7 @@ final class EngineTests: XCTestCase {
         defer { imports.deleteWorkout(id: legsToday.id) }
 
         let status = TrainingPlanEngine.status(health: HealthStore(), imports: imports, readiness: 80,
-                                               muscles: [], checkIn: nil, physiologicalAlert: nil, now: now)
+                                               muscles: [], checkIn: nil, profile: neutralProfile, reviews: [], physiologicalAlert: nil, now: now)
         XCTAssertEqual(status.nextSession, .recovery)
         XCTAssertFalse(status.rationale.localizedCaseInsensitiveContains("tren superior"),
                        "A leg day must not be offered the upper-body-day alternative — legs aren't fresh.")
@@ -3343,7 +3403,7 @@ final class EngineTests: XCTestCase {
         GoalStore.shared.save(profile)
 
         let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 80, muscles: [],
-                                               checkIn: nil, physiologicalAlert: nil, now: Date())
+                                               checkIn: nil, profile: profile, reviews: [], physiologicalAlert: nil, now: Date())
         XCTAssertGreaterThanOrEqual(status.targetStrength, 2,
                                     "Two maintenance-tier tracked lifts each need their own minimum weekly dose, not a shared single slot the blended demand alone would produce.")
     }
@@ -3379,7 +3439,10 @@ final class EngineTests: XCTestCase {
         let health = HealthStore()
         let imports = ImportStore()
         let now = Date()
-        let baseline = TwinEngine.assess(health: health, imports: imports, checkIn: nil, now: now)
+        let baseline = TwinEngine.assess(health: health, imports: imports, checkIn: nil,
+                                         events: [], reviews: [], activeInjuries: [],
+                                         calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                         profile: neutralProfile, now: now)
         XCTAssertEqual(baseline.muscles.first { $0.name == "Espalda" }?.readiness, 100,
                        "With no history at all, every muscle should read fully fresh.")
 
@@ -3391,7 +3454,10 @@ final class EngineTests: XCTestCase {
                                         muscleGroups: ["Pecho": 0.4, "Espalda": 0.4, "Hombros": 0.35, "Bíceps": 0.3, "Tríceps": 0.3,
                                                       "Cuádriceps": 0.35, "Glúteos": 0.35, "Isquios": 0.25, "Core": 0.35])
         health.recentWorkouts = [backSession]
-        let after = TwinEngine.assess(health: health, imports: imports, checkIn: nil, now: now)
+        let after = TwinEngine.assess(health: health, imports: imports, checkIn: nil,
+                                      events: [], reviews: [], activeInjuries: [],
+                                      calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                      profile: neutralProfile, now: now)
         XCTAssertLessThan(after.muscles.first { $0.name == "Espalda" }?.readiness ?? 100, 100,
                           "A real, logged back session must register some fatigue instead of reading as if it never happened.")
     }
@@ -3414,14 +3480,20 @@ final class EngineTests: XCTestCase {
         let workoutA = ImportedWorkout(title: "StaleTestA-\(UUID().uuidString)", start: start, end: start.addingTimeInterval(3_600),
                                        exercises: exercises, muscleSets: ["Espalda": 6, "Bíceps": 6])
         imports.restore(workouts: [workoutA], labs: [])
-        let assessmentA = TwinEngine.assess(health: health, imports: imports, checkIn: nil, now: now)
+        let assessmentA = TwinEngine.assess(health: health, imports: imports, checkIn: nil,
+                                            events: [], reviews: [], activeInjuries: [],
+                                            calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                            profile: neutralProfile, now: now)
         imports.deleteWorkout(id: workoutA.id)
 
         let workoutB = ImportedWorkout(title: "StaleTestB-\(UUID().uuidString)", start: start, end: start.addingTimeInterval(3_600),
                                        exercises: exercises, muscleSets: ["Espalda": 40, "Bíceps": 40])
         imports.restore(workouts: [workoutB], labs: [])
         defer { imports.deleteWorkout(id: workoutB.id) }
-        let assessmentB = TwinEngine.assess(health: health, imports: imports, checkIn: nil, now: now)
+        let assessmentB = TwinEngine.assess(health: health, imports: imports, checkIn: nil,
+                                            events: [], reviews: [], activeInjuries: [],
+                                            calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                            profile: neutralProfile, now: now)
 
         XCTAssertEqual(assessmentA.muscles.first { $0.name == "Bíceps" }?.readiness,
                        assessmentB.muscles.first { $0.name == "Bíceps" }?.readiness,
@@ -3643,7 +3715,7 @@ final class EngineTests: XCTestCase {
         let health = HealthStore()
         let imports = ImportStore()
         let status = TrainingPlanEngine.status(health: health, imports: imports, readiness: 80, muscles: [],
-                                               checkIn: nil, physiologicalAlert: nil, now: now)
+                                               checkIn: nil, profile: profile, reviews: [], physiologicalAlert: nil, now: now)
         XCTAssertEqual(status.nextSession, .raceDay)
         XCTAssertNotEqual(status.nextSession, .brick)
 
@@ -3652,7 +3724,7 @@ final class EngineTests: XCTestCase {
                                            targetValue: nil, unit: "min", priority: .primary, isActive: true)]
         GoalStore.shared.save(hyroxProfile)
         let hyroxStatus = TrainingPlanEngine.status(health: health, imports: imports, readiness: 80, muscles: [],
-                                                    checkIn: nil, physiologicalAlert: nil, now: now)
+                                                    checkIn: nil, profile: hyroxProfile, reviews: [], physiologicalAlert: nil, now: now)
         XCTAssertEqual(hyroxStatus.nextSession, .raceDay)
         XCTAssertNotEqual(hyroxStatus.nextSession, .hybrid)
     }
@@ -3825,7 +3897,9 @@ final class EngineTests: XCTestCase {
         let override = TrainingPlanEngine.DecisionOverride(
             kind: .strength, load: 30, tomorrowReadiness: 40, todayRationale: "Simulación de prueba"
         )
-        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil, now: now, override: override)
+        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil,
+                                                profile: neutralProfile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: now, override: override)
 
         XCTAssertEqual(week[0].kind, .strength, "The override must replace today's session, not just annotate it.")
         XCTAssertEqual(week[0].rationale, "Simulación de prueba")
@@ -3839,14 +3913,18 @@ final class EngineTests: XCTestCase {
         let health = HealthStore()
         let imports = ImportStore()
         let now = Date()
-        let real = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil, now: now)
+        let real = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil,
+                                                profile: neutralProfile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: now)
         // A lifestyle-only override (nil kind) must leave today's own
         // recommendation untouched, but still push a low tomorrow-readiness
         // through to the next day's decision.
         let override = TrainingPlanEngine.DecisionOverride(
             kind: nil, load: 0, tomorrowReadiness: 35, todayRationale: "Simulación: alcohol"
         )
-        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil, now: now, override: override)
+        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil,
+                                                profile: neutralProfile, reviews: [], events: [], activeInjuries: [],
+                                                calibration: neutralCalibration, personalAnchor: neutralAnchor, now: now, override: override)
 
         XCTAssertEqual(week[0].kind, real[0].kind, "A lifestyle choice must not replace today's real session.")
         XCTAssertEqual(week[1].kind, .recovery)
@@ -3854,7 +3932,9 @@ final class EngineTests: XCTestCase {
 
     func testLifestyleDecisionsDegradeSafelyWithoutHistory() {
         for decision: SimulatedDecision in [.alcohol, .fastingTonight, .poorHydration, .sauna] {
-            let simulation = DecisionSimulatorEngine.simulate(decision, health: HealthStore(), imports: ImportStore(), checkIn: nil)
+            let simulation = DecisionSimulatorEngine.simulate(decision, health: HealthStore(), imports: ImportStore(), checkIn: nil,
+                                                              profile: neutralProfile, events: [], reviews: [], activeInjuries: [],
+                                                              calibration: neutralCalibration, personalAnchor: neutralAnchor)
             XCTAssertEqual(simulation.addedLoad, 0, "Lifestyle decisions never add training load.")
             XCTAssertEqual(simulation.confidence, .low, "No episodes logged yet -> no confident personal effect to apply.")
             XCTAssertTrue((0...100).contains(simulation.tomorrowReadiness))
