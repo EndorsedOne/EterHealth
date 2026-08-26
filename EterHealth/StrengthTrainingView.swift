@@ -895,44 +895,19 @@ struct LiveStrengthWorkoutView: View {
                 Button(role: .destructive) { exercises.removeAll { $0.id == exercise.wrappedValue.id } } label: { Image(systemName: "trash") }
             }
             HStack {
-                Text("SERIE").frame(width: 30, alignment: .leading)
+                Text("#").frame(width: 18, alignment: .leading)
                 if descriptor.tracksWeight { Text("KG").frame(maxWidth: .infinity) }
-                switch descriptor.measurement {
-                case .reps: Text("REPS").frame(maxWidth: .infinity)
-                case .time: Text("SEG").frame(maxWidth: .infinity)
-                case .timeAndDistance:
-                    Text("SEG").frame(maxWidth: .infinity)
-                    Text("M").frame(maxWidth: .infinity)
-                }
-                Text("HECHA").frame(width: 52)
+                measurementHeaders(descriptor.measurement)
+                Image(systemName: "checkmark").frame(width: 44)
             }.font(.caption2.bold()).foregroundStyle(.secondary)
             ForEach(exercise.sets) { $set in
                 HStack(spacing: 8) {
                     Text("\((exercise.wrappedValue.sets.firstIndex { $0.id == set.id } ?? 0) + 1)")
-                        .font(.subheadline.bold()).frame(width: 30, alignment: .leading)
+                        .font(.subheadline.bold()).frame(width: 18, alignment: .leading)
                     if descriptor.tracksWeight {
                         stepperField(value: $set.weight, step: 2.5, minimum: 0, decimalPlaces: 0...1)
                     }
-                    switch descriptor.measurement {
-                    case .reps:
-                        stepperField(value: $set.reps, step: 1, minimum: 0)
-                        // Cronómetro OPCIONAL, como en Hevy: lo que cuenta en
-                        // un ejercicio de reps siguen siendo las reps, pero si
-                        // quieres saber cuánto tardaste en la serie, se puede
-                        // medir sin que eso cambie nada de lo anterior.
-                        optionalTimerButton($set)
-                    case .time:
-                        timedSetField($set)
-                    case .timeAndDistance:
-                        timedSetField($set)
-                        // Distancia en metros: 200 m de trineo en 90 s y en
-                        // 150 s no son la misma serie, así que sin los dos
-                        // números no hay nada que comparar.
-                        stepperField(value: Binding(
-                            get: { set.distanceMeters ?? 0 },
-                            set: { set.distanceMeters = $0 > 0 ? $0 : nil }
-                        ), step: 25, minimum: 0, decimalPlaces: 0...0)
-                    }
+                    measurementFields(descriptor.measurement, set: $set)
                     completedButton($set, restSeconds: exercise.wrappedValue.restSeconds)
                 }
             }
@@ -997,12 +972,59 @@ struct LiveStrengthWorkoutView: View {
             Image(systemName: "checkmark")
                 .font(.title3.bold())
                 .foregroundStyle(set.wrappedValue.completed ? .white : .secondary)
-                .frame(width: 52, height: 46)
+                .frame(width: 44, height: 46)
         }
         .buttonStyle(.plain)
         .background(set.wrappedValue.completed ? EterTheme.positive : Color.primary.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .eterTouchTarget()
+    }
+
+    @ViewBuilder
+    private func measurementHeaders(_ measurement: ExerciseMeasurement) -> some View {
+        switch measurement {
+        case .reps:
+            Text("REPS").frame(maxWidth: .infinity)
+        case .time:
+            Text("TIEMPO").frame(maxWidth: .infinity)
+        case .timeAndDistance:
+            Text("TIEMPO").frame(maxWidth: .infinity)
+            Text("M").frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Los campos de cada tipo de medición. Extraído de la fila porque el
+    /// switch en línea con los TextField dentro ahogaba al type-checker.
+    @ViewBuilder
+    private func measurementFields(_ measurement: ExerciseMeasurement, set: Binding<LiveSet>) -> some View {
+        switch measurement {
+        case .reps:
+            // Sin control extra aquí: KG con stepper + REPS con stepper +
+            // HECHA ya va al límite del ancho, y un cuarto control desbordaba
+            // la tarjeta (comprobado en el simulador). El modelo SÍ soporta
+            // duración opcional en un ejercicio de reps —llega así desde
+            // Hevy—; exponerla en la sesión propia pide rediseñar la fila, no
+            // apretarla más.
+            stepperField(value: set.reps, step: 1, minimum: 0)
+        case .time:
+            timedSetField(set)
+        case .timeAndDistance:
+            timedSetField(set)
+            // Metros: 200 m de trineo en 90 s y en 150 s no son la misma
+            // serie. Campo plano sin stepper, igual que Hevy — 500 m no se
+            // teclean a base de +/-, y es lo que deja sitio para que
+            // KG + TIEMPO + M + HECHA quepan en el trineo.
+            distanceField(set)
+        }
+    }
+
+    private func distanceField(_ set: Binding<LiveSet>) -> some View {
+        TextField("0", value: Binding(
+            get: { Int(set.wrappedValue.distanceMeters ?? 0) },
+            set: { set.wrappedValue.distanceMeters = $0 > 0 ? Double($0) : nil }
+        ), format: .number)
+            .keyboardType(.numberPad).multilineTextAlignment(.center)
+            .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
     }
 
     /// "250" -> "4:10". Cadena vacía para nil, nunca "0:00": un cero se leería
