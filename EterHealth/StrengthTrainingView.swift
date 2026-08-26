@@ -745,6 +745,12 @@ private struct LiveExercise: Identifiable {
     var name: String
     var restSeconds: Int
     var sets: [LiveSet]
+    // Cronometrar las series de un ejercicio de repeticiones. No es que el
+    // dato sea prescindible —es justo el que alimenta el componente de
+    // estaciones del forecast de HYROX, y por eso se importa de Hevy—: es que
+    // no siempre se mide. Por eso se activa por ejercicio y no está siempre
+    // ocupando sitio, igual que en Hevy.
+    var tracksTime = false
 }
 
 struct LiveStrengthWorkoutView: View {
@@ -892,12 +898,21 @@ struct LiveStrengthWorkoutView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                // Sólo en los ejercicios de repeticiones: en una plancha o un
+                // trineo el tiempo no es opcional, es la medida.
+                if descriptor.measurement == .reps {
+                    Button { exercise.wrappedValue.tracksTime.toggle() } label: {
+                        Image(systemName: exercise.wrappedValue.tracksTime ? "stopwatch.fill" : "stopwatch")
+                            .foregroundStyle(exercise.wrappedValue.tracksTime ? EterTheme.positive : .secondary)
+                    }
+                    .accessibilityLabel(exercise.wrappedValue.tracksTime ? "Dejar de cronometrar las series" : "Cronometrar las series")
+                }
                 Button(role: .destructive) { exercises.removeAll { $0.id == exercise.wrappedValue.id } } label: { Image(systemName: "trash") }
             }
             HStack {
                 Text("#").frame(width: 18, alignment: .leading)
                 if descriptor.tracksWeight { Text("KG").frame(maxWidth: .infinity) }
-                measurementHeaders(descriptor.measurement)
+                measurementHeaders(descriptor.measurement, tracksTime: exercise.wrappedValue.tracksTime)
                 Image(systemName: "checkmark").frame(width: 44)
             }.font(.caption2.bold()).foregroundStyle(.secondary)
             ForEach(exercise.sets) { $set in
@@ -907,7 +922,8 @@ struct LiveStrengthWorkoutView: View {
                     if descriptor.tracksWeight {
                         stepperField(value: $set.weight, step: 2.5, minimum: 0, decimalPlaces: 0...1)
                     }
-                    measurementFields(descriptor.measurement, set: $set)
+                    measurementFields(descriptor.measurement, set: $set,
+                                      tracksTime: exercise.wrappedValue.tracksTime)
                     completedButton($set, restSeconds: exercise.wrappedValue.restSeconds)
                 }
             }
@@ -981,10 +997,11 @@ struct LiveStrengthWorkoutView: View {
     }
 
     @ViewBuilder
-    private func measurementHeaders(_ measurement: ExerciseMeasurement) -> some View {
+    private func measurementHeaders(_ measurement: ExerciseMeasurement, tracksTime: Bool) -> some View {
         switch measurement {
         case .reps:
             Text("REPS").frame(maxWidth: .infinity)
+            if tracksTime { Text("TIEMPO").frame(maxWidth: .infinity) }
         case .time:
             Text("TIEMPO").frame(maxWidth: .infinity)
         case .timeAndDistance:
@@ -996,15 +1013,17 @@ struct LiveStrengthWorkoutView: View {
     /// Los campos de cada tipo de medición. Extraído de la fila porque el
     /// switch en línea con los TextField dentro ahogaba al type-checker.
     @ViewBuilder
-    private func measurementFields(_ measurement: ExerciseMeasurement, set: Binding<LiveSet>) -> some View {
+    private func measurementFields(_ measurement: ExerciseMeasurement, set: Binding<LiveSet>,
+                                   tracksTime: Bool) -> some View {
         switch measurement {
+        case .reps where tracksTime:
+            // Con cronómetro activo la fila lleva tres datos, así que las
+            // reps pasan a campo plano: dos steppers (6 controles) más el
+            // tiempo no caben, y un campo plano sí. Es exactamente lo que
+            // hace Hevy, que no usa steppers en ninguna columna.
+            plainNumberField(value: set.reps)
+            timedSetField(set)
         case .reps:
-            // Sin control extra aquí: KG con stepper + REPS con stepper +
-            // HECHA ya va al límite del ancho, y un cuarto control desbordaba
-            // la tarjeta (comprobado en el simulador). El modelo SÍ soporta
-            // duración opcional en un ejercicio de reps —llega así desde
-            // Hevy—; exponerla en la sesión propia pide rediseñar la fila, no
-            // apretarla más.
             stepperField(value: set.reps, step: 1, minimum: 0)
         case .time:
             timedSetField(set)
@@ -1016,6 +1035,12 @@ struct LiveStrengthWorkoutView: View {
             // KG + TIEMPO + M + HECHA quepan en el trineo.
             distanceField(set)
         }
+    }
+
+    private func plainNumberField(value: Binding<Int>) -> some View {
+        TextField("0", value: value, format: .number)
+            .keyboardType(.numberPad).multilineTextAlignment(.center)
+            .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
     }
 
     private func distanceField(_ set: Binding<LiveSet>) -> some View {
@@ -1084,7 +1109,7 @@ struct LiveStrengthWorkoutView: View {
     /// still manually editable via the field when the timer isn't running.
     private func timedSetField(_ set: Binding<LiveSet>) -> some View {
         let isTiming = timingSetID == set.wrappedValue.id
-        return HStack(spacing: 2) {
+        return HStack(spacing: 1) {
             Button {
                 if isTiming {
                     if let startedAt = timingStartedAt {
@@ -1095,7 +1120,7 @@ struct LiveStrengthWorkoutView: View {
                     timingSetID = set.wrappedValue.id; timingStartedAt = Date()
                 }
             } label: {
-                Image(systemName: isTiming ? "stop.fill" : "play.fill").font(.caption.bold()).frame(width: 24, height: 30)
+                Image(systemName: isTiming ? "stop.fill" : "play.fill").font(.caption2.bold()).frame(width: 18, height: 30)
             }
             .buttonStyle(.plain)
             .background((isTiming ? Color.orange : Color.primary).opacity(isTiming ? 0.22 : 0.07))
