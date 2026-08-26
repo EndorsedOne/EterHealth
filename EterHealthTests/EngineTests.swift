@@ -48,6 +48,82 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(anchor.personalMedian, 72)
     }
 
+    // PR2: step()/TwinReadout.derive replace TwinStateStore's old
+    // predictedTomorrow(from:) string match — these test the actual
+    // physiological mechanism directly, independent of assess()'s own
+    // real-signal score (which stays unchanged, see TwinAssessment's
+    // comment).
+    func testStepWithHardSessionLowersReadinessTomorrow() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        // A well-established, moderately fresh baseline — some fitness,
+        // little fatigue — so a hard session has real fatigue to add
+        // rather than starting from zero on both sides.
+        let baseline = TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 40, fitnessStrength: 150, fatigueStrength: 20,
+                                      muscleFatigue: [:], sleepDebtHours: 0, illness: false, asOf: today)
+        let restReadout = TwinReadout.derive(from: baseline, anchor: neutralAnchor, calibration: neutralCalibration)
+
+        let hard = step(baseline, session: SessionLoad.forecast(.longRun), recoverySignals: .none, dtDays: 1)
+        let hardReadout = TwinReadout.derive(from: hard, anchor: neutralAnchor, calibration: neutralCalibration)
+
+        XCTAssertGreaterThan(hard.fatigueAerobic, baseline.fatigueAerobic,
+                             "A real hard aerobic session must raise fatigueAerobic, not leave it where it started.")
+        XCTAssertLessThan(hardReadout.score, restReadout.score,
+                          "A hard session today must predict a LOWER readiness tomorrow than doing nothing would.")
+    }
+
+    func testStepWithRestRaisesReadinessTomorrow() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        // Real accumulated fatigue on both channels — this is what a rest
+        // day should measurably drain.
+        let fatigued = TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 180, fitnessStrength: 150, fatigueStrength: 130,
+                                      muscleFatigue: ["Cuádriceps": 70], sleepDebtHours: 3, illness: false, asOf: today)
+        let fatiguedReadout = TwinReadout.derive(from: fatigued, anchor: neutralAnchor, calibration: neutralCalibration)
+
+        let rested = step(fatigued, session: .none, recoverySignals: .none, dtDays: 1)
+        let restedReadout = TwinReadout.derive(from: rested, anchor: neutralAnchor, calibration: neutralCalibration)
+
+        XCTAssertLessThan(rested.fatigueAerobic, fatigued.fatigueAerobic, "A rest day must drain fatigue, not hold it constant.")
+        XCTAssertLessThan(rested.muscleFatigue["Cuádriceps"] ?? 100, fatigued.muscleFatigue["Cuádriceps"] ?? 100)
+        XCTAssertGreaterThan(restedReadout.score, fatiguedReadout.score,
+                             "A real rest day must predict a HIGHER readiness tomorrow than staying just as fatigued would.")
+    }
+
+    func testStepIsPureAndDeterministic() {
+        let state = TwinPhysiology(fitnessAerobic: 100, fatigueAerobic: 50, fitnessStrength: 80, fatigueStrength: 30,
+                                   muscleFatigue: ["Pecho": 20], sleepDebtHours: 1, illness: false, asOf: Date(timeIntervalSince1970: 1_700_000_000))
+        let signals = RecoverySignals(hrvDeviation: -0.1, restingHeartRateDeviation: 0.05, sleepDeficitHours: 2, checkIn: nil, physiologicalAlert: nil)
+        let first = step(state, session: SessionLoad.forecast(.strength), recoverySignals: signals, dtDays: 1)
+        let second = step(state, session: SessionLoad.forecast(.strength), recoverySignals: signals, dtDays: 1)
+        XCTAssertEqual(first, second, "Same (state, session, recoverySignals, dtDays) must always produce the same next state.")
+    }
+
+    // The exact regression this replaces: predictedTomorrow used to be
+    // `recommendation.contains("tirada larga") ? -4 : ...` — a fixed delta
+    // keyed on the Spanish copy, identical for every "tirada larga" no
+    // matter how fatigued the athlete actually was. Two physiologies that
+    // would both propose the SAME session kind (so the same old string
+    // would have matched) but start from genuinely different real fatigue
+    // must now predict genuinely different tomorrows.
+    func testPredictedTomorrowReflectsRealStateNotFixedTextDelta() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        let fresh = TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 20, fitnessStrength: 150, fatigueStrength: 10,
+                                   muscleFatigue: [:], sleepDebtHours: 0, illness: false, asOf: today)
+        let alreadyStrained = TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 170, fitnessStrength: 150, fatigueStrength: 120,
+                                             muscleFatigue: ["Isquios": 60], sleepDebtHours: 4, illness: false, asOf: today)
+
+        // Same session kind for both — the exact case the old string-match
+        // treated identically regardless of real state.
+        let freshTomorrow = step(fresh, session: SessionLoad.forecast(.longRun), recoverySignals: .none, dtDays: 1)
+        let strainedTomorrow = step(alreadyStrained, session: SessionLoad.forecast(.longRun), recoverySignals: .none, dtDays: 1)
+        let freshReadout = TwinReadout.derive(from: freshTomorrow, anchor: neutralAnchor, calibration: neutralCalibration)
+        let strainedReadout = TwinReadout.derive(from: strainedTomorrow, anchor: neutralAnchor, calibration: neutralCalibration)
+
+        XCTAssertNotEqual(freshReadout.score, strainedReadout.score,
+                          "Two athletes proposed the same 'tirada larga' from genuinely different real fatigue must not get the same predicted tomorrow.")
+        XCTAssertGreaterThan(freshReadout.score, strainedReadout.score,
+                             "The already-strained athlete must predict a lower tomorrow than the fresh one, not an identical fixed delta.")
+    }
+
     func testMultiDayProjectionRecoversWhileAcuteLoadDecays() {
         let trajectory = DecisionSimulatorEngine.projectTrajectory(
             tomorrowReadiness: 48, projectedAcuteLoad: 150,
@@ -3301,15 +3377,14 @@ final class EngineTests: XCTestCase {
     }
 
     func testWorkoutPlannerOffersARunAlternativeAfterAnUpperBodyDayAlreadyDoneToday() {
-        let originalProfile = GoalStore.shared.profile
-        defer { GoalStore.shared.save(originalProfile) }
-        var profile = originalProfile
+        // PR2: propose() no longer reads GoalStore.shared — profile is
+        // constructed locally and passed via context below.
+        var profile = AthletePlanProfile.angelDefault
         // The run alternative is now also gated on the athlete actually
         // having a running-type goal — a coach wouldn't prescribe a run to
         // someone whose plan has nothing to do with running.
         profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón", date: nil,
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
-        GoalStore.shared.save(profile)
 
         let imports = ImportStore()
         let now = Date()
@@ -3323,7 +3398,9 @@ final class EngineTests: XCTestCase {
         imports.restore(workouts: [pushToday], labs: [])
         defer { imports.deleteWorkout(id: pushToday.id) }
 
-        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: imports, checkIn: nil, now: now)
+        let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: imports, checkIn: nil, context: context, now: now)
         // Only assert the enriched shape once readiness/recovery actually
         // routed here for this reason — a real assessed score could in
         // principle still fall elsewhere depending on other live signals.
@@ -3333,12 +3410,9 @@ final class EngineTests: XCTestCase {
     }
 
     func testWorkoutPlannerNeverSuggestsARunWithoutARunningGoal() {
-        let originalProfile = GoalStore.shared.profile
-        defer { GoalStore.shared.save(originalProfile) }
-        var profile = originalProfile
+        var profile = AthletePlanProfile.angelDefault
         profile.goals = [TrainingGoal(id: UUID(), kind: .benchPress, title: "Press banca", date: nil,
                                       targetValue: 100, unit: "kg", priority: .primary, isActive: true)]
-        GoalStore.shared.save(profile)
 
         let imports = ImportStore()
         let now = Date()
@@ -3349,7 +3423,9 @@ final class EngineTests: XCTestCase {
         imports.restore(workouts: [pushToday], labs: [])
         defer { imports.deleteWorkout(id: pushToday.id) }
 
-        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: imports, checkIn: nil, now: now)
+        let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: imports, checkIn: nil, context: context, now: now)
         guard workout.title.localizedCaseInsensitiveContains("tren superior") else { return }
         XCTAssertFalse(workout.exercises.contains { $0.name.localizedCaseInsensitiveContains("carrera") },
                        "With no running-type goal in the plan at all, a run has nothing to justify recommending it.")
@@ -3359,12 +3435,9 @@ final class EngineTests: XCTestCase {
         // The alternative must be gated on real elapsed time since the
         // actual session, not offered unconditionally as fixed text —
         // 1h post-session is nowhere near the real spacing this needs.
-        let originalProfile = GoalStore.shared.profile
-        defer { GoalStore.shared.save(originalProfile) }
-        var profile = originalProfile
+        var profile = AthletePlanProfile.angelDefault
         profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón", date: nil,
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
-        GoalStore.shared.save(profile)
 
         let imports = ImportStore()
         let now = Date()
@@ -3375,7 +3448,9 @@ final class EngineTests: XCTestCase {
         imports.restore(workouts: [pushToday], labs: [])
         defer { imports.deleteWorkout(id: pushToday.id) }
 
-        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: imports, checkIn: nil, now: now)
+        let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: imports, checkIn: nil, context: context, now: now)
         guard workout.title.localizedCaseInsensitiveContains("tren superior") else { return }
         XCTAssertFalse(workout.exercises.contains { $0.name.localizedCaseInsensitiveContains("carrera") },
                        "Only ~1h has passed since the push session — the run alternative must not be offered yet.")
@@ -3471,6 +3546,23 @@ final class EngineTests: XCTestCase {
         let workout = WorkoutPlanner.gym(for: "Empuje", imports: imports, light: false, muscles: [])
         XCTAssertEqual(workout.exercises.first?.name, "Bench Press (Barbell)",
                        "The tracked lift must be pinned first, not displaced by a more recently trained equivalent variation.")
+    }
+
+    // PR2 integration: assess() actually wires physiology/readout/
+    // predictedTomorrow through step()/TwinPhysiology.derive, not just the
+    // pure functions tested in isolation above.
+    func testAssessComputesPhysiologyReadoutAndPredictedTomorrow() {
+        let health = HealthStore()
+        let imports = ImportStore()
+        let now = Date()
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: nil, context: neutralContext, now: now)
+
+        XCTAssertEqual(assessment.readout.score, assessment.score, "readout is the same real score assess() already computes, just formally typed.")
+        XCTAssertEqual(assessment.readout.state, assessment.state)
+        XCTAssertGreaterThanOrEqual(assessment.predictedTomorrow.score, 0)
+        XCTAssertLessThanOrEqual(assessment.predictedTomorrow.score, 100)
+        // Same conversion physiology.derive uses: fatigue = 100 - readiness.
+        XCTAssertEqual(assessment.physiology.muscleFatigue["Espalda"], Double(100 - (assessment.muscles.first { $0.name == "Espalda" }?.readiness ?? 100)))
     }
 
     func testTwinEngineMuscleFatigueRespondsToWatchOnlyStrengthSession() {
@@ -3755,16 +3847,14 @@ final class EngineTests: XCTestCase {
     }
 
     func testWorkoutPlannerBuildsARaceDayProtocolNotAWorkout() {
-        let originalProfile = GoalStore.shared.profile
-        defer { GoalStore.shared.save(originalProfile) }
-
         let now = Date()
-        var profile = originalProfile
+        var profile = AthletePlanProfile.angelDefault
         profile.goals = [TrainingGoal(id: UUID(), kind: .triathlon, title: "Triatlón de prueba", date: now,
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
-        GoalStore.shared.save(profile)
 
-        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: ImportStore(), checkIn: nil, now: now)
+        let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: ImportStore(), checkIn: nil, context: context, now: now)
         // If readiness computed from an empty HealthStore ever drops below
         // the recovery threshold, this would legitimately show recovery
         // instead — only assert the race-day shape once it actually got there.
