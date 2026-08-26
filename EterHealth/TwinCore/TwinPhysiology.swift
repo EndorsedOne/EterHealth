@@ -81,9 +81,18 @@ struct SessionLoad: Equatable {
     // Reparto heurístico y documentado (no un DualLoadSummary real todavía)
     // de forecastSessionLoad — un híbrido/brick aporta a ambos canales, el
     // resto de sesiones a uno solo. Mismo número total que
-    // TrainingPlanEngine.forecastSessionLoad siempre ha usado, solo
-    // repartido entre los dos canales en vez de ir a un único total mezclado.
+    // TrainingPlanEngine.forecastSessionLoad siempre ha usado para el
+    // ratio agudo:crónico combinado, EXCEPTO recovery: ese "8" ahí
+    // representa actividad residual de un día normal para ESE modelo
+    // distinto (ratio combinado, sigue en ForwardState.acute/chronic) —
+    // aquí, para los canales de fitness/fatiga que step() evoluciona, un
+    // día de descanso real no debe seguir "entrenando" el canal aeróbico
+    // cada vez que se simula uno: con eso, la fatiga nunca terminaba de
+    // bajar por debajo de la fitness en una semana simulada con poco
+    // historial aeróbico previo, y la disponibilidad prevista se quedaba
+    // clavada por debajo del umbral de recuperación toda la semana.
     static func forecast(_ kind: PlannedSessionKind) -> SessionLoad {
+        if kind == .recovery { return .none }
         let total = TrainingPlanEngine.forecastSessionLoad(kind)
         switch kind {
         case .strength:
@@ -116,8 +125,22 @@ struct RecoverySignals {
 // Pura: el mismo (state, session, recoverySignals, dtDays) siempre produce
 // el mismo estado siguiente — sin leer stores, sin Date(), sin
 // aleatoriedad. El único sitio por el que pasan tanto la predicción de
-// TwinStateStore como la simulación hacia delante de weekAhead, para que
-// nunca puedan divergir en silencio sobre cómo evoluciona el estado.
+// TwinStateStore como la evolución de fitness/fatiga/readiness día a día
+// de TrainingPlanEngine.weekAhead's ForwardState.apply(...), para que
+// esas dos proyecciones nunca puedan divergir en silencio.
+//
+// Dos límites deliberados de ese "nunca divergir", ambos documentados en
+// su propio sitio, no aquí por descuido:
+// 1. El ratio agudo:crónico que decide exceedsPaceCeiling (el gate real
+//    de "hoy toca descanso") sigue viviendo en ForwardState.acute/chronic,
+//    el EWMA de un solo canal combinado de siempre — separar ESE ratio en
+//    canales aeróbico/fuerza es el trabajo de PR3 (DualLoad), no algo que
+//    step() resuelva por su cuenta.
+// 2. muscleFatigue en la salida de step() se descarta y se sustituye por
+//    el propio tracker de weekAhead (real, por ejercicio, vía
+//    MuscleMap.involvement) siempre que hay uno disponible — la decaída
+//    genérica de aquí abajo es solo el resultado honesto para cuando no
+//    hay ese detalle (la predicción de mañana de TwinStateStore).
 func step(_ state: TwinPhysiology, session: SessionLoad?, recoverySignals: RecoverySignals, dtDays: Double) -> TwinPhysiology {
     let load = session ?? .none
 
@@ -241,12 +264,43 @@ extension TwinReadout {
             return TwinReadout(score: score, state: label(for: score), confidence: anchor.confidence)
         }
         var score = Double(anchor.score)
-        let aerobicStrain = physiology.fitnessAerobic > 0 ? physiology.fatigueAerobic / physiology.fitnessAerobic
-            : (physiology.fatigueAerobic > 0 ? 1.5 : 0)
-        let strengthStrain = physiology.fitnessStrength > 0 ? physiology.fatigueStrength / physiology.fitnessStrength
-            : (physiology.fatigueStrength > 0 ? 1.5 : 0)
-        score -= min(25, aerobicStrain * 16)
-        score -= min(20, strengthStrain * 14)
+        // Ratio, gated by a minimum real fitness floor per channel — not
+        // "fitness > 0". fitnessAerobic's own 42-day time constant is far
+        // slower to build up than fatigueAerobic's 7-day one is to react,
+        // so right after a single simulated session against a near-empty
+        // aerobic history (a fresh profile, or an athlete whose whole real
+        // history is Hevy strength imports with no HealthKit cardio at
+        // all), fitness is still near 0 while fatigue has already jumped —
+        // the ratio explodes into a permanent max penalty that a real
+        // week's worth of rest can't undo, since fitness barely moves in
+        // that time either. minimumTrustedFitness is a deliberately modest
+        // floor (roughly one real session's worth of weekly-equivalent
+        // load) below which this channel reads as "not enough real signal
+        // yet" and contributes no penalty — the same "no evidence yet ->
+        // no penalty" honesty this app already applies elsewhere
+        // (confidenceWeighted, TwinCalibration.none), not a worst-case
+        // assumption invented for missing data. Once a channel clears that
+        // floor, the ratio (same ±X pt caps as assess()'s other signals)
+        // is genuinely sensitive to a hard day vs. a rest day, unlike a
+        // flat difference which stays 0 for both when fitness is strong
+        // enough to absorb a single hard session without fatigue ever
+        // exceeding it.
+        let minimumTrustedFitness = 15.0
+        let aerobicStrain = physiology.fitnessAerobic >= minimumTrustedFitness ? physiology.fatigueAerobic / physiology.fitnessAerobic : 0
+        let strengthStrain = physiology.fitnessStrength >= minimumTrustedFitness ? physiology.fatigueStrength / physiology.fitnessStrength : 0
+        // Coefficients deliberately gentle relative to PerformanceEngine.
+        // loadGuidance's own combined-ratio thresholds (0.65/1.08/1.30/1.55)
+        // — muscleFatigue below already carries the precise, per-exercise
+        // account of what a specific heavy session costs; this term is
+        // only the broader, slower-moving "are you trending toward
+        // absorbing/overload on this channel" signal ACWR-style ratios
+        // already are elsewhere in this app, not a second full-strength
+        // penalty for the exact same session. A stronger coefficient here
+        // double-counted a single heavy session's cost on top of the
+        // muscle-level term and kept simulated readiness pinned down for
+        // most of a week even after real muscle fatigue had mostly cleared.
+        score -= min(25, aerobicStrain * 6)
+        score -= min(20, strengthStrain * 5)
         let muscleValues = Array(physiology.muscleFatigue.values)
         let averageMuscleFatigue = muscleValues.isEmpty ? 0 : muscleValues.reduce(0, +) / Double(muscleValues.count)
         score -= averageMuscleFatigue * 0.12

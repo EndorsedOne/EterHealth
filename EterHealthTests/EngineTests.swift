@@ -124,6 +124,86 @@ final class EngineTests: XCTestCase {
                              "The already-strained athlete must predict a lower tomorrow than the fresh one, not an identical fixed delta.")
     }
 
+    // Contract: SessionLoad.forecast(.recovery) is zero on both channels —
+    // forecastSessionLoad's own "8" is residual daily activity for the
+    // COMBINED acute:chronic ratio (still in ForwardState.acute/chronic),
+    // not training that should keep feeding the fitness/fatigue channels
+    // step() evolves. Feeding it here pushed fatigueAerobic UP on rest days
+    // for anyone whose real aerobic history is near-empty (an athlete
+    // training strength only), so a simulated week never recovered and the
+    // whole forecast stayed pinned under the recovery threshold.
+    func testRecoveryDaysAddNoLoadSoASimulatedWeekIsNotPinnedInRecovery() {
+        XCTAssertEqual(SessionLoad.forecast(.recovery), .none,
+                       "A rest day must not keep training the aerobic channel every time one is simulated.")
+
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        // Almost no aerobic history, real strength history — the exact
+        // profile the regression showed up on.
+        let strengthOnly = TwinPhysiology(fitnessAerobic: 8, fatigueAerobic: 8, fitnessStrength: 150, fatigueStrength: 60,
+                                          muscleFatigue: [:], sleepDebtHours: 0, illness: false, asOf: today)
+        var state = strengthOnly
+        var scores: [Int] = [TwinReadout.derive(from: state, anchor: neutralAnchor, calibration: neutralCalibration).score]
+        for _ in 0..<7 {
+            state = step(state, session: SessionLoad.forecast(.recovery), recoverySignals: .none, dtDays: 1)
+            scores.append(TwinReadout.derive(from: state, anchor: neutralAnchor, calibration: neutralCalibration).score)
+        }
+
+        XCTAssertLessThan(state.fatigueAerobic, strengthOnly.fatigueAerobic,
+                          "A week of rest must drain the aerobic channel, not top it up with a residual daily load.")
+        XCTAssertEqual(scores, scores.sorted(),
+                       "Readiness across a simulated week of rest must never fall: \(scores)")
+        XCTAssertGreaterThan(scores.last!, scores.first!, "A week of real rest must end more available than it started.")
+    }
+
+    // Contract: a channel below minimumTrustedFitness (15, roughly one real
+    // session's weekly-equivalent) reads as "not enough real signal yet" and
+    // contributes NO strain penalty. fitness (τ42/τ28) builds far slower than
+    // fatigue (τ7/τ5) reacts, so gating on a bare `fitness > 0` let one
+    // session against a near-empty history explode the ratio into a
+    // permanent max penalty no amount of real rest could undo.
+    func testStrainPenaltyRequiresAMinimumRealFitnessOnThatChannel() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        func aerobicOnly(fitness: Double) -> TwinPhysiology {
+            TwinPhysiology(fitnessAerobic: fitness, fatigueAerobic: 60, fitnessStrength: 0, fatigueStrength: 0,
+                           muscleFatigue: [:], sleepDebtHours: 0, illness: false, asOf: today)
+        }
+        let belowFloor = TwinReadout.derive(from: aerobicOnly(fitness: 8), anchor: neutralAnchor, calibration: neutralCalibration)
+        let aboveFloor = TwinReadout.derive(from: aerobicOnly(fitness: 100), anchor: neutralAnchor, calibration: neutralCalibration)
+
+        XCTAssertEqual(belowFloor.score, neutralAnchor.score,
+                       "No real aerobic base yet means no evidence to penalize — not a worst-case assumption.")
+        XCTAssertLessThan(aboveFloor.score, belowFloor.score,
+                          "Once the channel has a real base, the same fatigue must genuinely cost readiness.")
+    }
+
+    // Contract: the strain coefficients (6 aerobic / 5 strength) are a slow
+    // "which way is this channel trending" term, deliberately gentler than
+    // PerformanceEngine.loadGuidance's own combined-ratio bands — because
+    // muscleFatigue already carries the precise per-exercise cost of the very
+    // same session. So a real hard block may dent readiness, but not by the
+    // ~9 pt the previous 16/14 coefficients took off, which double-counted
+    // that one block's cost on top of the muscle-level term.
+    func testHardBlockDentsReadinessWithoutDoubleCountingTheMuscleLevelCost() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        let established = TwinPhysiology(fitnessAerobic: 200, fatigueAerobic: 40, fitnessStrength: 150, fatigueStrength: 20,
+                                         muscleFatigue: [:], sleepDebtHours: 0, illness: false, asOf: today)
+        let baseline = TwinReadout.derive(from: established, anchor: neutralAnchor, calibration: neutralCalibration)
+
+        var state = established
+        for _ in 0..<3 { state = step(state, session: SessionLoad.forecast(.longRun), recoverySignals: .none, dtDays: 1) }
+        let afterBlock = TwinReadout.derive(from: state, anchor: neutralAnchor, calibration: neutralCalibration)
+
+        XCTAssertLessThan(afterBlock.score, baseline.score,
+                          "Gentler must still mean sensitive: three long runs have to cost something.")
+        XCTAssertLessThanOrEqual(baseline.score - afterBlock.score, 5,
+                                 "This term is the slow channel trend, not a second full-strength penalty for a session muscleFatigue already priced.")
+
+        for _ in 0..<5 { state = step(state, session: SessionLoad.forecast(.recovery), recoverySignals: .none, dtDays: 1) }
+        let restOfWeek = TwinReadout.derive(from: state, anchor: neutralAnchor, calibration: neutralCalibration)
+        XCTAssertLessThanOrEqual(abs(restOfWeek.score - baseline.score), 3,
+                                 "Five real rest days after a hard block must return to baseline, not stay pinned.")
+    }
+
     func testMultiDayProjectionRecoversWhileAcuteLoadDecays() {
         let trajectory = DecisionSimulatorEngine.projectTrajectory(
             tomorrowReadiness: 48, projectedAcuteLoad: 150,

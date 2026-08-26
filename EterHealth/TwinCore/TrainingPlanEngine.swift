@@ -902,6 +902,20 @@ enum TrainingPlanEngine {
         var acute: Double
         var chronic: Double
         var readiness: Int
+        // PR2, actually wired now (not just documented as the intent):
+        // readiness below evolves through the SAME step()/TwinReadout.derive
+        // mechanism TwinStateStore's own tomorrow-prediction uses, seeded
+        // from today's real assessment.physiology — so the plan's own
+        // forward simulation and the "mañana" prediction on Hoy can no
+        // longer silently disagree about how fatigue/fitness evolve.
+        // acute/chronic above deliberately stay on the old combined-channel
+        // EWMA: splitting that ratio into separate aerobic/strength
+        // channels for the pace-ceiling gate (exceedsPaceCeiling) is PR3's
+        // job (DualLoad), not redone here — this only fixes the readiness/
+        // score side of the promise, not the ratio-gate side.
+        var physiology: TwinPhysiology
+        let anchor: PersonalReadinessAnchor
+        let calibration: TwinCalibration
         var runs: Int
         var strength: Int
         var quality: Int
@@ -923,14 +937,23 @@ enum TrainingPlanEngine {
         var trackedLiftDaysSince: Double?
         var recentDailyLoads: [DailyTraining]
 
-        mutating func apply(_ kind: PlannedSessionKind, on date: Date, load: Double) {
+        // muscleFatigue: the caller's own per-exercise-precise tracker
+        // (weekAhead's local `muscleFatigue`, seeded from
+        // assessment.physiology.muscleFatigue and updated by
+        // applyMuscleLoad/applyStrengthLoad with real MuscleMap.involvement
+        // detail a scalar SessionLoad can't carry) — always wins over
+        // step()'s own generic, no-exercise-detail decay of that same
+        // field, which is discarded below rather than double-applied on
+        // top of it. Not a second, competing muscle-fatigue tracker: this
+        // is what keeps physiology.muscleFatigue in sync with the one real
+        // source instead of silently diverging from it.
+        mutating func apply(_ kind: PlannedSessionKind, on date: Date, load: Double, muscleFatigue: [String: Double]) {
             acute = PerformanceEngine.stepWeeklyEquivalent(acute, dayLoad: load, timeConstant: 7)
             chronic = PerformanceEngine.stepWeeklyEquivalent(chronic, dayLoad: load, timeConstant: 28)
-            let ratio = chronic > 0 ? acute / chronic : 0
-            let recoveryBonus = readiness < 55 ? 7 : readiness < 75 ? 5 : 3
-            let fatigueFromLoad = load > 45 ? 6 : load > 25 ? 3 : 0
-            let ratioPenalty = ratio >= 1.55 ? 4 : ratio >= 1.30 ? 2 : 0
-            readiness = min(100, max(0, readiness + recoveryBonus - fatigueFromLoad - ratioPenalty))
+            var stepped = step(physiology, session: SessionLoad.forecast(kind), recoverySignals: .none, dtDays: 1)
+            stepped.muscleFatigue = muscleFatigue
+            physiology = stepped
+            readiness = TwinReadout.derive(from: physiology, anchor: anchor, calibration: calibration).score
 
             switch kind {
             case .easyRun: runs += 1
@@ -1034,6 +1057,7 @@ enum TrainingPlanEngine {
         var state = ForwardState(
             acute: loadSummary.acuteLoad, chronic: loadSummary.habitualLoad,
             readiness: assessment.readout.score,
+            physiology: assessment.physiology, anchor: context.personalAnchor, calibration: context.calibration,
             runs: real.completedRuns, strength: real.completedStrength, quality: real.completedQuality,
             swim: real.completedSwim, bike: real.completedBike,
             hoursSinceLong: hoursSinceLastCompleted(matching: isLongRun, health: health, imports: imports, now: now),
@@ -1053,7 +1077,7 @@ enum TrainingPlanEngine {
         // day+1's decision would ignore that today's real (or overridden)
         // session is actually happening, and e.g. still see the *previous*
         // long run as the most recent one instead of today's.
-        state.apply(todayKind, on: today, load: override?.load ?? forecastSessionLoad(todayKind))
+        state.apply(todayKind, on: today, load: override?.load ?? forecastSessionLoad(todayKind), muscleFatigue: assessment.physiology.muscleFatigue)
         // The override's own model (fatigue/recovery for a training swap,
         // or habit-learned impact for a lifestyle choice) already computed
         // tomorrow's readiness more precisely than apply()'s generic bump
@@ -1299,7 +1323,7 @@ enum TrainingPlanEngine {
 
             applyMuscleLoad(kind, on: date, phase: block.phase, avoidLegs: avoidLegsTomorrow)
             applyDoseProgress(kind, phase: block.phase)
-            state.apply(kind, on: date, load: forecastSessionLoad(kind))
+            state.apply(kind, on: date, load: forecastSessionLoad(kind), muscleFatigue: muscleFatigue)
             // Same informed-not-hidden disclosure status() applies to
             // today — a simulated day this far ahead can equally be one
             // Agresivo's extra margin (over 1.55) is what actually let
