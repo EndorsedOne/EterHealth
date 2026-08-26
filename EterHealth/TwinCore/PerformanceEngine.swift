@@ -148,16 +148,24 @@ enum PerformanceEngine {
         )
     }
 
-    static func balance(health: HealthStore, imports: ImportStore, now: Date = Date()) -> TrainingBalance {
+    // TwinCore: goalProfile/reviews/events/activeInjuries/calibration/
+    // personalAnchor used to come from GoalStore/TwinStateStore/
+    // LifestyleFactorStore/WorkoutReviewStore/InjuryStore singleton
+    // instances — same required-injection reasoning as TwinEngine.assess.
+    static func balance(health: HealthStore, imports: ImportStore, goalProfile: AthletePlanProfile,
+                        events: [LifestyleEvent], reviews: [WorkoutReview], activeInjuries: [InjuryRecord],
+                        calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
+                        now: Date = Date()) -> TrainingBalance {
         let summary = summarize(health: health, imports: imports, now: now)
         let calendar = Calendar.current
-        let goalProfile = GoalStore.shared.profile
-        let block = TrainingPlanEngine.activeBlock(on: now)
+        let block = TrainingPlanEngine.activeBlock(on: now, profile: goalProfile)
         let recent = imports.workouts.filter { $0.start >= calendar.date(byAdding: .day, value: -10, to: now)! }
         let strengthSessions = recent.count
         let runningSessions = health.recentWorkouts.filter { $0.date >= calendar.date(byAdding: .day, value: -10, to: now)! && $0.activity == "Carrera" }.count
         let hardPercent = summary.highAerobic + summary.anaerobic
-        let assessment = TwinEngine.assess(health: health, imports: imports, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports,
+                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
+                                           calibration: calibration, personalAnchor: personalAnchor, profile: goalProfile, now: now)
 
         let phase = block.name
         let desiredRuns = block.runningSessions
@@ -184,7 +192,7 @@ enum PerformanceEngine {
         if priorities.isEmpty { priorities.append("Mantener el reparto actual y progresar la carga de forma gradual.") }
         let overall = (runningScore + strengthScore + intensityScore + recoveryScore) / 4
         let headline = overall >= 82 ? "Equilibrio alineado con tu fase" : overall >= 62 ? "Buen rumbo, con un ajuste claro" : "El reparto se está alejando del objetivo"
-        let activeTargets = GoalStore.shared.activeGoals.prefix(4).map { goal in
+        let activeTargets = goalProfile.activeGoals.prefix(4).map { goal in
             [goal.title, goal.displayTarget].compactMap { $0 }.joined(separator: " ")
         }.joined(separator: ", ")
         let explanation = "\(runningSessions) carreras y \(strengthSessions) sesiones de fuerza en 10 días · \(Int(hardPercent.rounded()))% de cardio intenso. Fase calculada desde: \(activeTargets)."

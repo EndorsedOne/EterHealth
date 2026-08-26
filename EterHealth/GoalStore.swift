@@ -301,8 +301,18 @@ final class GoalStore: ObservableObject {
         save(restored)
     }
 
+    // Thin delegates onto AthletePlanProfile's own pure versions below —
+    // kept here too since existing UI call sites read them straight off
+    // GoalStore.shared. TwinCore engines call the profile's versions
+    // directly instead, with the real profile passed in as a parameter.
+    var activeGoals: [TrainingGoal] { profile.activeGoals }
+    func goal(_ kind: TrainingGoalKind) -> TrainingGoal? { profile.goal(kind) }
+    func nextEvent(after date: Date = Date()) -> TrainingGoal? { profile.nextEvent(after: date) }
+}
+
+extension AthletePlanProfile {
     var activeGoals: [TrainingGoal] {
-        profile.goals.filter(\.isActive).sorted {
+        goals.filter(\.isActive).sorted {
             if $0.priority.weight != $1.priority.weight { return $0.priority.weight > $1.priority.weight }
             return ($0.date ?? .distantFuture) < ($1.date ?? .distantFuture)
         }

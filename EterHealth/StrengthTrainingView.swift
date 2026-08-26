@@ -208,7 +208,12 @@ struct StrengthTrainingView: View {
     @State private var selectedProgressExercise = ""
 
     var body: some View {
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry())
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(),
+                                           events: LifestyleFactorStore.shared.events, reviews: WorkoutReviewStore.shared.reviews,
+                                           activeInjuries: InjuryStore.shared.active,
+                                           calibration: TwinStateStore.shared.calibration,
+                                           personalAnchor: TwinStateStore.shared.personalAnchor(),
+                                           profile: goals.profile)
         let automatic = StrengthRoutineBuilder.routines(from: imports)
         let routines = automatic.map {
             StrengthRoutineBuilder.personalized(routineStore.routine(named: $0.name) ?? $0, imports: imports,
@@ -460,10 +465,18 @@ struct DayWorkoutProposalView: View {
     let routines: [StrengthRoutine]
     @State private var activeRoutine: StrengthRoutine?
 
-    private var assessment: TwinAssessment { TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry()) }
+    private var assessment: TwinAssessment {
+        TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(),
+                          events: LifestyleFactorStore.shared.events, reviews: WorkoutReviewStore.shared.reviews,
+                          activeInjuries: InjuryStore.shared.active,
+                          calibration: TwinStateStore.shared.calibration,
+                          personalAnchor: TwinStateStore.shared.personalAnchor(),
+                          profile: goals.profile)
+    }
     private var plan: WeeklyPlanStatus {
         TrainingPlanEngine.status(health: health, imports: imports, readiness: assessment.score,
                                   muscles: assessment.muscles, checkIn: checkIns.entry(),
+                                  profile: goals.profile, reviews: WorkoutReviewStore.shared.reviews,
                                   physiologicalAlert: assessment.physiologicalAlert)
     }
     private var proposal: StrengthRoutine {
@@ -545,7 +558,7 @@ struct DayWorkoutProposalView: View {
 
     private var reason: String {
         let now = Date()
-        let block = TrainingPlanEngine.activeBlock(on: now)
+        let block = TrainingPlanEngine.activeBlock(on: now, profile: goals.profile)
         let focus = TrainingPlanEngine.goalFocus(for: goals.profile, on: now)
         let equipment = goals.profile.gymAvailable
             ? "Se usan tus rutinas y cargas históricas de gimnasio."

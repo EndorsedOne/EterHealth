@@ -30,12 +30,22 @@ enum WorkoutPlanner {
     }
 
     private static func rawProposal(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil, now: Date = Date()) -> ProposedWorkout {
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, now: now)
+        // TwinCore's engines no longer read these singletons internally —
+        // this is the one place, outside TwinCore, responsible for it.
+        let profile = GoalStore.shared.profile
+        let reviews = WorkoutReviewStore.shared.reviews
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
+                                           events: LifestyleFactorStore.shared.events, reviews: reviews,
+                                           activeInjuries: InjuryStore.shared.active,
+                                           calibration: TwinStateStore.shared.calibration,
+                                           personalAnchor: TwinStateStore.shared.personalAnchor(now: now),
+                                           profile: profile, now: now)
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: assessment.score,
                                              muscles: assessment.muscles, checkIn: checkIn,
+                                             profile: profile, reviews: reviews,
                                              physiologicalAlert: assessment.physiologicalAlert, now: now)
         let deload = plan.isDeload
-        let bodyweightOnly = !GoalStore.shared.profile.gymAvailable
+        let bodyweightOnly = !profile.gymAvailable
         // Real bpm targets instead of a bare "Z1"/"Z2" label wherever this
         // is knowable (lactate-test boundaries, a configured max, or at
         // least an age-based Tanaka estimate) — the same numbers the app's
@@ -137,7 +147,7 @@ enum WorkoutPlanner {
             // shifted readiness with zero workouts actually done that day.
             ], note: assessment.score < 45 ? "Si la fatiga se siente peor de lo que indican los datos, descansa." : "\(plan.rationale) Esta propuesta es opcional; descansar también es una buena ejecución del plan.")
         }
-        if assessment.recommendation.localizedCaseInsensitiveContains("competición"), let event = TrainingPlanEngine.eventToday(now) {
+        if assessment.recommendation.localizedCaseInsensitiveContains("competición"), let event = TrainingPlanEngine.eventToday(now, profile: profile) {
             // A real event today used to fall through to an ordinary
             // workout (a HYROX race day generated a training "brick",
             // a triathlon race day too, a running race a tempo session) —

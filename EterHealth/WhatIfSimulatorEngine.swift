@@ -64,9 +64,17 @@ enum WhatIfSimulatorEngine {
     // see combineImpacts for how honesty about the combination itself
     // (not just each piece) is handled.
     static func simulate(_ scenario: WhatIfScenario, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?, now: Date = Date()) -> WhatIfProjection {
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, now: now)
+        // TwinCore's TwinEngine.assess no longer reads these singletons
+        // internally — this (outside TwinCore) is where they're read.
+        let events = LifestyleFactorStore.shared.events
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
+                                           events: events, reviews: WorkoutReviewStore.shared.reviews,
+                                           activeInjuries: InjuryStore.shared.active,
+                                           calibration: TwinStateStore.shared.calibration,
+                                           personalAnchor: TwinStateStore.shared.personalAnchor(now: now),
+                                           profile: GoalStore.shared.profile, now: now)
         let associations = HabitAssociationEngine.analyze(
-            events: LifestyleFactorStore.shared.events, alcohol: health.alcoholHistory,
+            events: events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory, sleep: health.sleepHistory,
             respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory,
             deepShare: SleepArchitectureEngine.dailyDeepShareSeries(health.sleepStagesHistory),

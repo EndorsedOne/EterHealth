@@ -247,17 +247,25 @@ struct ContentView: View {
 
     private func refreshDashboard() {
         guard health.authorizationRequested else { return }
-        dashboard.refresh(health: health, imports: imports, checkIn: checkIns.entry(), reviews: workoutReviews.reviews)
+        dashboard.refresh(health: health, imports: imports, checkIn: checkIns.entry(),
+                         profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
+                         activeInjuries: injuries.active, calibration: twinStates.calibration,
+                         personalAnchor: twinStates.personalAnchor())
     }
 
     private var currentAssessment: TwinAssessment {
-        dashboard.assessment ?? TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry())
+        dashboard.assessment ?? TwinEngine.assess(
+            health: health, imports: imports, checkIn: checkIns.entry(),
+            events: lifestyle.events, reviews: workoutReviews.reviews, activeInjuries: injuries.active,
+            calibration: twinStates.calibration, personalAnchor: twinStates.personalAnchor(), profile: goals.profile
+        )
     }
 
     private var currentPlan: WeeklyPlanStatus {
         dashboard.plan ?? TrainingPlanEngine.status(
             health: health, imports: imports, readiness: currentAssessment.score,
             muscles: currentAssessment.muscles, checkIn: checkIns.entry(),
+            profile: goals.profile, reviews: workoutReviews.reviews,
             physiologicalAlert: currentAssessment.physiologicalAlert
         )
     }
@@ -740,7 +748,11 @@ struct ContentView: View {
     }
 
     private var trainingBalanceCard: some View {
-        let balance = dashboard.balance ?? PerformanceEngine.balance(health: health, imports: imports)
+        let balance = dashboard.balance ?? PerformanceEngine.balance(
+            health: health, imports: imports, goalProfile: goals.profile,
+            events: lifestyle.events, reviews: workoutReviews.reviews, activeInjuries: injuries.active,
+            calibration: twinStates.calibration, personalAnchor: twinStates.personalAnchor()
+        )
         return VStack(alignment: .leading, spacing: 15) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("EQUILIBRIO DEL ENTRENAMIENTO").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
@@ -835,7 +847,7 @@ struct ContentView: View {
         // The 12-32% "hard" range already used for running-only intensity is a
         // reasonable general reference here too (this card spans every workout
         // type), rather than inventing a separate arbitrary threshold.
-        let target = RunningPerformanceEngine.hardIntensityTarget(for: TrainingPlanEngine.activeBlock(on: Date()))
+        let target = RunningPerformanceEngine.hardIntensityTarget(for: TrainingPlanEngine.activeBlock(on: Date(), profile: goals.profile))
         let hard = summary.highAerobic + summary.anaerobic
         return VStack(alignment: .leading, spacing: 14) {
             Label("Foco de intensidad", systemImage: "heart.text.square.fill").font(.headline)
@@ -1102,15 +1114,33 @@ struct ContentView: View {
     // decision picked there can replace today's session (or, for a
     // lifestyle choice, just tomorrow's readiness) and recompute the rest
     // of this week from it, via the real/simulación toggle.
+    // TwinCore's weekAhead/simulate no longer read GoalStore/
+    // LifestyleFactorStore/WorkoutReviewStore/InjuryStore/TwinStateStore
+    // internally — this bundles the real values read from them once, so
+    // the several call sites below don't each repeat five separate reads.
+    private func weekAhead(checkIn: DailyCheckIn?, override: TrainingPlanEngine.DecisionOverride? = nil) -> [TrainingPlanEngine.DayForecast] {
+        TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIn,
+                                     profile: goals.profile, reviews: workoutReviews.reviews, events: lifestyle.events,
+                                     activeInjuries: injuries.active, calibration: twinStates.calibration,
+                                     personalAnchor: twinStates.personalAnchor(), override: override)
+    }
+
+    private func simulateDecision(_ decision: SimulatedDecision, checkIn: DailyCheckIn?) -> DecisionSimulation {
+        DecisionSimulatorEngine.simulate(decision, health: health, imports: imports, checkIn: checkIn,
+                                         profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
+                                         activeInjuries: injuries.active, calibration: twinStates.calibration,
+                                         personalAnchor: twinStates.personalAnchor())
+    }
+
     private var weekAheadCard: some View {
-        let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIns.entry())
-        let simulation = DecisionSimulatorEngine.simulate(simulatedDecision, health: health, imports: imports, checkIn: checkIns.entry())
-        let simulatedWeek = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIns.entry(), override: simulation.weekAheadOverride)
+        let week = weekAhead(checkIn: checkIns.entry())
+        let simulation = simulateDecision(simulatedDecision, checkIn: checkIns.entry())
+        let simulatedWeek = weekAhead(checkIn: checkIns.entry(), override: simulation.weekAheadOverride)
         return WeekAheadStripView(realDays: week, simulatedDays: simulatedWeek, simulatedDecisionLabel: simulatedDecision.rawValue)
     }
 
     private var decisionSimulatorCard: some View {
-        let simulation = DecisionSimulatorEngine.simulate(simulatedDecision, health: health, imports: imports, checkIn: checkIns.entry())
+        let simulation = simulateDecision(simulatedDecision, checkIn: checkIns.entry())
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 EterSectionHeader("¿Qué pasa si hoy…?", eyebrow: "Simular decisión")
@@ -1333,7 +1363,7 @@ struct ContentView: View {
 
     private var trainingRoadmapCard: some View {
         let today = Date()
-        let roadmapBlocks = TrainingPlanEngine.blocks
+        let roadmapBlocks = TrainingPlanEngine.blocks(for: goals.profile)
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("HOJA DE RUTA").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
