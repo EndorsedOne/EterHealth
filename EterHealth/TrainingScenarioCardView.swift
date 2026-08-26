@@ -56,7 +56,13 @@ struct TrainingScenarioCardView: View {
             }.pickerStyle(.segmented)
             Text(currentPace.explanation).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
             if currentPace == .aggressive {
-                Label("Ritmo Agresivo activo: el plan puede llevarte a zona de riesgo elevado de lesión (carga por encima de 1.55) antes de pedirte descansar.", systemImage: "exclamationmark.triangle.fill")
+                // Antes describía sólo el techo de carga, que era también lo
+                // único que el ritmo movía. Ahora Agresivo baja además el
+                // umbral de disponibilidad, así que el aviso dice las dos
+                // vías por las que puede ponerte al límite — y el día
+                // concreto en que lo hace lo dice el rationale del plan, no
+                // sólo este aviso general.
+                Label("Ritmo Agresivo activo: el plan entrena al límite por dos vías — carga por encima de 1.55 y disponibilidad hasta \(ProgressionPace.aggressive.readinessFloor) (Óptimo pararía en \(ProgressionPace.optimal.readinessFloor)). Riesgo de lesión real; cada día que ocurra te lo dirá la recomendación.", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2.bold()).foregroundStyle(EterTheme.danger).lineSpacing(2)
             }
             if scenarios.isEmpty {

@@ -423,6 +423,7 @@ enum TrainingPlanEngine {
             reviews: reviews, now: now
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
+        let pace = profile.effectiveProgressionPace
         // PR4: un solo clasificador de calidad, configurado una vez con la
         // evidencia real de este atleta (su forecast y su suelo de Z4) y
         // repartido a todos los sitios que preguntan. Antes cada uno
@@ -742,7 +743,7 @@ enum TrainingPlanEngine {
         // "absorber" threshold). Agresivo is the only one that can
         // genuinely exceed 1.55 — see ProgressionPace's own comment for
         // why that's bounded at 1.80, not unbounded.
-        } else if exceedsPaceCeiling(ratio: loadSummary.dual.governingRatio, pace: profile.effectiveProgressionPace) {
+        } else if exceedsPaceCeiling(ratio: loadSummary.dual.governingRatio, pace: pace) {
             next = .recovery
             // Dice QUÉ canal pide absorber: "la carga" en abstracto era
             // justo lo que el ratio combinado no sabía distinguir.
@@ -764,8 +765,9 @@ enum TrainingPlanEngine {
             // of calendar days that happened to have any activity at all.
             next = .recovery
             rationale = "Has acumulado carga real en tres días del último bloque de 72 h. Una pausa ahora mejora la continuidad del microciclo."
-        } else if readiness < 58 {
-            next = .recovery; rationale = "El plan pedía carga, pero hoy conviene absorberla antes de continuar."
+        } else if readiness < pace.readinessFloor {
+            next = .recovery
+            rationale = "El plan pedía carga, pero hoy conviene absorberla antes de continuar (tu ritmo \(pace.rawValue.lowercased()) aguanta hasta \(pace.readinessFloor))."
         } else {
             let decision = balancedDecision(
                 runs: runs.count, targetRuns: targetRuns,
@@ -780,6 +782,7 @@ enum TrainingPlanEngine {
                 trackedLiftDaysSince: trackedLiftDaysSince,
                 recentHardPercentage: recentHardPercentage,
                 avoidLegsTomorrow: avoidLegsToday, learnedLandmarks: learnedLandmarks, interference: interference,
+                pace: pace,
                 lateWeek: lateWeek, readiness: readiness, muscles: muscles,
                 block: block, goalFocus: goalFocus
             )
@@ -803,7 +806,7 @@ enum TrainingPlanEngine {
         // ratio that Óptimo/Conservador would already have stopped at
         // (1.55) — say so explicitly every time, not just in a settings
         // screen the user isn't looking at right now.
-        if let riskDisclosure = aggressiveRiskDisclosure(ratio: loadSummary.dual.governingRatio, pace: profile.effectiveProgressionPace, kind: next) {
+        if let riskDisclosure = aggressiveRiskDisclosure(ratio: loadSummary.dual.governingRatio, pace: pace, kind: next, readiness: readiness) {
             rationale = "\(riskDisclosure) \(rationale)"
         }
 
@@ -1096,6 +1099,7 @@ enum TrainingPlanEngine {
             reviews: reviews, now: now
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
+        let pace = profile.effectiveProgressionPace
         let learnedLandmarks = VolumeLandmarkLearning.learnedMRV(workouts: imports.workouts, now: now)
         // El mismo clasificador configurado que status(), por el mismo motivo.
         let isQualityRun = SessionClassification.qualityRunPredicate(
@@ -1334,15 +1338,15 @@ enum TrainingPlanEngine {
             if let event = eventToday(date, profile: profile) {
                 kind = .raceDay
                 rationale = "Día de \(event.title): el objetivo es ejecutar, no añadir otro entrenamiento."
-            } else if state.readiness < 58 {
+            } else if state.readiness < pace.readinessFloor {
                 kind = .recovery
-                rationale = "Disponibilidad prevista por debajo del umbral de carga."
+                rationale = "Disponibilidad prevista (\(state.readiness)) por debajo del umbral de tu ritmo \(pace.rawValue.lowercased()) (\(pace.readinessFloor))."
             // Same pace-dependent ceiling status() applies to today's real
             // decision — see ProgressionPace's own comment. Replaces the
             // old unconditional "ratio >= 1.55" check: Óptimo's ceiling IS
             // 1.55, so this reproduces the exact old behavior by default;
             // only Agresivo can genuinely go further.
-            } else if exceedsPaceCeiling(ratio: ratio, pace: profile.effectiveProgressionPace) {
+            } else if exceedsPaceCeiling(ratio: ratio, pace: pace) {
                 kind = .recovery
                 rationale = "Con tu ritmo de progresión (\(profile.effectiveProgressionPace.rawValue.lowercased())), la carga acumulada prevista ya pide absorber antes de sumar otra sesión exigente."
             } else if let hoursSinceLong = state.hoursSinceLong, hoursSinceLong < 36 {
@@ -1376,7 +1380,7 @@ enum TrainingPlanEngine {
                     trackedLiftDaysSince: state.trackedLiftDaysSince,
                     recentHardPercentage: recentHardPercentage,
                     avoidLegsTomorrow: avoidLegsThisDay, learnedLandmarks: learnedLandmarks,
-                    interference: dayInterference,
+                    interference: dayInterference, pace: pace,
                     lateWeek: lateWeek, readiness: state.readiness, muscles: simulatedMuscles(),
                     block: block, goalFocus: goalFocus
                 )
@@ -1392,7 +1396,7 @@ enum TrainingPlanEngine {
             // Agresivo's extra margin (over 1.55) is what actually let
             // through.
             let finalRationale: String
-            if let riskDisclosure = aggressiveRiskDisclosure(ratio: ratio, pace: profile.effectiveProgressionPace, kind: kind) {
+            if let riskDisclosure = aggressiveRiskDisclosure(ratio: ratio, pace: pace, kind: kind, readiness: state.readiness) {
                 finalRationale = "\(riskDisclosure) \(rationale)"
             } else {
                 finalRationale = rationale
@@ -1611,9 +1615,22 @@ enum TrainingPlanEngine {
     // say so explicitly, not proceed as if the elevated risk weren't
     // there. Internal (not private) so EngineTests can verify this
     // directly.
-    nonisolated static func aggressiveRiskDisclosure(ratio: Double, pace: ProgressionPace, kind: PlannedSessionKind) -> String? {
-        guard pace == .aggressive, kind != .recovery, ratio >= ProgressionPace.elevatedRiskRatio else { return nil }
-        return "⚠️ Zona de riesgo elevado de lesión (carga \(ratio.formatted(.number.precision(.fractionLength(2))))×, por encima de 1.55 — Gabbett et al.). Tu ritmo Agresivo lo permite hasta 1.80, pero no es la operación habitual."
+    nonisolated static func aggressiveRiskDisclosure(ratio: Double, pace: ProgressionPace,
+                                                     kind: PlannedSessionKind, readiness: Int) -> String? {
+        guard pace == .aggressive, kind != .recovery else { return nil }
+        // Dos formas de estar operando al límite, y cada una se dice cuando
+        // ocurre de verdad — no un aviso genérico permanente por tener el
+        // ritmo puesto.
+        let overRatio = ratio >= ProgressionPace.elevatedRiskRatio
+        let underReadiness = readiness < ProgressionPace.disclosureReadinessFloor
+        guard overRatio || underReadiness else { return nil }
+        if overRatio && underReadiness {
+            return "⚠️ Al límite por dos vías: carga \(ratio.formatted(.number.precision(.fractionLength(2))))× (por encima de 1.55 — Gabbett et al.) y disponibilidad \(readiness), por debajo del \(ProgressionPace.disclosureReadinessFloor) donde Óptimo pararía. Tu ritmo Agresivo lo permite; el riesgo de lesión es real."
+        }
+        if overRatio {
+            return "⚠️ Zona de riesgo elevado de lesión (carga \(ratio.formatted(.number.precision(.fractionLength(2))))×, por encima de 1.55 — Gabbett et al.). Tu ritmo Agresivo lo permite hasta 1.80, pero no es la operación habitual."
+        }
+        return "⚠️ Propuesto con disponibilidad \(readiness), por debajo del \(ProgressionPace.disclosureReadinessFloor) donde Óptimo te mandaría descansar. Es lo que pediste con Agresivo: entrenar al límite asumiendo más riesgo de lesión."
     }
 
     static func bestStrengthPattern(_ muscles: [MuscleReadiness], avoidLegs: Bool = false,
@@ -1832,6 +1849,9 @@ enum TrainingPlanEngine {
         // .protectAerobic no llega aquí, actúa quitando la pierna del patrón
         // de fuerza (avoidLegs), que es el mecanismo que ya existía.
         interference: ConcurrentInterference = .none,
+        // Los umbrales de disponibilidad los fija el ritmo, no una constante:
+        // Óptimo conserva 58/62, que es lo que había fijo aquí.
+        pace: ProgressionPace = .optimal,
         lateWeek: Bool, readiness: Int, muscles: [MuscleReadiness],
         block: TrainingBlock? = nil, goalFocus: GoalTrainingFocus
     ) -> (kind: PlannedSessionKind, rationale: String) {
@@ -1912,13 +1932,13 @@ enum TrainingPlanEngine {
         }()
         if qualityDeficit > 0,
            (hoursSinceQuality.map { $0 >= 72 } ?? true),
-           effectiveLegReadiness >= 62,
+           effectiveLegReadiness >= Double(pace.legReadinessFloor),
            !alreadyOverHardTarget {
             candidates.append(Candidate(kind: .qualityRun,
                 score: baseRunScore + 8 + Double(qualityDeficit) * 6 - interferencePenalty))
         }
 
-        if goalFocus.running > 0.05, lateWeek, effectiveLegReadiness >= 62,
+        if goalFocus.running > 0.05, lateWeek, effectiveLegReadiness >= Double(pace.legReadinessFloor),
            (hoursSinceLong.map { $0 >= 96 } ?? true) {
             let longRunSpacing = min(10, (hoursSinceLong ?? 168) / 24)
             candidates.append(Candidate(kind: .longRun,
@@ -1927,7 +1947,7 @@ enum TrainingPlanEngine {
 
         // Hybrid work is a distinct adaptation for goals such as HYROX. It only
         // enters the competition when that goal has meaningful current weight.
-        if goalFocus.hybrid >= 0.22, readiness >= 65, effectiveLegReadiness >= 62,
+        if goalFocus.hybrid >= 0.22, readiness >= pace.readinessFloor + 7, effectiveLegReadiness >= Double(pace.legReadinessFloor),
            (hoursSinceQuality.map { $0 >= 48 } ?? true) {
             let incomplete = Double(runDeficit + strengthDeficit) * 3
             candidates.append(Candidate(kind: .hybrid,

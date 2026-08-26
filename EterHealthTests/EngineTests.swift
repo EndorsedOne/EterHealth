@@ -2653,6 +2653,58 @@ final class EngineTests: XCTestCase {
         XCTAssertGreaterThan(resting[3].readiness, resting[0].readiness)
     }
 
+    // Agresivo tiene que poner el MODELO en agresivo, no sólo mover el techo
+    // de ratio: antes el umbral de disponibilidad estaba fijo en 58 para los
+    // tres ritmos, así que un atleta en Agresivo se quedaba aparcado por un
+    // gate que ignoraba su ritmo mientras el aviso le prometía lo contrario.
+    func testProgressionPaceMovesTheReadinessFloorNotJustTheRatioCeiling() {
+        XCTAssertEqual(ProgressionPace.optimal.readinessFloor, 58, "Óptimo conserva el número de siempre.")
+        XCTAssertEqual(ProgressionPace.optimal.legReadinessFloor, 62)
+        XCTAssertLessThan(ProgressionPace.aggressive.readinessFloor, ProgressionPace.optimal.readinessFloor,
+                          "Agresivo entrena más fatigado, que es lo que significa.")
+        XCTAssertGreaterThan(ProgressionPace.conservative.readinessFloor, ProgressionPace.optimal.readinessFloor,
+                             "Y Conservador para antes.")
+        XCTAssertLessThan(ProgressionPace.aggressive.legReadinessFloor, ProgressionPace.optimal.legReadinessFloor,
+                          "También la pierna: sin bajarla, calidad y tirada larga seguirían vetadas.")
+    }
+
+    // El caso concreto de la captura: disponibilidad 55, que Óptimo manda a
+    // descansar y Agresivo tiene que aprovechar.
+    func testAtFiftyFiveOptimalRestsAndAggressiveTrains() {
+        let running = GoalTrainingFocus(running: 0.70, strength: 0.20, hybrid: 0, leadingGoal: "Media maratón")
+        func decide(_ pace: ProgressionPace) -> PlannedSessionKind {
+            TrainingPlanEngine.balancedDecision(
+                runs: 0, targetRuns: 4, strength: 1, targetStrength: 2, quality: 0, targetQuality: 1,
+                daysSinceStrength: 2, daysSinceSwim: 14, daysSinceBike: 14,
+                hoursSinceLong: 168, hoursSinceQuality: 96,
+                pace: pace, lateWeek: false, readiness: 55, muscles: muscles(legs: 58),
+                goalFocus: running
+            ).kind
+        }
+        XCTAssertEqual(decide(.aggressive), .qualityRun,
+                       "Con 55 de disponibilidad y 58 de pierna, Agresivo entrena: es lo que se le pidió.")
+        XCTAssertNotEqual(decide(.optimal), .qualityRun,
+                          "Y Óptimo no, con los mismos datos — el ritmo tiene que cambiar la decisión.")
+    }
+
+    // Y avisa cuando de verdad está al límite, no como copy permanente por
+    // tener el ritmo puesto. Dos vías, cada una cuando ocurre.
+    func testAggressiveDisclosesBothWaysOfBeingAtTheLimit() {
+        // Sólo ratio alto.
+        let byRatio = TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .aggressive, kind: .qualityRun, readiness: 70)
+        XCTAssertTrue(byRatio?.contains("1,65") == true || byRatio?.contains("1.65") == true, "\(byRatio ?? "nil")")
+        // Sólo disponibilidad baja: esto antes no avisaba de nada.
+        let byReadiness = TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.1, pace: .aggressive, kind: .qualityRun, readiness: 52)
+        XCTAssertNotNil(byReadiness, "Proponer con 52 cuando Óptimo pararía en 58 tiene que decirse.")
+        XCTAssertTrue(byReadiness?.contains("52") == true)
+        // Las dos a la vez lo dice una sola vez, no dos avisos apilados.
+        let both = TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.7, pace: .aggressive, kind: .qualityRun, readiness: 52)
+        XCTAssertNotNil(both)
+        XCTAssertTrue(both?.contains("dos vías") == true, "\(both ?? "nil")")
+        // Y nada cuando no está al límite por ninguna.
+        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.1, pace: .aggressive, kind: .qualityRun, readiness: 70))
+    }
+
     func testProjectTrajectoryUsesFutureLoadsInsteadOfAssumingRest() {
         let rested = DecisionSimulatorEngine.projectTrajectory(
             tomorrowReadiness: 80, projectedAcuteLoad: aerobicOnly(150), projectedChronicLoad: aerobicOnly(140), days: 3,
@@ -2985,19 +3037,19 @@ final class EngineTests: XCTestCase {
     func testAggressiveRiskDisclosureFiresOnlyWhenAggressivesExtraMarginIsActuallyUsed() {
         // The whole point: never let a real day proceed through the
         // 1.55-1.80 zone silently just because Agresivo tolerates it.
-        XCTAssertNotNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .aggressive, kind: .qualityRun))
+        XCTAssertNotNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .aggressive, kind: .qualityRun, readiness: 70))
         // Óptimo/Conservador never reach this zone without already being
         // sent to .recovery by exceedsPaceCeiling — but the disclosure
         // function itself must still refuse to fire for them, as a
         // second, independent safeguard.
-        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .optimal, kind: .qualityRun))
-        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .conservative, kind: .qualityRun))
+        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .optimal, kind: .qualityRun, readiness: 70))
+        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .conservative, kind: .qualityRun, readiness: 70))
         // A genuinely easy ratio, even under Agresivo, needs no warning.
-        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.2, pace: .aggressive, kind: .qualityRun))
+        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.2, pace: .aggressive, kind: .qualityRun, readiness: 70))
         // A day that's already .recovery doesn't need its own rationale
         // re-flagged with this — exceedsPaceCeiling's own rationale
         // already covers "why recovery today".
-        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .aggressive, kind: .recovery))
+        XCTAssertNil(TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.65, pace: .aggressive, kind: .recovery, readiness: 70))
     }
 
     func testRouteElevationCalculatorSumsOnlyRealDescentSteps() {

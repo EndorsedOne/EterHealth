@@ -216,6 +216,41 @@ enum ProgressionPace: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    // El ritmo movía SÓLO el techo de ratio y el crecimiento semanal — no el
+    // umbral de disponibilidad, que estaba fijo en 58 para los tres. Con eso,
+    // un atleta en Agresivo se quedaba aparcado días enteros por un gate que
+    // ignoraba su ritmo por completo, mientras el aviso de Agresivo le
+    // prometía justo lo contrario ("te llevará a zona de riesgo antes de
+    // pedirte descansar"). Si el ritmo sólo actúa sobre la mitad de los
+    // frenos, no es un ritmo.
+    //
+    // Óptimo conserva los números exactos de siempre (58 y 62), así que el
+    // comportamiento por defecto no se mueve: lo que cambia es que los otros
+    // dos ritmos ahora significan algo.
+    var readinessFloor: Int {
+        switch self {
+        case .conservative: return 64
+        case .optimal: return 58
+        case .aggressive: return 50
+        }
+    }
+
+    // El mismo razonamiento para la pierna, que es lo que gatea calidad,
+    // tirada larga e híbrido: sin bajarlo, Agresivo seguiría vetado por aquí
+    // aunque la disponibilidad general ya lo permitiera.
+    var legReadinessFloor: Int {
+        switch self {
+        case .conservative: return 68
+        case .optimal: return 62
+        case .aggressive: return 54
+        }
+    }
+
+    // Umbral de referencia: por debajo de esto Agresivo está proponiendo algo
+    // que Óptimo no propondría, y eso hay que decirlo en cada día concreto en
+    // que ocurre, no sólo en un aviso genérico de la pantalla de ritmos.
+    static let disclosureReadinessFloor = ProgressionPace.optimal.readinessFloor
+
     // The literature's own danger-zone entry point — where Agresivo's
     // extra margin (over Óptimo) actually starts being used, and where
     // the explicit risk disclosure kicks in.
