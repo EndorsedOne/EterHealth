@@ -745,6 +745,21 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(sled.reps, 0)
     }
 
+    // La duración en un ejercicio de repeticiones es un dato que NO siempre se
+    // mide, no un dato prescindible: es justo el que alimenta el componente de
+    // estaciones del forecast, y por eso se importa de Hevy. Así que cuando se
+    // mide en éter tiene que guardarse igual que si viniera importada.
+    func testDurationOnARepsExerciseIsKeptAlongsideTheReps() {
+        let timedPress = ExerciseCatalog.loggedSet(weight: 80, reps: 8, type: "normal",
+                                                   exerciseName: "Bench Press (Barbell)", durationSeconds: 42)
+        XCTAssertEqual(timedPress.reps, 8, "Lo que cuenta en un ejercicio de reps siguen siendo las reps...")
+        XCTAssertEqual(timedPress.durationSeconds, 42, "...y el tiempo medido se guarda, no se descarta.")
+
+        // Sin medir, no se inventa: nil, nunca cero.
+        XCTAssertNil(ExerciseCatalog.loggedSet(weight: 80, reps: 8, type: "normal",
+                                               exerciseName: "Bench Press (Barbell)").durationSeconds)
+    }
+
     // Trineo, remo y ski se miden por tiempo y distancia, y el catálogo no los
     // tenía en absoluto: sin ellos no se podían registrar en éter.
     func testSledRowAndSkiAreMeasuredByTimeAndDistance() {
