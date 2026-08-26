@@ -165,8 +165,21 @@ enum DecisionSimulatorEngine {
         // El bonus de recuperación de un día de descanso ya no se declara:
         // emerge de que step() decae la fatiga sin añadir carga nueva.
         let tomorrowPhysiology = step(assessment.physiology, session: addedDual, recoverySignals: .none, dtDays: 1)
-        let tomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: context.personalAnchor,
-                                          calibration: context.calibration).score
+        // El DELTA que predice el modelo, aplicado a la disponibilidad real de
+        // hoy — no el valor absoluto de TwinReadout, que está anclado en la
+        // mediana personal y es OTRA escala. Tomarlo directo hacía que
+        // "descansar" se mostrara como 60 -> 49: no era una predicción, era un
+        // cambio de escala, y encima el copy seguía diciendo "parte de tu
+        // disponibilidad actual (60/100)". Un día de descanso no puede costar
+        // 11 puntos.
+        //
+        // Misma decisión que projectTrajectory: el nivel lo fija la
+        // puntuación real, la forma la da step().
+        let todayReadout = TwinReadout.derive(from: assessment.physiology, anchor: context.personalAnchor,
+                                              calibration: context.calibration).score
+        let tomorrowReadout = TwinReadout.derive(from: tomorrowPhysiology, anchor: context.personalAnchor,
+                                                 calibration: context.calibration).score
+        let tomorrow = min(100, max(0, assessment.score + tomorrowReadout - todayReadout))
         let headline: String
         if tomorrow >= 70 { headline = "Mañana seguirías con buena disponibilidad" }
         else if tomorrow >= 50 { headline = "Mañana convendría ajustar la intensidad" }
