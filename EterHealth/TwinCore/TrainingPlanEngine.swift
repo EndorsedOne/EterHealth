@@ -1153,7 +1153,7 @@ enum TrainingPlanEngine {
             let muscles = simulatedMuscles()
             let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegs)
             let goals = profile.goals
-            let proposed = WorkoutPlanner.gym(for: pattern, imports: imports, light: false, muscles: muscles)
+            let proposed = WorkoutPlanner.gym(for: pattern, imports: imports, light: false, muscles: muscles, goals: goals)
             for exercise in proposed.exercises {
                 let context = StrengthPrescriptionEngine.goalContext(for: exercise.name, goals: goals)
                 let band = StrengthPrescriptionEngine.repRange(for: context, light: false)
