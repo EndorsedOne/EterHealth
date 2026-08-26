@@ -1932,6 +1932,35 @@ final class EngineTests: XCTestCase {
         for day in week { XCTAssertFalse(day.rationale.isEmpty) }
     }
 
+    // What the week strip was missing: some sense of exigencia (ritmo/
+    // duración/zona) per day, not just a bare kind + one-line rationale.
+    func testWeekAheadDayForecastCarriesDurationAndIntensityPerKind() {
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil, context: neutralContext, now: Date())
+        for day in week {
+            XCTAssertFalse(day.intensityLabel.isEmpty, "Every kind must carry a non-empty intensity label.")
+            switch day.kind {
+            // Kinds with a real phase-band duration in this app's model
+            // must actually surface it, not silently drop to nil.
+            case .easyRun, .qualityRun, .longRun, .swim, .bike, .brick:
+                XCTAssertNotNil(day.targetMinutes, "\(day.kind) has a real duration band and must not read as nil.")
+                XCTAssertGreaterThan(day.targetMinutes ?? 0, 0)
+            // Kinds with no fixed duration in this app's model (strength
+            // depends on chosen exercises; recovery/race day aren't a
+            // phase-band session) — nil, not a fabricated number.
+            case .strength, .recovery, .hybrid, .raceDay:
+                XCTAssertNil(day.targetMinutes, "\(day.kind) has no fixed phase-band duration and must stay nil, not invent one.")
+            }
+        }
+    }
+
+    func testIntensityLabelMatchesTheSameZonesTodaysProposalUses() {
+        XCTAssertEqual(TrainingPlanEngine.intensityLabel(for: .recovery), "Z1 · muy suave")
+        XCTAssertEqual(TrainingPlanEngine.intensityLabel(for: .easyRun), "Z2 · suave")
+        XCTAssertEqual(TrainingPlanEngine.intensityLabel(for: .qualityRun), "Z3–Z5 · calidad")
+        XCTAssertEqual(TrainingPlanEngine.intensityLabel(for: .longRun), "Z2 · continuo")
+        XCTAssertEqual(TrainingPlanEngine.intensityLabel(for: .strength), "Fuerza")
+    }
+
     func testWeekAheadCanProposeQualityOrLongRunNotOnlyEasyRun() {
         // PR1.5: weekAhead never reads GoalStore.shared — profile is
         // constructed locally and passed directly below, so there's

@@ -808,6 +808,40 @@ enum TrainingPlanEngine {
         // the forward simulation for the rest of the week has no way to
         // know a real session happened on a day that hasn't occurred yet.
         var alreadyTrainedToday: Bool = false
+        // What the week strip was missing: SOME sense of exigencia per day,
+        // not just a kind + one-line rationale. Reuses the exact same
+        // estimatedSessionMinutes/intensityLabel this function's own
+        // simulation already computes internally (muscle-load estimation,
+        // deciding which sessions to schedule) — not a second, separately
+        // invented duration/zone guess. nil for kinds with no fixed
+        // duration in this app's model (recovery, strength, race day —
+        // strength's real duration depends on which exercises get chosen,
+        // not a phase band). Deliberately no distance in km: this app
+        // doesn't compute a per-session target distance anywhere, real or
+        // simulated — only duration + zone — and this doesn't start
+        // guessing one from an assumed pace.
+        let targetMinutes: Int?
+        let intensityLabel: String
+    }
+
+    // Same duration/zone shape "Propuesta de hoy" already shows per
+    // session (Z1 for recovery, Z2 for easy/long/swim/bike, Z3–Z5 for
+    // quality intervals) — a single label per kind, reused here so the
+    // week strip and today's real card can never quietly disagree about
+    // what "calidad" or "tirada larga" mean in terms of effort.
+    nonisolated static func intensityLabel(for kind: PlannedSessionKind) -> String {
+        switch kind {
+        case .recovery: return "Z1 · muy suave"
+        case .easyRun: return "Z2 · suave"
+        case .qualityRun: return "Z3–Z5 · calidad"
+        case .longRun: return "Z2 · continuo"
+        case .strength: return "Fuerza"
+        case .hybrid: return "Mixto · carrera + estaciones"
+        case .swim: return "Z2 · técnica/continuo"
+        case .bike: return "Z2 · continuo"
+        case .brick: return "Mixto · bici + carrera"
+        case .raceDay: return "Competición"
+        }
     }
 
     // A rough, disclosed training-stress estimate per session kind, in the
@@ -975,8 +1009,14 @@ enum TrainingPlanEngine {
                           physiologicalAlert: assessment.physiologicalAlert, now: now)
         let todayKind = override?.kind ?? real.nextSession
         let todayRationale = override?.todayRationale ?? real.rationale
+        // Same activeBlock(on:profile:) called again further down for the
+        // muscle-load fold-in (todayBlock) — cheap and pure, not worth
+        // reordering that later computation just to share this one call.
+        let todayMinutesEstimate = Int(estimatedSessionMinutes(for: todayKind, phase: activeBlock(on: today, profile: profile).phase).rounded())
         var results = [DayForecast(date: today, kind: todayKind, isDeload: override == nil && real.isDeload, rationale: todayRationale,
-                                   alreadyTrainedToday: override == nil && real.alreadyTrainedToday)]
+                                   alreadyTrainedToday: override == nil && real.alreadyTrainedToday,
+                                   targetMinutes: todayMinutesEstimate > 0 ? todayMinutesEstimate : nil,
+                                   intensityLabel: intensityLabel(for: todayKind))]
         guard days > 1 else { return results }
 
         let loadSummary = PerformanceEngine.summarize(health: health, imports: imports, now: now)
@@ -1267,7 +1307,10 @@ enum TrainingPlanEngine {
             } else {
                 finalRationale = rationale
             }
-            results.append(DayForecast(date: date, kind: kind, isDeload: false, rationale: finalRationale))
+            let simulatedMinutesEstimate = Int(estimatedSessionMinutes(for: kind, phase: block.phase).rounded())
+            results.append(DayForecast(date: date, kind: kind, isDeload: false, rationale: finalRationale,
+                                       targetMinutes: simulatedMinutesEstimate > 0 ? simulatedMinutesEstimate : nil,
+                                       intensityLabel: intensityLabel(for: kind)))
         }
         return results
     }
