@@ -209,11 +209,10 @@ struct StrengthTrainingView: View {
 
     var body: some View {
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(),
-                                           events: LifestyleFactorStore.shared.events, reviews: WorkoutReviewStore.shared.reviews,
-                                           activeInjuries: InjuryStore.shared.active,
-                                           calibration: TwinStateStore.shared.calibration,
-                                           personalAnchor: TwinStateStore.shared.personalAnchor(),
-                                           profile: goals.profile)
+                                           context: TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
+                                                                reviews: WorkoutReviewStore.shared.reviews, activeInjuries: InjuryStore.shared.active,
+                                                                calibration: TwinStateStore.shared.calibration,
+                                                                personalAnchor: TwinStateStore.shared.personalAnchor()))
         let automatic = StrengthRoutineBuilder.routines(from: imports)
         let routines = automatic.map {
             StrengthRoutineBuilder.personalized(routineStore.routine(named: $0.name) ?? $0, imports: imports,
@@ -465,18 +464,17 @@ struct DayWorkoutProposalView: View {
     let routines: [StrengthRoutine]
     @State private var activeRoutine: StrengthRoutine?
 
+    private var context: TwinContext {
+        TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events, reviews: WorkoutReviewStore.shared.reviews,
+                   activeInjuries: InjuryStore.shared.active, calibration: TwinStateStore.shared.calibration,
+                   personalAnchor: TwinStateStore.shared.personalAnchor())
+    }
     private var assessment: TwinAssessment {
-        TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(),
-                          events: LifestyleFactorStore.shared.events, reviews: WorkoutReviewStore.shared.reviews,
-                          activeInjuries: InjuryStore.shared.active,
-                          calibration: TwinStateStore.shared.calibration,
-                          personalAnchor: TwinStateStore.shared.personalAnchor(),
-                          profile: goals.profile)
+        TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(), context: context)
     }
     private var plan: WeeklyPlanStatus {
         TrainingPlanEngine.status(health: health, imports: imports, readiness: assessment.score,
-                                  muscles: assessment.muscles, checkIn: checkIns.entry(),
-                                  profile: goals.profile, reviews: WorkoutReviewStore.shared.reviews,
+                                  muscles: assessment.muscles, checkIn: checkIns.entry(), context: context,
                                   physiologicalAlert: assessment.physiologicalAlert)
     }
     private var proposal: StrengthRoutine {

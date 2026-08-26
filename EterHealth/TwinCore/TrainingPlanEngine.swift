@@ -395,8 +395,9 @@ enum TrainingPlanEngine {
     // WorkoutReviewStore singleton instances throughout this function — both required
     // params now, no default, same reasoning as TwinEngine.assess.
     static func status(health: HealthStore, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness], checkIn: DailyCheckIn?,
-                       profile: AthletePlanProfile, reviews: [WorkoutReview],
+                       context: TwinContext,
                        physiologicalAlert: PhysiologicalAlert? = nil, now: Date = Date()) -> WeeklyPlanStatus {
+        let profile = context.profile, reviews = context.reviews
         let calendar = Calendar.current
         let block = activeBlock(on: now, profile: profile)
         // Same pattern WorkoutPlanner already uses to read real recent
@@ -948,16 +949,14 @@ enum TrainingPlanEngine {
     // read somewhere inside this function's own call chain (directly, or
     // via the TwinEngine.assess/status calls it makes internally).
     static func weekAhead(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
-                          profile: AthletePlanProfile, reviews: [WorkoutReview], events: [LifestyleEvent],
-                          activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
+                          context: TwinContext,
                           now: Date = Date(), days: Int = 7, override: DecisionOverride? = nil) -> [DayForecast] {
+        let profile = context.profile, reviews = context.reviews
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
-                                           events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                           calibration: calibration, personalAnchor: personalAnchor, profile: profile, now: now)
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let real = status(health: health, imports: imports, readiness: assessment.score, muscles: assessment.muscles,
-                          checkIn: checkIn, profile: profile, reviews: reviews,
+                          checkIn: checkIn, context: context,
                           physiologicalAlert: assessment.physiologicalAlert, now: now)
         let todayKind = override?.kind ?? real.nextSession
         let todayRationale = override?.todayRationale ?? real.rationale

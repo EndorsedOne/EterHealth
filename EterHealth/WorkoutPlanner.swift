@@ -34,15 +34,12 @@ enum WorkoutPlanner {
         // this is the one place, outside TwinCore, responsible for it.
         let profile = GoalStore.shared.profile
         let reviews = WorkoutReviewStore.shared.reviews
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn,
-                                           events: LifestyleFactorStore.shared.events, reviews: reviews,
-                                           activeInjuries: InjuryStore.shared.active,
-                                           calibration: TwinStateStore.shared.calibration,
-                                           personalAnchor: TwinStateStore.shared.personalAnchor(now: now),
-                                           profile: profile, now: now)
+        let context = TwinContext(profile: profile, events: LifestyleFactorStore.shared.events, reviews: reviews,
+                                  activeInjuries: InjuryStore.shared.active, calibration: TwinStateStore.shared.calibration,
+                                  personalAnchor: TwinStateStore.shared.personalAnchor(now: now))
+        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: assessment.score,
-                                             muscles: assessment.muscles, checkIn: checkIn,
-                                             profile: profile, reviews: reviews,
+                                             muscles: assessment.muscles, checkIn: checkIn, context: context,
                                              physiologicalAlert: assessment.physiologicalAlert, now: now)
         let deload = plan.isDeload
         let bodyweightOnly = !profile.gymAvailable

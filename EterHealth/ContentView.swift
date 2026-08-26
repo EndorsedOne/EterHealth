@@ -245,6 +245,13 @@ struct ContentView: View {
         AnyView(AppScaffold(isLoading: health.isLoading, content: content))
     }
 
+    // PR1.5: the one real-store read every TwinCore call site below shares,
+    // instead of each repeating the same six labels.
+    private var twinContext: TwinContext {
+        TwinContext(profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
+                   activeInjuries: injuries.active, calibration: twinStates.calibration, personalAnchor: twinStates.personalAnchor())
+    }
+
     private func refreshDashboard() {
         guard health.authorizationRequested else { return }
         dashboard.refresh(health: health, imports: imports, checkIn: checkIns.entry(),
@@ -255,17 +262,14 @@ struct ContentView: View {
 
     private var currentAssessment: TwinAssessment {
         dashboard.assessment ?? TwinEngine.assess(
-            health: health, imports: imports, checkIn: checkIns.entry(),
-            events: lifestyle.events, reviews: workoutReviews.reviews, activeInjuries: injuries.active,
-            calibration: twinStates.calibration, personalAnchor: twinStates.personalAnchor(), profile: goals.profile
+            health: health, imports: imports, checkIn: checkIns.entry(), context: twinContext
         )
     }
 
     private var currentPlan: WeeklyPlanStatus {
         dashboard.plan ?? TrainingPlanEngine.status(
             health: health, imports: imports, readiness: currentAssessment.score,
-            muscles: currentAssessment.muscles, checkIn: checkIns.entry(),
-            profile: goals.profile, reviews: workoutReviews.reviews,
+            muscles: currentAssessment.muscles, checkIn: checkIns.entry(), context: twinContext,
             physiologicalAlert: currentAssessment.physiologicalAlert
         )
     }
@@ -748,11 +752,7 @@ struct ContentView: View {
     }
 
     private var trainingBalanceCard: some View {
-        let balance = dashboard.balance ?? PerformanceEngine.balance(
-            health: health, imports: imports, goalProfile: goals.profile,
-            events: lifestyle.events, reviews: workoutReviews.reviews, activeInjuries: injuries.active,
-            calibration: twinStates.calibration, personalAnchor: twinStates.personalAnchor()
-        )
+        let balance = dashboard.balance ?? PerformanceEngine.balance(health: health, imports: imports, context: twinContext)
         return VStack(alignment: .leading, spacing: 15) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("EQUILIBRIO DEL ENTRENAMIENTO").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
@@ -1116,13 +1116,10 @@ struct ContentView: View {
     // of this week from it, via the real/simulación toggle.
     // TwinCore's weekAhead/simulate no longer read GoalStore/
     // LifestyleFactorStore/WorkoutReviewStore/InjuryStore/TwinStateStore
-    // internally — this bundles the real values read from them once, so
-    // the several call sites below don't each repeat five separate reads.
+    // internally — twinContext above bundles the real values read from
+    // them once, so the several call sites below don't each repeat them.
     private func weekAhead(checkIn: DailyCheckIn?, override: TrainingPlanEngine.DecisionOverride? = nil) -> [TrainingPlanEngine.DayForecast] {
-        TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIn,
-                                     profile: goals.profile, reviews: workoutReviews.reviews, events: lifestyle.events,
-                                     activeInjuries: injuries.active, calibration: twinStates.calibration,
-                                     personalAnchor: twinStates.personalAnchor(), override: override)
+        TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: checkIn, context: twinContext, override: override)
     }
 
     private func simulateDecision(_ decision: SimulatedDecision, checkIn: DailyCheckIn?) -> DecisionSimulation {

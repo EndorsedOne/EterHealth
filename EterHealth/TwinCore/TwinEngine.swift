@@ -37,13 +37,13 @@ enum TwinEngine {
     // instance inside this function (LifestyleFactorStore, WorkoutReviewStore,
     // InjuryStore, TwinStateStore's calibration/personalAnchor, GoalStore's
     // profile) is now a required argument instead — the caller (outside
-    // TwinCore) reads the real store and passes the value in. No defaults
-    // on any of them: a call site that forgets one should fail to compile,
+    // TwinCore) reads the real store and passes the value in. No default
+    // on it: a call site that forgets to build one should fail to compile,
     // not silently fall back to a store this function can no longer see.
     static func assess(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil,
-                       events: [LifestyleEvent], reviews: [WorkoutReview], activeInjuries: [InjuryRecord],
-                       calibration: TwinCalibration, personalAnchor anchor: PersonalReadinessAnchor,
-                       profile: AthletePlanProfile, now: Date = Date()) -> TwinAssessment {
+                       context: TwinContext, now: Date = Date()) -> TwinAssessment {
+        let events = context.events, reviews = context.reviews, activeInjuries = context.activeInjuries
+        let calibration = context.calibration, anchor = context.personalAnchor, profile = context.profile
         var score = anchor.score
         var signals: [TwinSignal] = []
         let personal = PersonalBaselineEngine.profile(health: health, imports: imports, now: now)
@@ -314,7 +314,7 @@ enum TwinEngine {
 
         let physicalRecommendation = recommendation(score: score, muscles: muscleReadiness, urgentPattern: urgentLiftPattern(imports: imports, profile: profile, now: now))
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: score, muscles: muscleReadiness, checkIn: checkIn,
-                                             profile: profile, reviews: reviews, physiologicalAlert: physiologicalAlert, now: now)
+                                             context: context, physiologicalAlert: physiologicalAlert, now: now)
         let plannedRecommendation = plan.nextSession == .strength ? physicalRecommendation : plan.nextSession.rawValue
         let recommendation = safeRecommendation(plannedRecommendation, injuries: activeInjuries)
         let state = score >= 80 ? "Preparado" : score >= 62 ? "Disponible" : score >= 45 ? "Carga moderada" : "Recuperación prioritaria"
