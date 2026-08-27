@@ -78,8 +78,8 @@ flowchart TD
         ALERT --> STATUS
         STATUS[TrainingPlanEngine.status] --> WPS[WeeklyPlanStatus<br/>block · dosis · nextSession · rationale]
         STATUS --> WEEK[TrainingPlanEngine.weekAhead<br/>simulación forward -> DayForecast x7]
-        LM[MuscleVolumeLandmarks<br/>MEV/MAV/MRV] --> STATUS
-        VLL[VolumeLandmarkLearning<br/>MRV aprendido] --> LM
+        LM[MuscleVolumeLandmarks<br/>priors MEV/MAV/MRV] --> STATUS
+        VLL[VolumeLandmarkLearning<br/>MRV aprendido + volumen sostenido] --> LM
     end
 
     WPS --> WP[WorkoutPlanner.propose]
@@ -176,12 +176,38 @@ divergir.
 
 ### 3.3 Landmarks de volumen MEV / MAV / MRV
 
-`MuscleVolumeLandmarkTable.landmarks(for:learned:)` da series semanales por
-grupo muscular (10 grupos, los mismos nombres que `MuscleReadiness`). El MAV
-es un **prior** por tabla; MEV = 0.5 × MAV; MRV = 1.5 × MAV **salvo** que
-`VolumeLandmarkLearning` haya podido estimar un MRV real de este atleta, que
-manda sobre el prior. Ver la cabecera de `MuscleVolumeLandmarks.swift` para
-el origen de los números y sus límites.
+`MuscleVolumeLandmarkTable.landmarks(for:learned:sustained:)` da **series
+directas semanales** por grupo muscular (10 grupos, los mismos nombres que
+`MuscleReadiness`). El MAV es un **prior** de tabla, situado en la banda de
+~10–20 series/músculo/semana que describen los meta-análisis de
+dosis-respuesta de volumen para intermedios; MEV = 0.5 × MAV y
+MRV = 1.5 × MAV son ratios fijos.
+
+Dos cosas se individualizan, y sólo desde datos reales de entrenamiento:
+
+- **MRV aprendido** — `VolumeLandmarkLearning.learnedMRV` estima la frontera
+  por encima de la cual el e1RM de este atleta se estanca. Cuando existe,
+  manda sobre el prior. Exige 8 semanas con volumen, 5 juzgables, 3 de cada
+  clase, y que las semanas estancadas lleven de verdad más volumen que las
+  que progresaron; si no, no afirma nada.
+- **Ajuste de tolerancia del MAV** — `sustainedWeeklySets` mide (mediana de
+  12 semanas) cuánto volumen sostiene realmente en cada músculo, y el MAV se
+  mueve a medio camino entre el prior y esa realidad, **acotado a ±25 %** del
+  prior. Es un empujón del prior, no un landmark aprendido. Los tres
+  landmarks se mueven con él.
+
+Los dos llegan juntos en un `VolumeLandmarkContext`, y el MRV aprendido se
+acota contra el prior **puro** para que el empujón y el aprendizaje no se
+amplifiquen mutuamente.
+
+El tren inferior se queda deliberadamente en el extremo **bajo** de la
+banda: `recentSets` cuenta series de resistencia (Hevy), así que el estímulo
+real que la carrera y la bici dan a cuádriceps/glúteos/isquios/gemelos es
+invisible para estos landmarks. Bíceps, tríceps y core también, porque
+`MuscleMap.involvement` ya acredita trabajo indirecto ponderado y pedir la
+banda alta de series *directas* encima de ese crédito contaría dos veces.
+La cabecera de `MuscleVolumeLandmarks.swift` documenta el origen de cada
+número y la tabla de antes/después.
 
 Se usan en `volumeUrgency`, que empuja la elección de patrón de fuerza:
 por debajo de MEV → +25 (déficit real), MEV–MAV → +10, MAV–MRV → −10,
@@ -214,14 +240,30 @@ primero que dispara gana:
    de lifts trackeados, frescura muscular, interferencia concurrente,
    distribución de intensidad reciente y `goalFocus`.
 
-Después de elegir, dos ajustes:
+Después de elegir, tres ajustes, en este orden:
 
-- **Alerta `.caution`**: si el resultado era `.qualityRun`, `.longRun`,
-  `.hybrid` o `.brick`, se sustituye por `.easyRun` y se dice por qué. La
-  fuerza no se toca (su propio factor de carga por readiness ya modera).
-- **Divulgación de riesgo de Agresivo**: si hoy no es recuperación sólo
-  porque el techo 1.80 lo tolera donde 1.55 ya habría parado, se dice
-  explícitamente en el `rationale`.
+1. **Alerta `.caution`**: si el resultado era `.qualityRun`, `.longRun`,
+   `.hybrid` o `.brick`, se sustituye por `.easyRun` y se dice por qué. La
+   fuerza no se toca (su propio factor de carga por readiness ya modera).
+2. **Veto por lesión**: `InjurySafetyEngine.allows(_:injuries:)` y
+   `allowedPatterns(injuries:)` son la única definición de qué bloquea cada
+   restricción activa. Un kind bloqueado pasa a `.recovery`; un patrón de
+   fuerza bloqueado se sustituye por el mejor compatible, y si no queda
+   ninguno el día pasa a `.recovery`. Va después del punto 1 porque esa
+   sustitución puede producir una carrera suave, que también puede estar
+   restringida. El `nextSession` que sale de `status` ya es compatible: el
+   motor y la UI no pueden discrepar.
+3. **Divulgación de riesgo de Agresivo**: si hoy no es recuperación sólo
+   porque el techo 1.80 lo tolera donde 1.55 ya habría parado, se dice
+   explícitamente en el `rationale`.
+
+Cuando el día es de fuerza, `status` elige además **un solo**
+`StrengthPattern` (pierna / empuje / tirón) y lo publica en
+`WeeklyPlanStatus.strengthPattern`. `TrainingPlanEngine.strengthPattern(...)`
+resuelve en orden: restricciones por lesión → `avoidLegs` por interferencia
+concurrente → un lift trackeado vencido (≥10 días, si su grupo está ≥55) →
+frescura + urgencia de volumen. Es el mismo patrón que se muestra y el que
+se entrena.
 
 **Deload**: `loadSummary.dual.guidance == .deload` y ningún evento hoy →
 `isDeload`. Recorta ~30 % los objetivos de sesiones
@@ -309,37 +351,44 @@ kcal/min.
 
 Están documentadas en el código, en el sitio donde ocurren. Resumen:
 
-1. **MEV/MAV/MRV no son individuales.** El MAV es un prior por tabla; MEV y
-   MRV se derivan con ratios fijos 0.5× / 1.5×. La literatura describe
-   espaciados de landmark que varían músculo a músculo, y ninguno de los tres
-   se ajusta por experiencia, edad o historial de la persona. Sólo el MRV
-   puede sobrescribirse con aprendizaje real (`VolumeLandmarkLearning`), y
-   sólo cuando hay evidencia suficiente.
-2. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
+1. **MEV/MAV/MRV no son individuales por experiencia, edad ni
+   antropometría.** El MAV es un prior de tabla y MEV/MRV se derivan con
+   ratios fijos 0.5× / 1.5×; la literatura describe espaciados de landmark
+   que varían músculo a músculo. Lo único que individualiza es lo que sale
+   del propio historial de entrenamiento (MRV aprendido y ajuste de
+   tolerancia del MAV, ±25 %), y no se intenta derivarlos de edad o tamaño
+   corporal: esta app no puede medir "años de entrenamiento efectivo", y la
+   evidencia para escalar landmarks por esas variables es mucho más débil
+   que la que sostiene la banda de 10–20.
+2. **El estímulo de pierna del cardio no cuenta hacia los landmarks.**
+   `recentSets` sale de las series de Hevy; una tirada larga no aparece ahí.
+   Los priors de tren inferior están calibrados a la baja precisamente por
+   eso, pero es una compensación de tabla, no una medición.
+3. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
    Banister-style que ya usaba `TrainingScenarioEngine`, partida en dos
    canales. No se ajustan por atleta.
-3. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
+4. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
    `DualLoad.split` da 0.6/0.4 a híbrido y brick. No sale de medición.
-4. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
+5. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
    partir el historial de alguien por tipo de sesión *planificada*, así que
    la carga estimada por `PlannedSessionKind` es una tabla, no un ajuste.
-5. **La dosis de carrera no se escala por distancia objetivo** en
+6. **La dosis de carrera no se escala por distancia objetivo** en
    `status` (sí en `WorkoutPlanner`, que es donde sale la prescripción real).
    Es una señal secundaria de ponderación, y duplicar ahí la resolución de
    `targetKilometers` no compensa.
-6. **La dosis de brick no tiene techo personal**: no existe una actividad
+7. **La dosis de brick no tiene techo personal**: no existe una actividad
    HealthKit única "brick" contra la que medir "el brick más largo
    reciente".
-7. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
+8. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
    ventana simulada (readiness, `hoursSince*`, y la semilla de `recentSets`
    no rueda fuera de su ventana de 7 días). Es una simplificación asumida y
    comentada, no un descuido.
-8. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
+9. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
    de un solo canal combinado dentro de `ForwardState`, no en los dos
    canales de `DualLoad`.
-9. **`MuscleMap` hace matching de substrings en inglés** (la convención de
+10. **`MuscleMap` hace matching de substrings en inglés** (la convención de
    los exports de Hevy). Nombres en español caen al bucket genérico.
-10. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
+11. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
     (macOS purga `/tmp`). No es un fallo: es un skip explícito.
 
 ---
