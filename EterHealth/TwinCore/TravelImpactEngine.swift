@@ -181,10 +181,16 @@ struct TravelSignalContext {
     var sleepHistory: [TrendPoint]
     var hrvHistory: [TrendPoint]
     var restingHeartRateHistory: [TrendPoint]
+    /// Horarios reales de acostarse y levantarse. Entra en la confirmación de
+    /// estabilidad porque una re-sincronización circadiana es, literalmente,
+    /// que el horario de sueño se haya movido al huso local: dormir 8 h
+    /// tranquilas a la hora de casa en Tokio no es haberse adaptado.
+    var sleepSchedule: [NightlySleepSchedule]
     var confounders: TravelConfounders
 
     static let none = TravelSignalContext(baseline: nil, sleepHistory: [], hrvHistory: [],
-                                          restingHeartRateHistory: [], confounders: .none)
+                                          restingHeartRateHistory: [], sleepSchedule: [],
+                                          confounders: .none)
 }
 
 // MARK: - Motor
@@ -227,7 +233,26 @@ enum TravelImpactEngine {
                                    rates: ReentrainmentRates = .prior) -> TravelImpact {
         guard let episode else { return .none }
         let phase = episode.phase(at: date, rates: rates)
-        guard phase.isActive else { return .none }
+        guard phase.isActive else {
+            // Un episodio ya recuperado no tiene impacto — pero puede quedar
+            // por medir. Si la estabilidad de la vuelta nunca se confirmó y la
+            // ventana de gracia sigue abierta, se sigue buscando: sin esto, una
+            // estabilización más LENTA que la predicha era imposible de
+            // registrar, y el aprendizaje sólo veía respuestas iguales o más
+            // rápidas que el prior (sesgo sistemático hacia arriba).
+            //
+            // Todo lo demás se queda a cero, así que `isMeaningful` es false y
+            // ni el techo de intensidad ni las señales de assess se enteran:
+            // esto sólo alimenta la captura de la medición.
+            guard phase == .recovered,
+                  let window = episode.stabilityMeasurableUntil(leg: .homeReturn, rates: rates),
+                  date <= window,
+                  let stabilized = stabilizedDate(episode: episode, at: date, signals: signals,
+                                                  rates: rates, measuringLeg: .homeReturn) else { return .none }
+            return TravelImpact(phase: phase, circadianOffsetHours: 0, travelFatigue: 0, factors: [],
+                                confidence: confidence(signals: signals, stabilized: true),
+                                confounders: signals.confounders, stabilizedAt: stabilized)
+        }
 
         let stabilized = stabilizedDate(episode: episode, at: date, signals: signals, rates: rates)
         let offset = circadianOffset(episode: episode, at: date, stabilizedAt: stabilized, rates: rates)
@@ -369,36 +394,71 @@ enum TravelImpactEngine {
 
     // MARK: Estabilidad
 
+    /// Cuánto puede variar la hora de acostarse respecto a la mediana local
+    /// antes de que la noche no cuente como estabilizada. 90 minutos es la
+    /// misma banda que SleepRegularityEngine ya usa como frontera de
+    /// irregularidad; no es un umbral nuevo inventado aquí.
+    static let bedtimeStabilityToleranceMinutes = 90.0
+
     /// La fecha en la que se cumplieron `stabilityDays` días consecutivos con
-    /// sueño Y HRV dentro de las bandas personales. nil cuando todavía no ha
+    /// TODAS las señales disponibles dentro de banda. nil cuando todavía no ha
     /// pasado o cuando falta algún dato: un día sin medición ROMPE la racha,
     /// porque "tres días consecutivos dentro de banda" exige conocer los tres.
-    /// Afirmar estabilidad con huecos sería exactamente el tipo de dato
-    /// inventado que esta app no se permite.
+    ///
+    /// Señales, y por qué estas: sueño (duración) y HRV son obligatorias — sin
+    /// banda personal de las dos no se afirma nada. El pulso en reposo y la
+    /// REGULARIDAD del horario de sueño entran como CONFIRMACIÓN adicional
+    /// cuando hay dato: si están y se salen de banda, el día no cuenta; si no
+    /// están, no penalizan.
+    ///
+    /// El horario de sueño se añadió por un comentario de review acertado:
+    /// duración y HRV no distinguen "me he adaptado a Tokio" de "duermo bien a
+    /// la hora de Madrid mientras estoy en Tokio", y esa distinción ES la
+    /// re-sincronización circadiana. Sin ella se podía cerrar el desajuste de
+    /// alguien que nunca movió su reloj.
+    /// `measuringLeg` fuerza qué tramo se está midiendo, para los casos en los
+    /// que la fase ya no lo dice (un episodio recuperado cuya vuelta quedó sin
+    /// medir). nil = se deduce de la fase, que es el caso normal.
     nonisolated static func stabilizedDate(episode: TravelEpisode, at date: Date,
                                            signals: TravelSignalContext,
-                                           rates: ReentrainmentRates = .prior) -> Date? {
+                                           rates: ReentrainmentRates = .prior,
+                                           measuringLeg: TravelLeg? = nil) -> Date? {
         guard let baseline = signals.baseline,
               let sleepFloor = baseline.sleep.lowerNormal,
               let hrvFloor = baseline.hrv.lowerNormal else { return nil }
+        let restingCeiling = baseline.restingHeartRate.upperNormal
         let phase = episode.phase(at: date, rates: rates)
         let start: Date?
-        switch phase {
-        case .destinationAdaptation, .destinationStable: start = episode.destinationArrival
-        case .homeReadaptation: start = episode.homeArrival
-        default: return nil
+        if let measuringLeg {
+            start = measuringLeg == .homeReturn ? episode.homeArrival : episode.destinationArrival
+        } else {
+            switch phase {
+            case .destinationAdaptation, .destinationStable: start = episode.destinationArrival
+            case .homeReadaptation: start = episode.homeArrival
+            default: return nil
+            }
         }
         guard let start else { return nil }
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
+        // La hora de acostarse a la que se compara: la mediana de las noches
+        // ya pasadas EN DESTINO (o en casa, tras volver), en hora local de ese
+        // sitio. No la de antes del viaje: adaptarse significa converger al
+        // reloj de donde estás, no volver al de donde venías.
+        let localZone = (measuringLeg ?? (phase == .homeReadaptation ? .homeReturn : .outbound)) == .homeReturn
+            ? TimeZone(identifier: episode.homeTimeZoneID)
+            : TimeZone(identifier: episode.destinationTimeZoneID)
+        let medianBedtimeMinutes = medianBedtimeMinutesFromMidnight(
+            schedule: signals.sleepSchedule, from: start, to: date, in: localZone)
+
         var streak = 0
         var cursor = calendar.startOfDay(for: start)
         let limit = calendar.startOfDay(for: date)
         while cursor <= limit {
-            let sleep = value(in: signals.sleepHistory, on: cursor, calendar: calendar)
-            let hrv = value(in: signals.hrvHistory, on: cursor, calendar: calendar)
-            if let sleep, let hrv, sleep >= sleepFloor, hrv >= hrvFloor {
+            if dayIsStable(cursor, calendar: calendar, signals: signals,
+                           sleepFloor: sleepFloor, hrvFloor: hrvFloor, restingCeiling: restingCeiling,
+                           medianBedtimeMinutes: medianBedtimeMinutes, localZone: localZone) {
                 streak += 1
                 if streak >= stabilityDays { return cursor }
             } else {
@@ -408,6 +468,61 @@ enum TravelImpactEngine {
             cursor = next
         }
         return nil
+    }
+
+    /// Un día cuenta como estabilizado si todas las señales CON DATO están en
+    /// banda. Sueño y HRV son obligatorias (sin ellas no se llega hasta aquí);
+    /// pulso en reposo y regularidad de horario confirman cuando existen.
+    private nonisolated static func dayIsStable(
+        _ day: Date, calendar: Calendar, signals: TravelSignalContext,
+        sleepFloor: Double, hrvFloor: Double, restingCeiling: Double?,
+        medianBedtimeMinutes: Double?, localZone: TimeZone?
+    ) -> Bool {
+        guard let sleep = value(in: signals.sleepHistory, on: day, calendar: calendar),
+              let hrv = value(in: signals.hrvHistory, on: day, calendar: calendar),
+              sleep >= sleepFloor, hrv >= hrvFloor else { return false }
+        if let restingCeiling,
+           let resting = value(in: signals.restingHeartRateHistory, on: day, calendar: calendar),
+           resting > restingCeiling { return false }
+        if let medianBedtimeMinutes, let localZone,
+           let bedtime = signals.sleepSchedule.first(where: { calendar.isDate($0.night, inSameDayAs: day) })?.bedtime {
+            let minutes = minutesFromLocalMidnight(bedtime, in: localZone)
+            if abs(shortestAngularDifference(minutes, medianBedtimeMinutes)) > bedtimeStabilityToleranceMinutes {
+                return false
+            }
+        }
+        return true
+    }
+
+    private nonisolated static func medianBedtimeMinutesFromMidnight(
+        schedule: [NightlySleepSchedule], from start: Date, to end: Date, in zone: TimeZone?
+    ) -> Double? {
+        guard let zone else { return nil }
+        let values = schedule.filter { $0.night >= start && $0.night <= end }
+            .map { minutesFromLocalMidnight($0.bedtime, in: zone) }
+        // Con menos de tres noches no hay mediana que describa una costumbre,
+        // y comparar contra una o dos convertiría el ruido en criterio.
+        guard values.count >= stabilityDays else { return nil }
+        let sorted = values.sorted(), middle = sorted.count / 2
+        return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+    }
+
+    private nonisolated static func minutesFromLocalMidnight(_ date: Date, in zone: TimeZone) -> Double {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        return Double((parts.hour ?? 0) * 60 + (parts.minute ?? 0))
+    }
+
+    /// Distancia en minutos sobre un reloj de 24 h. Sin esto, acostarse a las
+    /// 23:50 y a las 00:10 saldrían a 1420 minutos de distancia en vez de a 20
+    /// — y toda noche que cruza medianoche rompería la racha.
+    private nonisolated static func shortestAngularDifference(_ a: Double, _ b: Double) -> Double {
+        let day = 24.0 * 60
+        let raw = (a - b).truncatingRemainder(dividingBy: day)
+        if raw > day / 2 { return raw - day }
+        if raw < -day / 2 { return raw + day }
+        return raw
     }
 
     private nonisolated static func value(in history: [TrendPoint], on day: Date, calendar: Calendar) -> Double? {

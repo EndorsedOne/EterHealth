@@ -1217,7 +1217,7 @@ struct ContentView: View {
                                          profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
                                          activeInjuries: injuries.active, calibration: twinStates.calibration,
                                          personalAnchor: twinStates.personalAnchor(),
-                                         travel: travel.currentEpisode())
+                                         travel: travel.currentEpisode(), travelHistory: travel.episodes)
     }
 
     private var weekAheadCard: some View {
@@ -1403,7 +1403,11 @@ struct ContentView: View {
     private func captureTravelStabilityIfNeeded(_ assessment: TwinAssessment) {
         guard let episode = travel.currentEpisode(),
               let stabilizedAt = assessment.travel.stabilizedAt else { return }
-        let leg: TravelLeg = assessment.travel.phase == .homeReadaptation ? .homeReturn : .outbound
+        // `.recovered` también puede traer medición: el motor sigue buscando la
+        // estabilidad de la vuelta dentro de la ventana de gracia aunque la
+        // fase ya haya cerrado (ver TravelEpisode.stabilityMeasurableUntil).
+        let leg: TravelLeg = [.homeReadaptation, .recovered].contains(assessment.travel.phase)
+            ? .homeReturn : .outbound
         guard let anchor = leg == .homeReturn ? episode.homeArrival : episode.destinationArrival,
               stabilizedAt >= anchor else { return }
         travel.recordStability(episodeID: episode.id, leg: leg,

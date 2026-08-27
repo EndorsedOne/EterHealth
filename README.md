@@ -485,6 +485,28 @@ cobrar: ya cuentan una vez en las señales propias de `assess`.
 
 ### 4.1 Tu respuesta a los viajes (aprendizaje)
 
+**Cuándo se considera estable**: `stabilityDays` = 3 días consecutivos con
+todas las señales disponibles dentro de banda. Sueño (duración) y HRV son
+obligatorias; **pulso en reposo** y **regularidad del horario local de sueño**
+confirman cuando hay dato y no penalizan cuando falta. El horario importa
+porque duración y HRV no distinguen "me he adaptado a Tokio" de "duermo bien a
+la hora de Madrid mientras estoy en Tokio", y esa distinción *es* la
+re-sincronización circadiana. Un día sin dato rompe la racha.
+
+**"Recuperado" no significa "se agotó la estimación"**: la fase cierra en la
+estabilidad **medida** cuando existe, y sólo cae a la duración estimada cuando
+nadie confirmó nada. `TravelEpisode.phaseBasis(at:)` dice cuál de las dos es
+(`.measuredStability` / `.estimatedDurationElapsed`), para que la UI nunca
+presente una predicción cumplida como una medición.
+
+**Ventana de gracia** (`stabilityGraceMultiple` = ×2): la estabilidad se sigue
+buscando hasta el doble de la duración estimada aunque la fase ya haya
+cerrado. Sin esto el aprendizaje tenía un **sesgo sistemático**: una respuesta
+más lenta que el prior nunca podía registrarse, así que el aprendiz sólo veía
+respuestas iguales o más rápidas y la tasa aprendida derivaba hacia arriba
+viaje tras viaje. El margen no alarga la fase — eso haría que la línea temporal
+prometiera más de lo que mide.
+
 Cuando un tramo se estabiliza, los días reales se **guardan** en el episodio
 (`TravelEpisode.measuredOutcome`). No es una excepción a "la fase se deriva": es
 una medición, y tiene que persistirse porque las series de HRV y sueño de
@@ -559,10 +581,14 @@ Están documentadas en el código, en el sitio donde ocurren. Resumen:
    viaje podría pasar de "adaptarse" a "mantener horario" entre dos aperturas
    de la app sin que nadie tocara nada. Es una decisión de planificación que
    el atleta ve y puede sobrescribir, así que se queda estable.
-6. **`LifestyleEvent.timeZoneDifference` sigue en el modelo, ya sin ningún
-   consumidor.** Se conserva sólo para que las copias de seguridad y los
-   eventos ya guardados sigan decodificando. Ni la UI lo escribe ni ningún
-   motor lo lee.
+6. **`LifestyleEvent.timeZoneDifference` sigue en el modelo, marcado como
+   legado.** Se conserva sólo para que las copias de seguridad y los eventos ya
+   guardados sigan decodificando. Ni la UI lo escribe, ni ningún motor lo lee,
+   ni aparece en el resumen del evento, ni puede hacer que un evento cuente
+   como significativo. Lo que impide que vuelva a la vida es un test
+   (`testTheLegacyDailyTravelFieldIsInertEverywhere`) y no un
+   `@available(deprecated)`, que sólo habría añadido warnings permanentes sobre
+   el propio archivo que tiene que declararlo.
 7. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
    Banister-style que ya usaba `TrainingScenarioEngine`, partida en dos
    canales. No se ajustan por atleta.

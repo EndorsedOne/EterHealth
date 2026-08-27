@@ -77,6 +77,13 @@ enum DecisionSimulatorEngine {
     // WorkoutReviewStore/InjuryStore/TwinStateStore singleton instances,
     // needed here both directly (TwinEngine.assess below) and via
     // forwardPlanLoads' own call into TrainingPlanEngine.weekAhead.
+    // PR17: `travelHistory` va igual de explícito que `travel`. Sin él, este
+    // simulador construía su TwinContext con el historial vacío, así que
+    // TravelLearningEngine caía al prior: la tarjeta de hoy proyectaba con TUS
+    // tasas medidas y el simulador con las de la literatura, sobre el mismo
+    // viaje. Mismo fallo de dos-motores que PR15 vino a cerrar, un nivel más
+    // abajo.
+    //
     // PR15: `travel` es un parámetro explícito y no un default. Esta función
     // construye su propio TwinContext desde los seis parámetros sueltos (ver
     // el comentario de abajo), así que un `travel` con default nil habría
@@ -87,11 +94,12 @@ enum DecisionSimulatorEngine {
     static func simulate(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                         profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
                         activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
-                        travel: TravelEpisode?, now: Date = Date()) -> DecisionSimulation {
+                        travel: TravelEpisode?, travelHistory: [TravelEpisode], now: Date = Date()) -> DecisionSimulation {
         if decision.isLifestyle {
             return simulateLifestyle(decision, health: health, imports: imports, checkIn: checkIn,
                                      profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                     calibration: calibration, personalAnchor: personalAnchor, travel: travel, now: now)
+                                     calibration: calibration, personalAnchor: personalAnchor,
+                                     travel: travel, travelHistory: travelHistory, now: now)
         }
         // PR1.5: assembled once and reused below for both the assess() call
         // and (via forwardPlanLoads) weekAhead — this function's own
@@ -99,7 +107,7 @@ enum DecisionSimulatorEngine {
         // callers outside TwinCore already have them as six separate reads.
         let context = TwinContext(profile: profile, events: events, reviews: reviews,
                                   activeInjuries: activeInjuries, calibration: calibration,
-                                  personalAnchor: personalAnchor, travel: travel)
+                                  personalAnchor: personalAnchor, travel: travel, travelHistory: travelHistory)
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let added: Double
@@ -229,10 +237,10 @@ enum DecisionSimulatorEngine {
     private static func simulateLifestyle(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                                           profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
                                           activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
-                                          travel: TravelEpisode?, now: Date = Date()) -> DecisionSimulation {
+                                          travel: TravelEpisode?, travelHistory: [TravelEpisode], now: Date = Date()) -> DecisionSimulation {
         let context = TwinContext(profile: profile, events: events, reviews: reviews,
                                   activeInjuries: activeInjuries, calibration: calibration,
-                                  personalAnchor: personalAnchor, travel: travel)
+                                  personalAnchor: personalAnchor, travel: travel, travelHistory: travelHistory)
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let associations = HabitAssociationEngine.analyze(

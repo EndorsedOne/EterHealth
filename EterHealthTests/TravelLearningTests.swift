@@ -370,4 +370,224 @@ final class TravelLearningTests: XCTestCase {
         cancelled.isCancelled = true
         XCTAssertTrue(HabitAssociationEngine.travelOccurrences(episodes: [cancelled], now: after).isEmpty)
     }
+
+    // MARK: - PR17: los cinco puntos de la review
+
+    /// Bandas personales de fixture. Duplicado de TravelImpactTests a
+    /// propósito: son dos suites con fixtures independientes, y compartirlo
+    /// las acoplaría sin ganar nada.
+    private func baseline(sleepFloor: Double, hrvFloor: Double) -> PersonalBaselineProfile {
+        func metric(_ name: String, lower: Double, upper: Double) -> PersonalMetricBaseline {
+            PersonalMetricBaseline(name: name, current: nil, expected: (lower + upper) / 2,
+                                   lowerNormal: lower, upperNormal: upper, deviation: 0,
+                                   samples: 30, confidence: 80, context: "", measuredAt: nil)
+        }
+        return PersonalBaselineProfile(
+            hrv: metric("HRV", lower: hrvFloor, upper: 120),
+            restingHeartRate: metric("Pulso", lower: 40, upper: 58),
+            sleep: metric("Sueño", lower: sleepFloor, upper: 9),
+            wristTemperature: metric("Temperatura", lower: 35, upper: 37),
+            respiratoryRate: metric("Respiratoria", lower: 12, upper: 18),
+            muscleRecoveryHours: [:]
+        )
+    }
+
+    func testEditingATripNeverWipesTheMeasuredOutcome() {
+        // El peor de los cinco: el editor reconstruía el episodio sin
+        // `measuredOutcome`, así que cambiar una nota borraba los días de
+        // estabilidad ya medidos — y para un viaje pasado la pérdida es
+        // permanente, porque las series que los demostraban ya no están en la
+        // ventana de 90 días de HealthKit.
+        let store = TravelEpisodeStore()
+        for episode in store.episodes { store.delete(id: episode.id) }
+        defer { for episode in store.episodes { store.delete(id: episode.id) } }
+
+        let measured = measuredTokyo(index: 0, destinationDays: 4, homeDays: 2)
+        store.save(measured)
+        XCTAssertNotNil(store.episodes.first?.measuredOutcome)
+
+        // Una edición que NO trae la medición (exactamente lo que hacía el
+        // editor) no puede perderla: el store la conserva por construcción.
+        var edited = measured
+        edited.note = "cambio una nota y nada más"
+        edited.measuredOutcome = nil
+        store.save(edited)
+        XCTAssertEqual(store.episodes.first?.note, "cambio una nota y nada más")
+        XCTAssertEqual(store.episodes.first?.measuredOutcome?.destinationStabilityDays, 4,
+                       "La medición sobrevive a un save que no la trae.")
+        XCTAssertEqual(store.episodes.first?.measuredOutcome?.homeStabilityDays, 2)
+        // Y el aprendizaje sigue en pie después de la edición.
+        XCTAssertEqual(TravelLearningEngine.outcomes(from: store.episodes)
+                        .first { $0.leg == .outbound }?.actualDays, 4)
+    }
+
+    func testTheStoreDecidesTheActiveEpisodeWithTheLearnedRatesNotThePrior() {
+        // Si el store cierra el episodio con el prior mientras el gemelo evalúa
+        // con una tasa aprendida más LENTA, el motor se queda sin episodio
+        // mientras todavía quedaba desajuste que contar.
+        let store = TravelEpisodeStore()
+        for episode in store.episodes { store.delete(id: episode.id) }
+        defer { for episode in store.episodes { store.delete(id: episode.id) } }
+
+        // Tres tramos de vuelta LENTOS: 8 h al oeste en 10 días = 0.8 h/día.
+        // Dentro del suelo (×0.5 del prior de 1.5 = 0.75), así que no se acota
+        // — pero bastante más lento que el prior, que es lo que este test
+        // necesita: la readaptación aprendida dura casi el doble.
+        for index in 0...2 { store.save(measuredTokyo(index: index, destinationDays: 4, homeDays: 10)) }
+        let learned = TravelLearningEngine.profile(episodes: store.episodes).rates
+        XCTAssertEqual(learned.delayHoursPerDay, 0.8, accuracy: 0.001)
+        XCTAssertLessThan(learned.delayHoursPerDay, ReentrainmentRates.prior.delayHoursPerDay)
+
+        // Un cuarto viaje, ya de vuelta en casa desde 7 días: el prior (5.3
+        // días) lo daría por recuperado; la tasa aprendida (10.6) no.
+        let recent = measuredTokyo(index: 3, destinationDays: nil, homeDays: nil)
+        store.save(recent)
+        let sevenDaysHome = recent.homeArrival!.addingTimeInterval(7 * 86_400)
+        XCTAssertEqual(recent.phase(at: sevenDaysHome), .recovered, "Con el prior ya estaría recuperado.")
+        XCTAssertEqual(recent.phase(at: sevenDaysHome, rates: learned), .homeReadaptation)
+        XCTAssertEqual(store.currentEpisode(at: sevenDaysHome)?.id, recent.id,
+                       "El store tiene que seguir entregándolo, o el motor se queda sin episodio.")
+    }
+
+    func testRecoveredMeansMeasuredStabilityWhenThereIsOneAndSaysWhenItDoesNot() {
+        // "Recuperado" significaba "se agotó la duración estimada". Ahora la
+        // fase cierra en la estabilidad MEDIDA cuando existe, y `phaseBasis`
+        // distingue las dos cosas sin que haya que adivinarlo.
+        let unmeasured = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let arrival = unmeasured.destinationArrival!
+        // Sin medición: la adaptación dura lo estimado (8 días) y la base lo dice.
+        XCTAssertEqual(unmeasured.phase(at: arrival.addingTimeInterval(4 * 86_400)), .destinationAdaptation)
+        XCTAssertEqual(unmeasured.phaseBasis(at: arrival.addingTimeInterval(4 * 86_400)), .inProgress)
+        XCTAssertEqual(unmeasured.phase(at: arrival.addingTimeInterval(9 * 86_400)), .destinationStable)
+        XCTAssertEqual(unmeasured.phaseBasis(at: arrival.addingTimeInterval(9 * 86_400)),
+                       .estimatedDurationElapsed, "Nadie confirmó nada: es una predicción cumplida.")
+
+        // Con medición de 3 días: la fase cierra ahí, cinco días antes, y la
+        // base pasa a ser una medición.
+        let measured = measuredTokyo(index: 0, destinationDays: 3, homeDays: nil)
+        XCTAssertEqual(measured.phase(at: arrival.addingTimeInterval(4 * 86_400)), .destinationStable)
+        XCTAssertEqual(measured.phaseBasis(at: arrival.addingTimeInterval(4 * 86_400)), .measuredStability)
+
+        // Y la fase NO se alarga con el margen de gracia: la línea temporal no
+        // puede decir "Adaptación" más tiempo del que la tarjeta prometió.
+        XCTAssertEqual(unmeasured.destinationAdaptationDays(), 8, accuracy: 0.001)
+        XCTAssertEqual(unmeasured.phase(at: arrival.addingTimeInterval(8.5 * 86_400)), .destinationStable)
+        // El margen vive sólo en la ventana de medición.
+        XCTAssertEqual(unmeasured.stabilityMeasurableUntil(leg: .outbound),
+                       arrival.addingTimeInterval(16 * 86_400))
+        XCTAssertNil(measured.stabilityMeasurableUntil(leg: .outbound),
+                     "Ya medido: no hay nada que seguir buscando.")
+    }
+
+    func testASlowerThanPredictedStabilisationCanStillBeMeasured() {
+        // El sesgo sistemático que el margen de gracia arregla: sin él, la
+        // estabilidad sólo se evaluaba dentro de la fase, así que una respuesta
+        // MÁS LENTA que el prior nunca podía registrarse y el aprendiz sólo veía
+        // respuestas iguales o más rápidas.
+        let episode = measuredTokyo(index: 0, destinationDays: 4, homeDays: nil)
+        let homeArrival = episode.homeArrival!
+        // Ocho días después de volver: el prior daba 5.3, así que la fase ya es
+        // .recovered — pero la ventana de gracia (10.6) sigue abierta.
+        let lateDay = homeArrival.addingTimeInterval(8 * 86_400)
+        XCTAssertEqual(episode.phase(at: lateDay), .recovered)
+        XCTAssertNotNil(episode.stabilityMeasurableUntil(leg: .homeReturn))
+
+        let good = (6...8).map { TrendPoint(date: homeArrival.addingTimeInterval(Double($0) * 86_400), value: 7.9) }
+        let hrv = (6...8).map { TrendPoint(date: homeArrival.addingTimeInterval(Double($0) * 86_400), value: 71) }
+        let impact = TravelImpactEngine.impact(episode: episode, at: lateDay, signals: TravelSignalContext(
+            baseline: baseline(sleepFloor: 7, hrvFloor: 60), sleepHistory: good, hrvHistory: hrv,
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: .none))
+        XCTAssertNotNil(impact.stabilizedAt, "Una estabilización tardía tiene que poder medirse.")
+        // Pero sin impacto: el episodio está recuperado, así que no puede
+        // limitar nada ni aparecer como señal.
+        XCTAssertEqual(impact.circadianOffsetHours, 0)
+        XCTAssertEqual(impact.travelFatigue, 0)
+        XCTAssertFalse(impact.isMeaningful)
+        XCTAssertNil(SessionIntensityCeiling.fromTravel(impact))
+    }
+
+    func testStabilityNeedsRestingHeartRateAndLocalSleepTimingWhenThereIsData() {
+        // Duración y HRV no distinguen "me he adaptado a Tokio" de "duermo bien
+        // a la hora de Madrid mientras estoy en Tokio", y esa distinción ES la
+        // re-sincronización circadiana.
+        let episode = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let arrival = episode.destinationArrival!
+        let days = (1...3).map { arrival.addingTimeInterval(Double($0) * 86_400) }
+        let sleep = days.map { TrendPoint(date: $0, value: 7.9) }
+        let hrv = days.map { TrendPoint(date: $0, value: 71) }
+        let tokyo = TimeZone(identifier: "Asia/Tokyo")!
+
+        func schedule(bedtimeHourLocal: Int, zone: TimeZone) -> [NightlySleepSchedule] {
+            days.map { night in
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = zone
+                let bedtime = calendar.date(bySettingHour: bedtimeHourLocal, minute: 0, second: 0, of: night)!
+                return NightlySleepSchedule(night: night, bedtime: bedtime, wakeTime: bedtime.addingTimeInterval(8 * 3_600))
+            }
+        }
+        func stabilized(resting: [TrendPoint], schedule: [NightlySleepSchedule]) -> Date? {
+            TravelImpactEngine.stabilizedDate(
+                episode: episode, at: days.last!,
+                signals: TravelSignalContext(baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+                                             sleepHistory: sleep, hrvHistory: hrv,
+                                             restingHeartRateHistory: resting, sleepSchedule: schedule,
+                                             confounders: .none))
+        }
+        // Horario consistente en hora de Tokio: estabilizado.
+        XCTAssertNotNil(stabilized(resting: [], schedule: schedule(bedtimeHourLocal: 23, zone: tokyo)))
+        // Pulso en reposo por encima de la banda: no cuenta, aunque duerma y
+        // el HRV estén bien.
+        let highResting = days.map { TrendPoint(date: $0, value: 70) }   // banda 40…58
+        XCTAssertNil(stabilized(resting: highResting, schedule: schedule(bedtimeHourLocal: 23, zone: tokyo)))
+        // Y sin dato de pulso, no penaliza: confirma cuando hay, no exige.
+        XCTAssertNotNil(stabilized(resting: [], schedule: schedule(bedtimeHourLocal: 23, zone: tokyo)))
+    }
+
+    func testTheShortestAngularDifferenceKeepsMidnightCrossingNightsTogether() {
+        // Acostarse a las 23:50 y a las 00:10 son 20 minutos de diferencia, no
+        // 1420. Sin esto, cualquier noche que cruza medianoche rompía la racha.
+        let episode = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let arrival = episode.destinationArrival!
+        let days = (1...3).map { arrival.addingTimeInterval(Double($0) * 86_400) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        // 23:50, 00:10 y 23:55 en hora de Tokio: todas la "misma" hora.
+        let bedtimes = [(23, 50), (0, 10), (23, 55)]
+        let schedule = zip(days, bedtimes).map { night, time in
+            let bedtime = calendar.date(bySettingHour: time.0, minute: time.1, second: 0, of: night)!
+            return NightlySleepSchedule(night: night, bedtime: bedtime, wakeTime: bedtime.addingTimeInterval(8 * 3_600))
+        }
+        let stabilized = TravelImpactEngine.stabilizedDate(
+            episode: episode, at: days.last!,
+            signals: TravelSignalContext(baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+                                         sleepHistory: days.map { TrendPoint(date: $0, value: 7.9) },
+                                         hrvHistory: days.map { TrendPoint(date: $0, value: 71) },
+                                         restingHeartRateHistory: [], sleepSchedule: schedule,
+                                         confounders: .none))
+        XCTAssertNotNil(stabilized, "Tres noches a la misma hora, aunque una cruce medianoche.")
+    }
+
+    func testTheLegacyDailyTravelFieldIsInertEverywhere() {
+        // El campo del cuestionario diario se conserva sólo para decodificar
+        // datos antiguos. Este test es lo que impide que vuelva a la vida — más
+        // útil que un @available(deprecated), que sólo habría añadido warnings
+        // permanentes sobre el propio archivo que tiene que declararlo.
+        let store = LifestyleFactorStore.shared
+        let before = store.events.count
+        var legacyOnly = LifestyleEvent.empty
+        legacyOnly.date = Date(timeIntervalSince1970: 1_700_000_000)
+        legacyOnly.timeZoneDifference = 9
+        legacyOnly.travelDirection = .east
+        // 1. Un evento cuyo ÚNICO contenido es el campo legado no es
+        //    significativo: no se guarda.
+        store.save(legacyOnly)
+        XCTAssertEqual(store.events.count, before,
+                       "Un campo que nada escribe no puede hacer significativo a un evento.")
+        // 2. Y no aparece en el resumen.
+        XCTAssertFalse(legacyOnly.summary.localizedCaseInsensitiveContains("viaje"))
+        XCTAssertFalse(legacyOnly.summary.contains("9 h"))
+        // 3. Las ocurrencias de viaje para la asociación de hábitos salen de
+        //    los episodios, nunca del campo.
+        XCTAssertTrue(HabitAssociationEngine.travelOccurrences(episodes: [], now: Date()).isEmpty)
+    }
 }

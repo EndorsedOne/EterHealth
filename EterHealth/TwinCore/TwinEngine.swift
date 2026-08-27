@@ -355,7 +355,8 @@ enum TwinEngine {
             episode: context.travel, at: now,
             signals: TravelSignalContext(
                 baseline: personal, sleepHistory: health.sleepHistory, hrvHistory: health.hrvHistory,
-                restingHeartRateHistory: health.restingHeartRateHistory, confounders: confounders
+                restingHeartRateHistory: health.restingHeartRateHistory,
+                sleepSchedule: health.sleepScheduleHistory, confounders: confounders
             ),
             rates: travelRates
         )
@@ -386,7 +387,7 @@ enum TwinEngine {
                     impact: travelImpact.fatigueReadinessCost,
                     detail: causes.isEmpty
                         ? "Fatiga de tránsito, que se resuelve en horas o pocos días — distinta del desajuste horario."
-                        : causes.map(\.description).joined(separator: " · ") + ". Se resuelve en horas o pocos días, a diferencia del desajuste horario."
+                        : causes.map { $0.description }.joined(separator: " · ") + ". Se resuelve en horas o pocos días, a diferencia del desajuste horario."
                 ))
             }
         }

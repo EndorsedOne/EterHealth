@@ -17,7 +17,7 @@ struct WhatIfSimulatorCardView: View {
     private let drinkStepCap = 4
 
     var body: some View {
-        let projection = scenario.isEmpty ? nil : WhatIfSimulatorEngine.simulate(scenario, health: health, imports: imports, checkIn: checkIns.entry(), travel: travel.currentEpisode())
+        let projection = scenario.isEmpty ? nil : WhatIfSimulatorEngine.simulate(scenario, health: health, imports: imports, checkIn: checkIns.entry(), travel: travel.currentEpisode(), travelHistory: travel.episodes)
         return VStack(alignment: .leading, spacing: 14) {
             EterSectionHeader("¿Qué pasa si esta noche…?", eyebrow: "Simulador combinable", subtitle: "Marca varias cosas a la vez — una cena de trabajo puede ser vino, cena copiosa y acostarte tarde, todo junto.")
             drinksSection

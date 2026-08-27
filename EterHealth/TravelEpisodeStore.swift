@@ -20,11 +20,38 @@ final class TravelEpisodeStore: ObservableObject {
 
     init() { load() }
 
+    /// Las tasas aprendidas de los propios episodios que este store ya tiene.
+    ///
+    /// Existe porque decidir "cuál es el viaje actual" con el PRIOR mientras
+    /// el gemelo evalúa con las tasas aprendidas era un desacuerdo real: si la
+    /// tasa aprendida es más LENTA que el prior, la readaptación aprendida
+    /// dura más, el prior da el episodio por `.recovered` antes de tiempo y el
+    /// store deja de pasárselo al motor — que se queda sin episodio mientras
+    /// todavía quedaba desajuste que contar.
+    ///
+    /// Se resuelve aquí y no como parámetro porque TravelLearningEngine.profile
+    /// es una función pura de `episodes`, que es justo lo que este store posee.
+    /// Así los siete call sites de `currentEpisode()` lo heredan sin cambiar.
+    private var learnedRates: ReentrainmentRates {
+        TravelLearningEngine.profile(episodes: episodes).rates
+    }
+
     /// Alta y edición son la misma operación, con el id como identidad — el
     /// mismo criterio que DailyCheckInStore.save aplica con el día.
+    ///
+    /// Guardarraíl: una medición ya guardada NUNCA se pierde por un save que
+    /// no la traiga. El editor la arrastra explícitamente, pero eso depende de
+    /// que cada call site se acuerde, y olvidarlo una vez ya costó borrar
+    /// aprendizaje histórico al editar una nota. Aquí la pérdida es imposible
+    /// por construcción: para borrar una medición hay que borrar el episodio.
     func save(_ episode: TravelEpisode) {
+        var incoming = episode
+        if incoming.measuredOutcome == nil,
+           let existing = episodes.first(where: { $0.id == episode.id })?.measuredOutcome {
+            incoming.measuredOutcome = existing
+        }
         episodes.removeAll { $0.id == episode.id }
-        episodes.append(episode)
+        episodes.append(incoming)
         sortAndPersist()
     }
 
@@ -52,7 +79,7 @@ final class TravelEpisodeStore: ObservableObject {
     /// línea temporal y (en PR15) lo que llega al gemelo no puedan elegir
     /// episodios distintos.
     func currentEpisode(at date: Date = Date()) -> TravelEpisode? {
-        let live = episodes.filter { $0.phase(at: date).isActive }
+        let live = episodes.filter { $0.phase(at: date, rates: learnedRates).isActive }
         let started = live.filter { episode in
             guard let departure = episode.outboundDeparture else { return false }
             return departure <= date
@@ -69,7 +96,7 @@ final class TravelEpisodeStore: ObservableObject {
     /// entrada del histórico. Excluye los cancelados: no hay nada que medir en
     /// un viaje que no se hizo.
     func completedEpisodes(at date: Date = Date()) -> [TravelEpisode] {
-        episodes.filter { $0.phase(at: date) == .recovered }
+        episodes.filter { $0.phase(at: date, rates: learnedRates) == .recovered }
             .sorted { ($0.homeArrival ?? .distantPast) > ($1.homeArrival ?? .distantPast) }
     }
 

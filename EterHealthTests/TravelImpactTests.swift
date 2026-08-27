@@ -194,7 +194,7 @@ final class TravelImpactTests: XCTestCase {
                 baseline: baseline(sleepFloor: 7, hrvFloor: 60),
                 sleepHistory: goodDays.map { TrendPoint(date: day($0), value: 7.8) },
                 hrvHistory: goodDays.map { TrendPoint(date: day($0), value: 72) },
-                restingHeartRateHistory: [], confounders: .none)
+                restingHeartRateHistory: [], sleepSchedule: [], confounders: .none)
         }
         // Sin datos: manda el prior, quedan ~6 h a los dos días.
         let priorOnly = TravelImpactEngine.impact(episode: episode, at: day(2))
@@ -230,7 +230,7 @@ final class TravelImpactTests: XCTestCase {
             baseline: baseline(sleepFloor: 7, hrvFloor: 60),
             sleepHistory: [TrendPoint(date: late, value: 5.1)],
             hrvHistory: [TrendPoint(date: late, value: 41)],
-            restingHeartRateHistory: [], confounders: .none)
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: .none)
         let impact = TravelImpactEngine.impact(episode: episode, at: late, signals: badSignals)
         XCTAssertEqual(impact.circadianOffsetHours, 0, accuracy: 0.001,
                        "El prior manda el techo: las señales no pueden alargar el desajuste.")
@@ -245,10 +245,10 @@ final class TravelImpactTests: XCTestCase {
         let date = episode.destinationArrival!.addingTimeInterval(86_400)
         let clean = TravelImpactEngine.impact(episode: episode, at: date, signals: TravelSignalContext(
             baseline: baseline(sleepFloor: 7, hrvFloor: 60), sleepHistory: [], hrvHistory: [],
-            restingHeartRateHistory: [], confounders: .none))
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: .none))
         let confounded = TravelImpactEngine.impact(episode: episode, at: date, signals: TravelSignalContext(
             baseline: baseline(sleepFloor: 7, hrvFloor: 60), sleepHistory: [], hrvHistory: [],
-            restingHeartRateHistory: [], confounders: [.illness, .alcohol]))
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: [.illness, .alcohol]))
         XCTAssertFalse(clean.isPotentiallyConfounded)
         XCTAssertTrue(confounded.isPotentiallyConfounded)
         XCTAssertLessThan(confounded.confidence.score, clean.confidence.score)
@@ -327,7 +327,7 @@ final class TravelImpactTests: XCTestCase {
             baseline: baseline(sleepFloor: 7, hrvFloor: 60),
             sleepHistory: [TrendPoint(date: dayAfter, value: 8.1)],
             hrvHistory: [TrendPoint(date: dayAfter, value: 75)],
-            restingHeartRateHistory: [], confounders: .none))
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: .none))
         let relaxed = SessionIntensityCeiling.fromTravel(reassuring)
         XCTAssertEqual(relaxed?.excludes(.longRun), false, "Con señales buenas, la tirada larga sigue en pie.")
         XCTAssertEqual(relaxed?.excludes(.qualityRun), true, "La calidad no: exige ritmo objetivo sobre un reloj desajustado.")
@@ -336,7 +336,7 @@ final class TravelImpactTests: XCTestCase {
         let inFlight = TravelImpactEngine.impact(episode: episode, at: local("Asia/Tokyo", 2026, 3, 3, 2),
                                                  signals: TravelSignalContext(
             baseline: baseline(sleepFloor: 7, hrvFloor: 60),
-            sleepHistory: [], hrvHistory: [], restingHeartRateHistory: [], confounders: .none))
+            sleepHistory: [], hrvHistory: [], restingHeartRateHistory: [], sleepSchedule: [], confounders: .none))
         XCTAssertEqual(SessionIntensityCeiling.fromTravel(inFlight)?.excludes(.longRun), true)
     }
 
@@ -469,7 +469,7 @@ final class TravelImpactTests: XCTestCase {
             DecisionSimulatorEngine.simulate(.longRun, health: health, imports: imports, checkIn: nil,
                                              profile: neutralProfile, events: [], reviews: [], activeInjuries: [],
                                              calibration: neutralCalibration, personalAnchor: neutralAnchor,
-                                             travel: travel, now: inFlight)
+                                             travel: travel, travelHistory: travel.map { [$0] } ?? [], now: inFlight)
         }
         XCTAssertLessThan(simulate(episode).tomorrowReadiness, simulate(nil).tomorrowReadiness,
                           "Si el simulador no ve el viaje, dirá que una tirada larga sale gratis mientras el plan la limita.")

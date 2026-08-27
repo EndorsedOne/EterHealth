@@ -448,9 +448,68 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// Días de adaptación en destino, según el prior. Cero con
     /// `keepHomeSchedule`: si el reloj no se mueve, no hay nada que adaptar,
     /// y decir "0 días de adaptación" es distinto de decir "ya está adaptado".
+    /// La duración ESTIMADA de la adaptación. Sigue siendo el prior (o la tasa
+    /// aprendida): es la predicción, y la UI la muestra como tal.
     func destinationAdaptationDays(rates: ReentrainmentRates = .prior) -> Double {
         guard resolvedStayPolicy == .adaptToDestination else { return 0 }
         return CircadianReentrainment.daysToRealign(offsetHours: outboundShiftHours, rates: rates)
+    }
+
+    /// Cuánto se SIGUE OBSERVANDO después de que la duración estimada se agote,
+    /// cuando nadie confirmó estabilidad. No alarga la fase — ver abajo.
+    ///
+    /// Sin este margen el aprendizaje tenía un SESGO SISTEMÁTICO: la
+    /// estabilidad sólo se evaluaba mientras el episodio estaba en fase de
+    /// adaptación o readaptación, así que una estabilización más LENTA que la
+    /// predicha nunca podía registrarse — el aprendiz sólo veía respuestas
+    /// iguales o más rápidas que el prior, lo que empuja la tasa aprendida
+    /// hacia arriba viaje tras viaje.
+    ///
+    /// ×2 es generoso y acotado: si a dos veces la duración predicha las
+    /// señales siguen sin confirmar nada, atribuirlo al viaje ya no se
+    /// sostiene.
+    ///
+    /// IMPORTANTE: esto NO entra en `phase(at:)`. La primera versión de este
+    /// arreglo alargaba la fase de adaptación al margen completo, y con eso la
+    /// línea temporal decía "Adaptación" durante 16 días mientras la tarjeta
+    /// prometía 8 — exactamente el tipo de etiqueta que promete más de lo que
+    /// mide y que el comentario de review venía a corregir. La fase se queda
+    /// honesta; lo que se alarga es sólo la ventana en la que TODAVÍA se puede
+    /// medir (ver TravelImpactEngine).
+    static let stabilityGraceMultiple = 2.0
+
+    /// El final de la fase de adaptación en destino: la estabilidad MEDIDA si
+    /// existe, y si no la duración estimada. Sin margen de gracia.
+    func destinationAdaptationEnd(rates: ReentrainmentRates = .prior) -> (date: Date, basis: TravelPhaseBasis)? {
+        guard let arrival = destinationArrival else { return nil }
+        if let measured = measuredOutcome?.destinationStabilityDays {
+            return (arrival.addingTimeInterval(measured * 86_400), .measuredStability)
+        }
+        return (arrival.addingTimeInterval(destinationAdaptationDays(rates: rates) * 86_400),
+                .estimatedDurationElapsed)
+    }
+
+    func homeReadaptationEnd(rates: ReentrainmentRates = .prior) -> (date: Date, basis: TravelPhaseBasis)? {
+        guard let homeArrival else { return nil }
+        if let measured = measuredOutcome?.homeStabilityDays {
+            return (homeArrival.addingTimeInterval(measured * 86_400), .measuredStability)
+        }
+        return (homeArrival.addingTimeInterval(homeReadaptationDays(rates: rates) * 86_400),
+                .estimatedDurationElapsed)
+    }
+
+    /// Hasta cuándo tiene sentido seguir buscando la confirmación de
+    /// estabilidad de un tramo que nunca se midió. nil cuando ya está medido
+    /// (no hay nada que buscar) o cuando no hay tramo.
+    func stabilityMeasurableUntil(leg: TravelLeg, rates: ReentrainmentRates = .prior) -> Date? {
+        switch leg {
+        case .outbound:
+            guard measuredOutcome?.destinationStabilityDays == nil, let arrival = destinationArrival else { return nil }
+            return arrival.addingTimeInterval(destinationAdaptationDays(rates: rates) * Self.stabilityGraceMultiple * 86_400)
+        case .homeReturn:
+            guard measuredOutcome?.homeStabilityDays == nil, let homeArrival else { return nil }
+            return homeArrival.addingTimeInterval(homeReadaptationDays(rates: rates) * Self.stabilityGraceMultiple * 86_400)
+        }
     }
 
     /// Días de readaptación en casa. LA FASE PROPIA DE LA VUELTA, que era un
@@ -483,12 +542,12 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         if let returnDeparture, date >= returnDeparture {
             guard let homeArrival else { return .returnTransit }
             if date < homeArrival { return .returnTransit }
-            let readaptationEnd = homeArrival.addingTimeInterval(homeReadaptationDays(rates: rates) * 86_400)
-            return date < readaptationEnd ? .homeReadaptation : .recovered
+            guard let end = homeReadaptationEnd(rates: rates) else { return .recovered }
+            return date < end.date ? .homeReadaptation : .recovered
         }
 
-        let adaptationEnd = destinationArrival.addingTimeInterval(destinationAdaptationDays(rates: rates) * 86_400)
-        return date < adaptationEnd ? .destinationAdaptation : .destinationStable
+        guard let end = destinationAdaptationEnd(rates: rates) else { return .destinationStable }
+        return date < end.date ? .destinationAdaptation : .destinationStable
     }
 
     /// Cuándo termina la fase actual, para que la línea temporal pueda decir
@@ -498,6 +557,10 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         switch phase(at: date, rates: rates) {
         case .preDeparture: return outboundDeparture
         case .outboundTransit: return destinationArrival
+        // La duración ESTIMADA, no el margen de gracia: lo que la tarjeta
+        // muestra como "hasta" es la predicción, que es lo que el atleta puede
+        // usar para planificar. El margen de gracia es un detalle interno del
+        // aprendizaje, no una promesa sobre cuándo estará recuperado.
         case .destinationAdaptation:
             return destinationArrival?.addingTimeInterval(destinationAdaptationDays(rates: rates) * 86_400)
         case .destinationStable: return stayEnd
@@ -507,6 +570,39 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         case .recovered, .cancelled: return nil
         }
     }
+
+    /// Con qué autoridad cerró (o no) la fase de adaptación que corresponde a
+    /// esta fecha. Es lo que permite que la UI no diga "recuperado" cuando lo
+    /// único que ha pasado es que se agotó una estimación.
+    func phaseBasis(at date: Date, rates: ReentrainmentRates = .prior) -> TravelPhaseBasis {
+        switch phase(at: date, rates: rates) {
+        case .preDeparture, .outboundTransit, .returnTransit, .cancelled:
+            return .notApplicable
+        case .destinationAdaptation, .homeReadaptation:
+            return .inProgress
+        case .destinationStable:
+            return destinationAdaptationEnd(rates: rates)?.basis ?? .notApplicable
+        case .recovered:
+            return homeReadaptationEnd(rates: rates)?.basis ?? .estimatedDurationElapsed
+        }
+    }
+}
+
+/// De dónde sale el final de una fase de adaptación. El comentario de review
+/// que lo motiva: "Recuperado" significaba "se agotó la duración estimada", no
+/// "volviste realmente a tu normalidad" — y son dos afirmaciones muy distintas
+/// para una app que presume de no inventar datos.
+enum TravelPhaseBasis: Equatable {
+    /// Las señales confirmaron estabilidad sostenida y la fase cerró ahí.
+    case measuredStability
+    /// Nadie confirmó nada: la fase cerró porque se agotó la duración
+    /// estimada (más el margen de gracia). Es una predicción cumplida, no una
+    /// medición.
+    case estimatedDurationElapsed
+    /// Todavía dentro de la fase.
+    case inProgress
+    /// No aplica: preparación, tránsito, cancelado.
+    case notApplicable
 }
 
 /// Los días reales hasta estabilidad, por tramo, tal y como se midieron.

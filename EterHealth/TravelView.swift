@@ -537,7 +537,14 @@ struct TravelEpisodeEditorView: View {
     }
 
     private var canSave: Bool {
+        // `allSatisfy` sobre una lista VACÍA devuelve true, así que sin este
+        // `!isEmpty` se podía guardar un viaje sin ida. El pie de la sección
+        // ya avisaba ("sin la ida no hay episodio que seguir") pero la
+        // validación lo permitía, y el episodio resultante se queda en fase
+        // `.preDeparture` para siempre — que `isActive` considera vivo, así
+        // que se convertía en "el viaje actual" de forma indefinida.
         !draft.title.trimmingCharacters(in: .whitespaces).isEmpty
+            && !draft.outboundFlights.isEmpty
             && draft.outboundFlights.allSatisfy(\.isValid)
             && draft.returnFlights.allSatisfy(\.isValid)
     }
@@ -549,12 +556,21 @@ struct TravelEpisodeEditorView: View {
         if automaticPolicy { episode.declaredStayPolicy = nil }
         // Reconstruido por el init para que los tramos queden ordenados: la
         // UI permite darlos de alta en cualquier orden.
+        //
+        // `measuredOutcome` se arrastra EXPLÍCITAMENTE. Omitirlo era un bug
+        // real: el init lo defaultea a nil, así que editar una nota o cambiar
+        // la hora de un vuelo borraba los días de estabilidad ya medidos —
+        // y para un viaje pasado esa pérdida es permanente, porque las series
+        // de HRV y sueño que los demostraban ya no están en la ventana de 90
+        // días. El store tiene además su propio guardarraíl (ver
+        // TravelEpisodeStore.save), para que ningún call site futuro pueda
+        // repetir el fallo desde otro sitio.
         travel.save(TravelEpisode(
             id: episode.id, title: episode.title,
             homeTimeZoneID: episode.homeTimeZoneID, destinationTimeZoneID: episode.destinationTimeZoneID,
             outboundFlights: episode.outboundFlights, returnFlights: episode.returnFlights,
             expectedStayEndDate: episode.expectedStayEndDate, declaredStayPolicy: episode.declaredStayPolicy,
-            isCancelled: episode.isCancelled, note: episode.note
+            isCancelled: episode.isCancelled, measuredOutcome: episode.measuredOutcome, note: episode.note
         ))
         dismiss()
     }

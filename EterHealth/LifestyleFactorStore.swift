@@ -1,5 +1,16 @@
 import Foundation
 
+/// LEGADO. Sustituido por TravelEpisode (PR14–PR16), que modela el viaje como
+/// episodio con fases en vez de como una diferencia horaria declarada por día.
+/// Se conserva únicamente para que los LifestyleEvent ya guardados y las copias
+/// de seguridad antiguas sigan decodificando; ninguna UI lo escribe y ningún
+/// motor lo lee.
+// Sin @available(deprecated) a propósito: el propio archivo tiene que seguir
+// declarando el campo, inicializarlo y decodificarlo, así que la anotación
+// generaba tres warnings PERMANENTES sobre código que es correcto — y unos
+// warnings que nadie puede quitar son unos warnings que se aprende a ignorar.
+// Lo que de verdad impide que esto vuelva a la vida es un test: ver
+// TravelLearningTests.testTheLegacyDailyTravelFieldIsInertEverywhere.
 enum TravelDirection: String, Codable, CaseIterable, Identifiable {
     case east = "Hacia el este"
     case west = "Hacia el oeste"
@@ -70,6 +81,11 @@ struct LifestyleEvent: Codable, Identifiable {
     var saunaTemperatureC: Int
     var coldMinutes: Int
     var coldTemperatureC: Int
+    // LEGADO, sólo lectura de datos antiguos — ver TravelDirection arriba.
+    // Ninguna UI los escribe (PR14 quitó la sección del cuestionario) y ningún
+    // motor los lee (PR15 borró las dos penalizaciones, PR16 migró la
+    // asociación de hábitos a los episodios). Se quedan para no romper la
+    // decodificación de lo ya guardado.
     var timeZoneDifference: Int
     var travelDirection: TravelDirection
     var caffeineMg: Int
@@ -164,7 +180,8 @@ struct LifestyleEvent: Codable, Identifiable {
         if alcoholDrinks > 0 { parts.append("\(alcoholDrinks) bebida\(alcoholDrinks == 1 ? "" : "s")") }
         if saunaMinutes > 0 { parts.append("sauna \(saunaMinutes) min · \(saunaTemperatureC) °C") }
         if coldMinutes > 0 { parts.append("frío \(coldMinutes) min · \(coldTemperatureC) °C") }
-        if timeZoneDifference > 0 { parts.append("viaje \(timeZoneDifference) h \(travelDirection == .east ? "este" : "oeste")") }
+        // El viaje ya no se resume aquí: vive en su propio episodio, con su
+        // propia pantalla y su propia línea temporal (Datos → Viajes).
         if caffeineMg > 0 { parts.append("cafeína \(caffeineMg) mg") }
         if foodQuality != .notRecorded { parts.append(foodQuality.rawValue.lowercased()) }
         if fastingHours > 0 { parts.append("ayuno \(fastingHours) h") }
@@ -189,7 +206,9 @@ final class LifestyleFactorStore: ObservableObject {
 
     func save(_ event: LifestyleEvent) {
         guard event.alcoholDrinks > 0 || event.saunaMinutes > 0 || event.coldMinutes > 0 ||
-              event.timeZoneDifference > 0 || event.caffeineMg > 0 || event.foodQuality != .notRecorded ||
+              // timeZoneDifference fuera: un evento no puede volverse
+              // "significativo" por un campo legado que nada escribe.
+              event.caffeineMg > 0 || event.foodQuality != .notRecorded ||
               event.fastingHours > 0 || event.trainedFasted || event.lateDinner || event.heavyDinner ||
               event.hydration != .notRecorded || event.electrolytes || !event.digestiveSymptoms.isEmpty ||
               !event.supplements.isEmpty else { return }
