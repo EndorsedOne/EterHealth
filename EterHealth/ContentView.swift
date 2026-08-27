@@ -270,7 +270,13 @@ struct ContentView: View {
     // instead of each repeating the same six labels.
     private var twinContext: TwinContext {
         TwinContext(profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
-                   activeInjuries: injuries.active, calibration: twinStates.calibration, personalAnchor: twinStates.personalAnchor())
+                   activeInjuries: injuries.active, calibration: twinStates.calibration,
+                   personalAnchor: twinStates.personalAnchor(),
+                   // PR15: el episodio activo, resuelto en UN sitio
+                   // (TravelEpisodeStore.currentEpisode) para que la tarjeta de
+                   // Viajes, el gemelo y el plan no puedan elegir episodios
+                   // distintos.
+                   travel: travel.currentEpisode())
     }
 
     private func refreshDashboard() {
@@ -278,7 +284,7 @@ struct ContentView: View {
         dashboard.refresh(health: health, imports: imports, checkIn: checkIns.entry(),
                          profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
                          activeInjuries: injuries.active, calibration: twinStates.calibration,
-                         personalAnchor: twinStates.personalAnchor())
+                         personalAnchor: twinStates.personalAnchor(), travel: travel.currentEpisode())
     }
 
     private var currentAssessment: TwinAssessment {
@@ -654,6 +660,10 @@ struct ContentView: View {
                 }
                 Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
             }
+            // El mismo defecto latente que la tarjeta de Viajes: aquí sólo no
+            // se notaba porque el texto es más ancho y cubre el punto donde
+            // uno pulsa por costumbre.
+            .contentShape(Rectangle())
         }.buttonStyle(.plain).cardStyle()
     }
 
@@ -677,6 +687,12 @@ struct ContentView: View {
                 }
                 Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
             }
+            // PR15: sin esto, el área tappable es sólo el CONTENIDO del label
+            // — el Spacer no es hit-testable, así que la tarjeta parece
+            // pulsable en todo su ancho y no responde en la mitad derecha.
+            // Encontrado en el simulador: tocar sobre "Viajes" abría la hoja y
+            // tocar 90 pt a la derecha no hacía nada.
+            .contentShape(Rectangle())
         }.buttonStyle(.plain).cardStyle()
     }
 
@@ -1199,7 +1215,8 @@ struct ContentView: View {
         DecisionSimulatorEngine.simulate(decision, health: health, imports: imports, checkIn: checkIn,
                                          profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
                                          activeInjuries: injuries.active, calibration: twinStates.calibration,
-                                         personalAnchor: twinStates.personalAnchor())
+                                         personalAnchor: twinStates.personalAnchor(),
+                                         travel: travel.currentEpisode())
     }
 
     private var weekAheadCard: some View {

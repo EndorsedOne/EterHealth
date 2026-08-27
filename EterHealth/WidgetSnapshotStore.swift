@@ -141,11 +141,19 @@ enum WidgetSnapshotStore {
         let overnightAlcohol = lifestyle.filter {
             $0.alcoholDrinks > 0 && now.timeIntervalSince($0.date) <= 18 * 3600
         }.reduce(0.0) { $0 + Double($1.alcoholDrinks) * 2.5 }
-        let travelPenalty = lifestyle.map { Double($0.timeZoneDifference) * 0.8 }.max() ?? 0
         let illnessPenalty = checkIn?.illness == true ? 10.0 : 0
+        // PR15: aquí había una SEGUNDA penalización de viaje,
+        // `Δh × 0.8` sobre la diferencia horaria declarada, sin decaer y sin
+        // dirección. Con 9 husos seguía restando 7.2 puntos a la curva de
+        // energía del widget el día 30 del viaje, mientras la app —que sí
+        // decaía— ya no restaba nada: dos motores diciendo cosas distintas
+        // sobre el mismo viaje, exactamente lo que este PR existe para
+        // eliminar. El coste del viaje entra ahora por `assessment.score`,
+        // que ya lo lleva dentro vía TravelImpact, así que el widget lo hereda
+        // sin tener su propia opinión.
         let recharge = clamp(
             48 * durationFactor * stageFactor + hrvAdjustment + restingAdjustment +
-            subjectiveSleep - overnightAlcohol - travelPenalty - illnessPenalty,
+            subjectiveSleep - overnightAlcohol - illnessPenalty,
             12, 72
         )
         // Readiness acts as a bounded physiological anchor; the recharge calculation

@@ -620,7 +620,14 @@ enum TrainingPlanEngine {
     // not done here to avoid losing that fidelity mid-PR.
     static func status(health: HealthStore, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness], checkIn: DailyCheckIn?,
                        context: TwinContext,
-                       physiologicalAlert: PhysiologicalAlert? = nil, now: Date = Date()) -> WeeklyPlanStatus {
+                       physiologicalAlert: PhysiologicalAlert? = nil,
+                       // PR15: el impacto del viaje ya calculado, nunca el
+                       // episodio en crudo. Si esta función lo recalculara
+                       // habría dos estimaciones del mismo viaje —la de
+                       // assess() y la de aquí— y podrían discrepar. Con
+                       // default `.none` para que los call sites sin viaje
+                       // (y los tests que no lo ejercen) sigan igual.
+                       travel: TravelImpact = .none, now: Date = Date()) -> WeeklyPlanStatus {
         let profile = context.profile, reviews = context.reviews
         let calendar = Calendar.current
         let block = activeBlock(on: now, profile: profile)
@@ -1013,16 +1020,21 @@ enum TrainingPlanEngine {
             rationale = decision.rationale
         }
 
-        // A "caution" alert doesn't override the calendar the way "recover"
-        // does, but it should still cap what gets proposed: no quality,
-        // long-run, or hybrid work while a moderate concordant deviation is
-        // still unconfirmed. Strength is left alone — its own readiness-based
-        // load factor already moderates intensity — and easy running or
-        // recovery are exactly the "reduced or gentle" alternative this asks for.
-        if physiologicalAlert?.severity == .caution, [.qualityRun, .longRun, .hybrid, .brick].contains(next) {
-            let alert = physiologicalAlert!
-            rationale = "\(alert.summary) \(alert.action) Se sustituye \(next.rawValue.lowercased()) por un estímulo más suave mientras se confirma."
-            next = .easyRun
+        // PR15: el techo de intensidad. Esto ERA el bloque de la alerta
+        // `.caution` —"no quality, long-run, or hybrid while a moderate
+        // concordant deviation is still unconfirmed; strength left alone
+        // because its own readiness-based load factor already moderates
+        // intensity"— generalizado para que la alerta y el estado de viaje
+        // pasen por el MISMO mecanismo en vez de por dos.
+        //
+        // Sigue sin ser un gate: no decide qué sesión toca, sólo puede
+        // rebajarla, y nunca a recuperación. Ver SessionIntensityCeiling para
+        // las dos reglas que no se negocian (el viaje jamás anula el
+        // calendario, y la fuerza se rebaja en vez de sustituirse).
+        let ceiling = SessionIntensityCeiling.resolve(alert: physiologicalAlert, travel: travel)
+        if let ceiling, ceiling.excludes(next) {
+            rationale = "\(ceiling.explanation) Se sustituye \(next.rawValue.lowercased()) por un estímulo más suave."
+            next = ceiling.substitute
         }
 
         // PR8: el veto por lesión, aplicado aquí y no reescribiendo el texto
@@ -1073,11 +1085,16 @@ enum TrainingPlanEngine {
         // PR11: el orden del día concurrente, decidido después de que `next`
         // sea definitivo (incluido el veto por lesión) y añadido al
         // rationale — que es donde el brief pide que se explique.
-        let concurrentDay = concurrentDayGuidance(
-            today: next, strengthDeficit: max(0, targetStrength - strength),
-            runDeficit: max(0, targetRuns - runs.count), goalFocus: goalFocus,
-            avoidLegsToday: avoidLegsToday, readiness: readiness, isDeload: isDeload
-        )
+        // PR15: y ningún segundo estímulo cuando el propio techo de viaje
+        // está limitando el primero. Ofrecer "además, una carrera suave" en un
+        // día de tránsito o de readaptación contradiría en la misma tarjeta lo
+        // que el techo acaba de decir.
+        let concurrentDay = ceiling == nil
+            ? concurrentDayGuidance(
+                today: next, strengthDeficit: max(0, targetStrength - strength),
+                runDeficit: max(0, targetRuns - runs.count), goalFocus: goalFocus,
+                avoidLegsToday: avoidLegsToday, readiness: readiness, isDeload: isDeload)
+            : nil
         if let concurrentDay {
             rationale += " \(concurrentDay.explanation)"
         }
@@ -1085,7 +1102,13 @@ enum TrainingPlanEngine {
         let event = nextEvent(after: now, profile: profile)
         let recommendation = prescription(
             for: next, block: block, readiness: readiness, muscles: muscles,
-            volumeFactor: adjustedTargets.volumeFactor, avoidLegsTomorrow: avoidLegsToday,
+            // PR15: `capsStrengthIntensity` reutiliza la vía del deload (RIR
+            // 3–4 en vez de 2–3) en vez de cambiar el kind. Es la respuesta a
+            // "evitar máxima fuerza en las fases de mayor riesgo" que no le
+            // quita al atleta la sesión que sí puede hacer.
+            volumeFactor: (ceiling?.capsStrengthIntensity == true && next == .strength)
+                ? min(adjustedTargets.volumeFactor, 0.90) : adjustedTargets.volumeFactor,
+            avoidLegsTomorrow: avoidLegsToday,
             pattern: strengthPattern
         )
         if isDeload {
@@ -1585,6 +1608,10 @@ enum TrainingPlanEngine {
             goalFocus: goalFocus
         )
         applyMuscleLoad(todayKind, on: today, phase: todayBlock.phase, avoidLegs: avoidLegsAfterToday)
+        // El día 0 no necesita techo aquí: `real` sale de status(), que ya lo
+        // ha aplicado con las señales medidas de hoy. Recalcularlo con
+        // señales `.none` como los días futuros sería sustituir una decisión
+        // informada por una peor.
 
         // Real weekly minute deficits for swim/bike/brick used to stay
         // fixed at today's own value across every simulated day — able to
@@ -1640,8 +1667,10 @@ enum TrainingPlanEngine {
             )
             let avoidLegsThisDay = avoidLegsTomorrow || dayInterference == .protectAerobic
 
-            let kind: PlannedSessionKind
-            let rationale: String
+            // `var` y no `let`: el techo de intensidad de más abajo puede
+            // rebajar los dos (PR15), igual que hace status() con los suyos.
+            var kind: PlannedSessionKind
+            var rationale: String
             if let event = eventToday(date, profile: profile) {
                 kind = .raceDay
                 rationale = "Día de \(event.title): el objetivo es ejecutar, no añadir otro entrenamiento."
@@ -1693,6 +1722,29 @@ enum TrainingPlanEngine {
                 )
                 kind = decision.kind
                 rationale = decision.rationale
+            }
+
+            // PR15: el MISMO techo de intensidad que status() aplica a hoy,
+            // aplicado a cada día simulado. El brief pide consistencia entre
+            // la recomendación principal, la planificación semanal, el
+            // simulador y el reloj, y sin esto la tira de la semana podría
+            // dibujar una sesión de calidad en pleno tránsito mientras la
+            // tarjeta de hoy dice que se limita la intensidad.
+            //
+            // De paso arregla la misma incoherencia que ya existía con la
+            // alerta `.caution`: weekAhead nunca la aplicaba, así que una
+            // alerta moderada limitaba hoy y no mañana.
+            //
+            // El impacto se RECALCULA para la fecha simulada, no se congela:
+            // el desajuste circadiano decae día a día y es justo lo que hace
+            // que la semana muestre cómo se va soltando el techo. Con señales
+            // `.none` a propósito — un día que no ha ocurrido no tiene HRV ni
+            // sueño medidos, y el prior es la respuesta honesta.
+            let dayTravel = TravelImpactEngine.impact(episode: context.travel, at: date, signals: .none)
+            if let dayCeiling = SessionIntensityCeiling.resolve(alert: nil, travel: dayTravel),
+               dayCeiling.excludes(kind) {
+                rationale = "\(dayCeiling.explanation) Se sustituye \(kind.rawValue.lowercased()) por un estímulo más suave."
+                kind = dayCeiling.substitute
             }
 
             applyMuscleLoad(kind, on: date, phase: block.phase, avoidLegs: avoidLegsThisDay)

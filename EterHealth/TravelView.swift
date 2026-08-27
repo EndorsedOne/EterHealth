@@ -17,13 +17,40 @@ private let phaseOrder: [TravelPhase] = [
 ]
 
 struct TravelView: View {
+    /// Un solo `item:` para las dos hojas de esta pantalla. DOS modificadores
+    /// `.sheet` sobre la misma vista no es un patrón soportado de forma
+    /// fiable en SwiftUI —el segundo puede impedir que se presente el
+    /// primero— y es el mismo enum que ContentView ya usa para lo mismo.
+    private enum Editor: Identifiable {
+        case new
+        case existing(TravelEpisode)
+        var id: String {
+            switch self {
+            case .new: return "new"
+            case .existing(let episode): return episode.id.uuidString
+            }
+        }
+        var episode: TravelEpisode? {
+            switch self {
+            case .new: return nil
+            case .existing(let episode): return episode
+            }
+        }
+    }
+
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var travel: TravelEpisodeStore
-    @State private var editing: TravelEpisode?
-    @State private var isCreating = false
+    @State private var editor: Editor?
     @State private var episodePendingDeletion: UUID?
 
-    private var now: Date { Date() }
+    /// `@State` y no un `Date()` calculado en el body. Un `Date()` dentro del
+    /// body devuelve un valor distinto en cada evaluación, así que la vista
+    /// deja de ser idempotente y SwiftUI puede quedarse invalidándose sola —
+    /// que es exactamente lo que impedía a esta hoja presentarse en cuanto
+    /// había un episodio que renderizar (con la lista vacía no se llegaba a
+    /// usar). Las fases cambian en escala de horas y días: fijar el instante
+    /// al abrir la pantalla es correcto, no una aproximación.
+    @State private var now = Date()
 
     var body: some View {
         NavigationStack {
@@ -32,7 +59,7 @@ struct TravelView: View {
                     Section("Viaje actual") {
                         CurrentTravelCard(episode: current, now: now)
                         TravelTimelineStrip(episode: current, now: now)
-                        Button("Editar") { editing = current }
+                        Button("Editar") { editor = .existing(current) }
                         Button("Cancelar este viaje", role: .destructive) { travel.cancel(id: current.id) }
                     }
                 } else {
@@ -51,7 +78,7 @@ struct TravelView: View {
                             // hereda del estilo del botón.
                             CompletedTravelRow(episode: episode)
                                 .contentShape(Rectangle())
-                                .onTapGesture { editing = episode }
+                                .onTapGesture { editor = .existing(episode) }
                                 .swipeActions {
                                     Button("Eliminar", role: .destructive) { episodePendingDeletion = episode.id }
                                 }
@@ -83,15 +110,13 @@ struct TravelView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Cerrar") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { isCreating = true } label: { Image(systemName: "plus") }
+                    Button { editor = .new } label: { Image(systemName: "plus") }
                 }
             }
-            .sheet(item: $editing) { episode in
-                TravelEpisodeEditorView(episode: episode).environmentObject(travel)
+            .sheet(item: $editor) { editor in
+                TravelEpisodeEditorView(episode: editor.episode).environmentObject(travel)
             }
-            .sheet(isPresented: $isCreating) {
-                TravelEpisodeEditorView(episode: nil).environmentObject(travel)
-            }
+            .onAppear { now = Date() }
             .alert("Eliminar viaje", isPresented: Binding(
                 get: { episodePendingDeletion != nil },
                 set: { if !$0 { episodePendingDeletion = nil } }

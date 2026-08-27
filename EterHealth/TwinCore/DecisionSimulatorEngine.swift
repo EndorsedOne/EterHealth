@@ -77,21 +77,29 @@ enum DecisionSimulatorEngine {
     // WorkoutReviewStore/InjuryStore/TwinStateStore singleton instances,
     // needed here both directly (TwinEngine.assess below) and via
     // forwardPlanLoads' own call into TrainingPlanEngine.weekAhead.
+    // PR15: `travel` es un parámetro explícito y no un default. Esta función
+    // construye su propio TwinContext desde los seis parámetros sueltos (ver
+    // el comentario de abajo), así que un `travel` con default nil habría
+    // dejado al simulador ciego al viaje: diría que un HIIT sale gratis
+    // mientras el plan lo está limitando. Es el único sitio del pipeline que
+    // no hereda TwinContext del call site, y por tanto el único que podía
+    // desincronizarse en silencio.
     static func simulate(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                         profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
                         activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
-                        now: Date = Date()) -> DecisionSimulation {
+                        travel: TravelEpisode?, now: Date = Date()) -> DecisionSimulation {
         if decision.isLifestyle {
             return simulateLifestyle(decision, health: health, imports: imports, checkIn: checkIn,
                                      profile: profile, events: events, reviews: reviews, activeInjuries: activeInjuries,
-                                     calibration: calibration, personalAnchor: personalAnchor, now: now)
+                                     calibration: calibration, personalAnchor: personalAnchor, travel: travel, now: now)
         }
         // PR1.5: assembled once and reused below for both the assess() call
         // and (via forwardPlanLoads) weekAhead — this function's own
         // external signature keeps the six separate parameters since
         // callers outside TwinCore already have them as six separate reads.
         let context = TwinContext(profile: profile, events: events, reviews: reviews,
-                                  activeInjuries: activeInjuries, calibration: calibration, personalAnchor: personalAnchor)
+                                  activeInjuries: activeInjuries, calibration: calibration,
+                                  personalAnchor: personalAnchor, travel: travel)
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let added: Double
@@ -221,9 +229,10 @@ enum DecisionSimulatorEngine {
     private static func simulateLifestyle(_ decision: SimulatedDecision, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                                           profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
                                           activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
-                                          now: Date = Date()) -> DecisionSimulation {
+                                          travel: TravelEpisode?, now: Date = Date()) -> DecisionSimulation {
         let context = TwinContext(profile: profile, events: events, reviews: reviews,
-                                  activeInjuries: activeInjuries, calibration: calibration, personalAnchor: personalAnchor)
+                                  activeInjuries: activeInjuries, calibration: calibration,
+                                  personalAnchor: personalAnchor, travel: travel)
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let associations = HabitAssociationEngine.analyze(

@@ -204,6 +204,7 @@ struct StrengthTrainingView: View {
     @EnvironmentObject private var routineStore: StrengthRoutineStore
     @EnvironmentObject private var checkIns: DailyCheckInStore
     @EnvironmentObject private var goals: GoalStore
+    @EnvironmentObject private var travel: TravelEpisodeStore
     @State private var activeSheet: StrengthSheet?
     @State private var selectedProgressExercise = ""
 
@@ -212,7 +213,8 @@ struct StrengthTrainingView: View {
                                            context: TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
                                                                 reviews: WorkoutReviewStore.shared.reviews, activeInjuries: InjuryStore.shared.active,
                                                                 calibration: TwinStateStore.shared.calibration,
-                                                                personalAnchor: TwinStateStore.shared.personalAnchor()))
+                                                                personalAnchor: TwinStateStore.shared.personalAnchor(),
+                                                                travel: travel.currentEpisode()))
         let automatic = StrengthRoutineBuilder.routines(from: imports)
         let routines = automatic.map {
             StrengthRoutineBuilder.personalized(routineStore.routine(named: $0.name) ?? $0, imports: imports,
@@ -460,6 +462,7 @@ struct DayWorkoutProposalView: View {
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var checkIns: DailyCheckInStore
     @EnvironmentObject private var goals: GoalStore
+    @EnvironmentObject private var travel: TravelEpisodeStore
     @Environment(\.dismiss) private var dismiss
     let routines: [StrengthRoutine]
     @State private var activeRoutine: StrengthRoutine?
@@ -467,7 +470,7 @@ struct DayWorkoutProposalView: View {
     private var context: TwinContext {
         TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events, reviews: WorkoutReviewStore.shared.reviews,
                    activeInjuries: InjuryStore.shared.active, calibration: TwinStateStore.shared.calibration,
-                   personalAnchor: TwinStateStore.shared.personalAnchor())
+                   personalAnchor: TwinStateStore.shared.personalAnchor(), travel: travel.currentEpisode())
     }
     private var assessment: TwinAssessment {
         TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(), context: context)

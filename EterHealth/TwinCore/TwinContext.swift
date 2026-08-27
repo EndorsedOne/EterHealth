@@ -19,4 +19,14 @@ struct TwinContext {
     var activeInjuries: [InjuryRecord]
     var calibration: TwinCalibration
     var personalAnchor: PersonalReadinessAnchor
+    // PR15: el episodio de viaje activo, si hay uno. Va aquí por la misma
+    // razón que los otros seis: es un dato que el gemelo necesita, que vive en
+    // un store fuera de TwinCore, y que TODAS las funciones del pipeline
+    // (assess, status, weekAhead, propose) tienen que ver para no discrepar.
+    // Con default nil, así que los call sites que no lo tienen siguen
+    // compilando — pero ojo: DecisionSimulatorEngine.simulate construye su
+    // propio TwinContext desde seis parámetros sueltos, así que ESE sí ha
+    // tenido que recibirlo explícitamente o el simulador diría que un HIIT
+    // sale gratis mientras el plan lo limita.
+    var travel: TravelEpisode? = nil
 }

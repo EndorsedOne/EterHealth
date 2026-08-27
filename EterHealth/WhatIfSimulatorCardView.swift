@@ -9,6 +9,7 @@ struct WhatIfSimulatorCardView: View {
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var checkIns: DailyCheckInStore
+    @EnvironmentObject private var travel: TravelEpisodeStore
     @State private var scenario = WhatIfScenario()
     @State private var caffeineHourSelection = 17
     @State private var caffeineDoseMg = 80
@@ -16,7 +17,7 @@ struct WhatIfSimulatorCardView: View {
     private let drinkStepCap = 4
 
     var body: some View {
-        let projection = scenario.isEmpty ? nil : WhatIfSimulatorEngine.simulate(scenario, health: health, imports: imports, checkIn: checkIns.entry())
+        let projection = scenario.isEmpty ? nil : WhatIfSimulatorEngine.simulate(scenario, health: health, imports: imports, checkIn: checkIns.entry(), travel: travel.currentEpisode())
         return VStack(alignment: .leading, spacing: 14) {
             EterSectionHeader("¿Qué pasa si esta noche…?", eyebrow: "Simulador combinable", subtitle: "Marca varias cosas a la vez — una cena de trabajo puede ser vino, cena copiosa y acostarte tarde, todo junto.")
             drinksSection

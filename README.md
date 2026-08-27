@@ -55,6 +55,7 @@ flowchart TD
         WR[WorkoutReviewStore<br/>RPE y sensaciones reales]
         TS[TwinStateStore<br/>calibración + ancla personal]
         PH[PlanHistoryStore<br/>plan propuesto vs. ejecutado]
+        TE[TravelEpisodeStore<br/>episodios de viaje]
     end
 
     GS --> CTX[TwinContext<br/>profile · events · reviews ·<br/>activeInjuries · calibration · personalAnchor]
@@ -63,6 +64,7 @@ flowchart TD
     LF --> CTX
     WR --> CTX
     TS --> CTX
+    TE --> CTX
 
     HS --> ASSESS
     IS --> ASSESS
@@ -75,9 +77,12 @@ flowchart TD
         PERF[PerformanceEngine.dailyDualHistory<br/>+ dualSummary] --> DL[DualLoadSummary<br/>canal aeróbico / canal de fuerza]
         DL --> STATUS
         PHYS --> STATUS
-        ALERT --> STATUS
         STATUS[TrainingPlanEngine.status] --> WPS[WeeklyPlanStatus<br/>block · dosis · nextSession · rationale]
         STATUS --> WEEK[TrainingPlanEngine.weekAhead<br/>simulación forward -> DayForecast x7]
+        TIE[TravelImpactEngine<br/>fatiga de tránsito + desajuste circadiano] --> PHYS
+        TIE --> CEIL[SessionIntensityCeiling]
+        ALERT --> CEIL
+        CEIL --> STATUS
         LM[MuscleVolumeLandmarks<br/>priors MEV/MAV/MRV] --> STATUS
         VLL[VolumeLandmarkLearning<br/>MRV aprendido + volumen sostenido] --> LM
     end
@@ -247,9 +252,21 @@ primero que dispara gana:
 
 Después de elegir, tres ajustes, en este orden:
 
-1. **Alerta `.caution`**: si el resultado era `.qualityRun`, `.longRun`,
-   `.hybrid` o `.brick`, se sustituye por `.easyRun` y se dice por qué. La
-   fuerza no se toca (su propio factor de carga por readiness ya modera).
+1. **Techo de intensidad** (`SessionIntensityCeiling`): una alerta
+   `.caution` o un estado de viaje que lo justifique retiran del día la
+   calidad, la tirada larga, el híbrido y el brick. **No es un gate**: no
+   decide qué sesión toca, sólo puede rebajarla, y **nunca a recuperación** —
+   sustituye por `.easyRun`, y la fuerza no se cambia por otra sesión sino que
+   baja a RIR 3–4 por la vía del deload. Los dos motivos pasan por el mismo
+   mecanismo, y cuando coinciden se unen quedándose con lo más restrictivo de
+   cada cosa y mostrando ambos.
+
+   Dos reglas del lado del viaje que no se negocian: **nunca produce el tier
+   duro** (el gate de señales va *antes* del de evento, así que un override
+   por viaje cancelaría la carrera a la que has volado) y `.raceDay` no
+   aparece en ningún conjunto de excluidos. Y las señales medidas sólo pueden
+   **relajar** el techo, nunca subirlo: subirlo cobraría dos veces el mismo
+   HRV, que ya cuenta en las señales propias de `assess`.
 2. **Veto por lesión**: `InjurySafetyEngine.allows(_:injuries:)` y
    `allowedPatterns(injuries:)` son la única definición de qué bloquea cada
    restricción activa. Un kind bloqueado pasa a `.recovery`; un patrón de
@@ -437,7 +454,34 @@ por lo aprendido de este atleta, igual que los MAV.
 Estancias cortas activan `.keepHomeSchedule`: por debajo de 48 h **o** de la
 mitad de lo que costaría re-sincronizarse, no se estima adaptación en absoluto
 — "0 días de adaptación" en el sentido de "no se intenta", que es distinto de
-"ya está adaptado". Además: check-in diario, lesiones activas
+"ya está adaptado".
+
+**Cómo llega al gemelo** (`TravelImpactEngine`, una sola estimación por día
+publicada en `TwinAssessment.travel`): dos magnitudes separadas a propósito,
+porque decaen a ritmos distintos y pueden discrepar por completo — un
+Madrid–Johannesburgo es un vuelo nocturno de 11 h que fatiga mucho y **no
+desajusta nada** (los dos husos en +2), y un Madrid–Nueva York diurno es lo
+contrario.
+
+| | De dónde sale | Cómo decae | Coste máximo |
+|---|---|---|---|
+| `travelFatigue` (0…1) | duración puerta a puerta, escalas, horas de ventana de sueño perdidas | vida media 1.5 días, la misma que `step()` ya usa para la fatiga muscular | −8 pt |
+| `circadianOffsetHours` (con signo) | husos × dirección, decaído al prior desde la llegada | **lineal** a 1 h/día (este) o 1.5 h/día (oeste) — la literatura lo describe en horas de desplazamiento por día, que es lineal por definición | −12 pt |
+
+Las dos viven en `TwinPhysiology` (estado que decae, igual que `hrvDeviation`)
+y **nunca** se suman a `fatigueAerobic`/`fatigueStrength`: un vuelo no es
+entrenamiento, y meterlo ahí haría que `exceedsPaceCeiling` mandara a
+recuperación por una carga que nunca ocurrió. El coste en puntos tiene **una
+sola definición** (`TravelImpact.circadianReadinessCost` /
+`fatigueReadinessCost`) que usan tanto la puntuación real de hoy como la
+proyección de mañana, para que no puedan discrepar.
+
+Las señales medidas (sueño, HRV, pulso) **sólo pueden acortar** el prior: tres
+días consecutivos dentro de bandas personales cierran el desajuste antes de lo
+previsto, y un hueco sin dato rompe la racha. Nunca lo alargan — atribuir a un
+viaje unas señales malas a los diez días sería una afirmación insostenible, así
+que lo que baja es la confianza. Y aparecen en la explicación sin volver a
+cobrar: ya cuentan una vez en las señales propias de `assess`. Además: check-in diario, lesiones activas
 con restricciones, factores de estilo de vida, y reviews de sesión (RPE
 real), que es lo que permite clasificar calidad por evidencia en vez de por
 kcal/min.
@@ -461,36 +505,45 @@ Están documentadas en el código, en el sitio donde ocurren. Resumen:
    `recentSets` sale de las series de Hevy; una tirada larga no aparece ahí.
    Los priors de tren inferior están calibrados a la baja precisamente por
    eso, pero es una compensación de tabla, no una medición.
-3. **Los episodios de viaje todavía no llegan al gemelo.** Se dan de alta,
-   se derivan sus fases y se muestran, pero `TravelEpisode` no entra aún en
-   `TwinPhysiology`, ni en `step()`, ni en la decisión de entrenamiento: ese
-   es el PR siguiente. Hasta entonces un viaje no cambia readiness ni la
-   sesión propuesta.
-4. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
+3. **Con `keepHomeSchedule` el desajuste circadiano se modela como cero.**
+   Vivir en hora de casa en un destino con el ciclo de luz invertido tiene un
+   coste real que este modelo no representa: sólo cuenta la fatiga de
+   tránsito. La alternativa era inventarse una fracción del desplazamiento, y
+   no hay evidencia para elegirla.
+4. **Las tasas de re-sincronización son un prior, y lineal.** Para
+   desplazamientos de 12 h o más la re-sincronización deja de ser monotónica
+   (puede ocurrir por el lado contrario), algo que este modelo no captura — de
+   ahí el tope de 14 días. Y no se aprenden todavía de este atleta: las
+   señales sólo pueden acortar el prior, nunca sustituirlo.
+5. **El aprendizaje de viajes de `HabitAssociationEngine` está inerte.**
+   Sigue leyendo `LifestyleEvent.timeZoneDifference`, que ya no se escribe
+   desde ninguna UI. Migrarlo a episodios (y aprender por dirección, que son
+   fisiologías distintas) es el PR siguiente.
+6. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
    Banister-style que ya usaba `TrainingScenarioEngine`, partida en dos
    canales. No se ajustan por atleta.
-5. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
+7. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
    `DualLoad.split` da 0.6/0.4 a híbrido y brick. No sale de medición.
-6. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
+8. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
    partir el historial de alguien por tipo de sesión *planificada*, así que
    la carga estimada por `PlannedSessionKind` es una tabla, no un ajuste.
-7. **La dosis de carrera no se escala por distancia objetivo** en
+9. **La dosis de carrera no se escala por distancia objetivo** en
    `status` (sí en `WorkoutPlanner`, que es donde sale la prescripción real).
    Es una señal secundaria de ponderación, y duplicar ahí la resolución de
    `targetKilometers` no compensa.
-8. **La dosis de brick no tiene techo personal**: no existe una actividad
+10. **La dosis de brick no tiene techo personal**: no existe una actividad
    HealthKit única "brick" contra la que medir "el brick más largo
    reciente".
-9. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
+11. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
    ventana simulada (readiness, `hoursSince*`, y la semilla de `recentSets`
    no rueda fuera de su ventana de 7 días). Es una simplificación asumida y
    comentada, no un descuido.
-10. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
+12. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
    de un solo canal combinado dentro de `ForwardState`, no en los dos
    canales de `DualLoad`.
-11. **`MuscleMap` hace matching de substrings en inglés** (la convención de
+13. **`MuscleMap` hace matching de substrings en inglés** (la convención de
    los exports de Hevy). Nombres en español caen al bucket genérico.
-12. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
+14. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
     (macOS purga `/tmp`). No es un fallo: es un skip explícito.
 
 ---

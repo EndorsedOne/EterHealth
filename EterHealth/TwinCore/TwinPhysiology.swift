@@ -63,12 +63,34 @@ struct TwinPhysiology: Equatable {
     var restingHeartRateDeviation: Double = 0
     var sleepDebtHours: Double
     var illness: Bool
+    // PR15: viaje. Los dos son ESTADO fisiológico que decae, que es
+    // exactamente la forma que ya tienen hrvDeviation y sleepDebtHours arriba
+    // — y por la misma razón viven aquí y no en el episodio: el episodio es
+    // calendario (fechas, husos, vuelos) y no decae; esto sí.
+    //
+    // Lo que NO se hace, y es la decisión importante: no se suman a
+    // fatigueAerobic ni a fatigueStrength. Un vuelo no es entrenamiento, y
+    // meterlo en esos canales corrompería el ratio agudo:crónico —
+    // exceedsPaceCeiling leería que has entrenado y mandaría a recuperación
+    // por una carga que nunca ocurrió— además de inflar la fitness de un
+    // canal por haber cogido un avión.
+    //
+    // CON SIGNO: positivo = falta adelantar fase (se viajó al este), negativo
+    // = falta retrasarla (al oeste). El signo es lo que permite que step()
+    // decaiga a la tasa correcta sin conocer el episodio; ver
+    // CircadianReentrainment. Con default 0 (= "en hora, o sin viaje") por el
+    // mismo patrón que hrvDeviation: quien no tiene opinión sobre el viaje no
+    // tiene que fingir una.
+    var circadianOffsetHours: Double = 0
+    /// 0 … 1. Fatiga aguda de tránsito, no carga de entrenamiento.
+    var travelFatigue: Double = 0
     var asOf: Date
 
     static func baseline(asOf: Date) -> TwinPhysiology {
         TwinPhysiology(fitnessAerobic: 0, fatigueAerobic: 0, fitnessStrength: 0, fatigueStrength: 0,
                        muscleFatigue: [:], hrvDeviation: 0, restingHeartRateDeviation: 0,
-                       sleepDebtHours: 0, illness: false, asOf: asOf)
+                       sleepDebtHours: 0, illness: false,
+                       circadianOffsetHours: 0, travelFatigue: 0, asOf: asOf)
     }
 }
 
@@ -110,8 +132,17 @@ struct RecoverySignals {
     var sleepDeficitHours: Double?
     var checkIn: DailyCheckIn?
     var physiologicalAlert: PhysiologicalAlert?
+    // PR15: el estado de viaje recalculado para ESTE paso, cuando lo hay.
+    // Mismo contrato que hrvDeviation: un valor es información nueva y manda;
+    // nil significa "sin información nueva de viaje para este paso", y
+    // entonces step() decae el estado que ya había — no lo borra ni lo
+    // congela. Es lo que permite que la predicción de mañana arrastre el
+    // desajuste de hoy perdiendo el día que corresponde.
+    var travel: TravelImpact?
 
-    static let none = RecoverySignals(hrvDeviation: nil, restingHeartRateDeviation: nil, sleepDeficitHours: nil, checkIn: nil, physiologicalAlert: nil)
+    static let none = RecoverySignals(hrvDeviation: nil, restingHeartRateDeviation: nil,
+                                      sleepDeficitHours: nil, checkIn: nil,
+                                      physiologicalAlert: nil, travel: nil)
 }
 
 // Pura: el mismo (state, session, recoverySignals, dtDays) siempre produce
@@ -193,12 +224,41 @@ func step(_ state: TwinPhysiology, session: SessionLoad?, recoverySignals: Recov
         ?? (recoverySignals.physiologicalAlert?.severity == .recover ? true : nil)
         ?? state.illness
 
+    // PR15: viaje. Una medición nueva del episodio manda (mismo contrato que
+    // el HRV de arriba); sin ella, los dos estados decaen — cada uno con su
+    // propio mecanismo, porque son dos fenómenos distintos:
+    //
+    //  · El desajuste circadiano decae LINEALMENTE a la tasa del prior, y la
+    //    tasa depende del SIGNO: ~1 h/día si falta adelantar fase (este),
+    //    ~1.5 h/día si falta retrasarla (oeste). Es la única razón por la que
+    //    el escalar lleva signo, y lo que permite que step() lo decaiga
+    //    correctamente sin saber nada del episodio ni de sus vuelos. Una
+    //    exponencial aquí sería cambiar el fenómeno para que encaje con el
+    //    resto del código: la literatura lo describe como horas de
+    //    desplazamiento de fase por día, que es lineal por definición.
+    //  · La fatiga de tránsito decae con la MISMA vida media por defecto que
+    //    la fatiga muscular de arriba (1.5 días), reutilizada a propósito en
+    //    vez de inventar una segunda constante parecida.
+    let circadianOffsetHours: Double
+    let travelFatigue: Double
+    if let travel = recoverySignals.travel {
+        circadianOffsetHours = travel.circadianOffsetHours
+        travelFatigue = travel.travelFatigue
+    } else {
+        let rate = CircadianReentrainment.hoursPerDay(forOffsetHours: state.circadianOffsetHours)
+        let resolved = rate * dtDays
+        let magnitude = max(0, abs(state.circadianOffsetHours) - resolved)
+        circadianOffsetHours = state.circadianOffsetHours > 0 ? magnitude : -magnitude
+        travelFatigue = max(0, state.travelFatigue * pow(0.5, dtDays / TravelImpactEngine.fatigueHalfLifeDays))
+    }
+
     return TwinPhysiology(
         fitnessAerobic: fitnessAerobic, fatigueAerobic: fatigueAerobic,
         fitnessStrength: fitnessStrength, fatigueStrength: fatigueStrength,
         muscleFatigue: muscleFatigue, hrvDeviation: hrvDeviation,
         restingHeartRateDeviation: restingHeartRateDeviation,
         sleepDebtHours: sleepDebtHours, illness: illness,
+        circadianOffsetHours: circadianOffsetHours, travelFatigue: travelFatigue,
         asOf: state.asOf.addingTimeInterval(dtDays * 86_400)
     )
 }
@@ -213,7 +273,8 @@ extension TwinPhysiology {
     // ImportStore, which are themselves main-actor-isolated.
     @MainActor static func derive(health: HealthStore, imports: ImportStore, muscleReadiness: [MuscleReadiness],
                        hrvDeviation: Double = 0, restingHeartRateDeviation: Double = 0,
-                       sleepDebtHours: Double, illness: Bool, now: Date = Date()) -> TwinPhysiology {
+                       sleepDebtHours: Double, illness: Bool,
+                       travel: TravelImpact = .none, now: Date = Date()) -> TwinPhysiology {
         // PR3: el mismo historial dual que PerformanceEngine.summarize usa.
         // Antes esto repetía aquí el bucle de separación aeróbico/fuerza
         // (mismo filtro de Hevy-espejado, mismo isStrengthWorkout, mismas
@@ -230,7 +291,13 @@ extension TwinPhysiology {
             fatigueStrength: PerformanceEngine.ewmaWeeklyEquivalent(loads: strengthLoads, timeConstant: 5),
             muscleFatigue: Dictionary(uniqueKeysWithValues: muscleReadiness.map { ($0.name, Double(100 - $0.readiness)) }),
             hrvDeviation: hrvDeviation, restingHeartRateDeviation: restingHeartRateDeviation,
-            sleepDebtHours: sleepDebtHours, illness: illness, asOf: now
+            sleepDebtHours: sleepDebtHours, illness: illness,
+            // Recalculado del episodio real, no arrastrado: "hoy, real" es la
+            // convención de esta función (ver su comentario), y el estado de
+            // viaje de hoy se deriva del episodio igual que la fitness se
+            // deriva del historial completo.
+            circadianOffsetHours: travel.circadianOffsetHours, travelFatigue: travel.travelFatigue,
+            asOf: now
         )
     }
 }
@@ -300,6 +367,13 @@ extension TwinReadout {
         score += min(12, max(-15, physiology.hrvDeviation * 7))
         score += min(10, max(-15, physiology.restingHeartRateDeviation * 7))
         score -= min(12, physiology.sleepDebtHours * 3)
+        // PR15: el coste del viaje sale de TravelImpact, que es la única
+        // definición — assess() usa exactamente estas dos funciones para la
+        // puntuación real de hoy. Si cada uno tuviera su fórmula, el mismo
+        // desajuste costaría distinto hoy que mañana, que es precisamente el
+        // fallo que tenían la app y el widget antes de este PR.
+        score += Double(TravelImpact.circadianReadinessCost(offsetHours: physiology.circadianOffsetHours))
+        score += Double(TravelImpact.fatigueReadinessCost(physiology.travelFatigue))
         score += Double(calibration.scoreAdjustment)
         let finalScore = min(100, max(0, Int(score.rounded())))
         return TwinReadout(score: finalScore, state: label(for: finalScore), confidence: anchor.confidence)

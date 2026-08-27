@@ -16,9 +16,11 @@ final class DashboardViewModel: ObservableObject {
     // instead of repeating the same six labels three times.
     func refresh(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                 profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
-                activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor) {
+                activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
+                travel: TravelEpisode?) {
         let context = TwinContext(profile: profile, events: events, reviews: reviews,
-                                  activeInjuries: activeInjuries, calibration: calibration, personalAnchor: personalAnchor)
+                                  activeInjuries: activeInjuries, calibration: calibration,
+                                  personalAnchor: personalAnchor, travel: travel)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context)
         self.assessment = assessment
         plan = TrainingPlanEngine.status(

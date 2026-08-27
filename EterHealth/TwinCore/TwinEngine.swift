@@ -21,6 +21,12 @@ struct TwinAssessment {
     // prediction) can read it instead of re-deriving their own copy.
     let physiology: TwinPhysiology
     let readout: TwinReadout
+    // PR15: el impacto del viaje activo, calculado UNA vez y publicado. Lo
+    // consumen la puntuación de hoy (las dos señales de abajo), la fisiología
+    // (donde decae), el techo de intensidad de status(), la tarjeta de Viajes
+    // y el simulador. Ninguno lo recalcula: dos estimaciones del mismo viaje
+    // es exactamente lo que había antes de este PR entre la app y el widget.
+    let travel: TravelImpact
     // Replaces TwinStateStore's old predictedTomorrow(from:) — a real
     // step() of today's physiology through tomorrow's proposed session,
     // never a match on the Spanish recommendation string.
@@ -149,19 +155,6 @@ enum TwinEngine {
                 score += impact
                 signals.append(TwinSignal(name: "Alcohol", value: "\(event.alcoholDrinks) bebidas", impact: impact,
                     detail: "Registrado recientemente; se aplica una cautela temporal." + learned.detail))
-            }
-            if event.timeZoneDifference > 0 {
-                let directionMultiplier = event.travelDirection == .east ? 1.15 : 1.0
-                let adaptationHours = min(144.0, max(36.0, Double(event.timeZoneDifference) * 14 * directionMultiplier))
-                let remaining = max(0, 1 - ageHours / adaptationHours)
-                let impact = -Int((Double(min(12, event.timeZoneDifference)) * remaining).rounded())
-                if remaining > 0 {
-                    let learned = learnedHabit(.travel)
-                    let combinedImpact = impact + learned.impact
-                    score += combinedImpact
-                    signals.append(TwinSignal(name: "Viaje", value: "\(event.timeZoneDifference) h", impact: combinedImpact,
-                        detail: "Cambio horario hacia el \(event.travelDirection == .east ? "este" : "oeste"); cautela circadiana estimada durante \(Int(adaptationHours.rounded())) h, modulada por sueño y sensaciones." + learned.detail))
-                }
             }
             if event.saunaMinutes > 0 && ageHours <= 36 {
                 let learned = learnedHabit(.sauna)
@@ -332,8 +325,62 @@ enum TwinEngine {
         }
         score = clamp(score, 0, 100)
 
+        // PR15: el viaje, una sola vez y antes de que nada más lo necesite.
+        // Los confusores salen de datos que esta función YA tiene, así que el
+        // motor no necesita leer ningún store para saber que este episodio no
+        // sirve para aprender con el mismo peso.
+        var confounders: TravelConfounders = []
+        if checkIn?.illness == true { confounders.insert(.illness) }
+        if !activeInjuries.isEmpty { confounders.insert(.injury) }
+        if TrainingPlanEngine.eventToday(now, profile: context.profile) != nil { confounders.insert(.race) }
+        if events.contains(where: { $0.alcoholDrinks > 0 && now.timeIntervalSince($0.date) <= 36 * 3_600 }) {
+            confounders.insert(.alcohol)
+        }
+        if PerformanceEngine.summarize(health: health, imports: imports, now: now).dual.guidance == .overload {
+            confounders.insert(.extraordinaryLoad)
+        }
+        let travelImpact = TravelImpactEngine.impact(
+            episode: context.travel, at: now,
+            signals: TravelSignalContext(
+                baseline: personal, sleepHistory: health.sleepHistory, hrvHistory: health.hrvHistory,
+                restingHeartRateHistory: health.restingHeartRateHistory, confounders: confounders
+            )
+        )
+        // DOS señales y no una. La señal "Viaje" única de antes escondía cuál
+        // de los dos fenómenos mandaba, y decaen a ritmos muy distintos: un
+        // Madrid–Buenos Aires fatiga mucho y desajusta poco; un Madrid–Nueva
+        // York al revés. El coste sale de TravelImpact, la misma definición que
+        // usa la proyección de mañana en TwinReadout.derive.
+        if travelImpact.isMeaningful {
+            let learned = learnedHabit(.travel)
+            if travelImpact.circadianReadinessCost != 0 {
+                let impact = travelImpact.circadianReadinessCost + learned.impact
+                score += impact
+                signals.append(TwinSignal(
+                    name: "Desajuste circadiano",
+                    value: String(format: "%.0f h", abs(travelImpact.circadianOffsetHours)),
+                    impact: impact,
+                    detail: "\(travelImpact.phase.rawValue) de \(context.travel?.title ?? "tu viaje"). "
+                        + travelImpact.confidence.reason + learned.detail
+                ))
+            }
+            if travelImpact.fatigueReadinessCost != 0 {
+                score += travelImpact.fatigueReadinessCost
+                let causes = travelImpact.structuralFactors.filter { if case .circadianOffset = $0 { return false } else { return true } }
+                signals.append(TwinSignal(
+                    name: "Fatiga de viaje",
+                    value: "\(Int((travelImpact.travelFatigue * 100).rounded()))%",
+                    impact: travelImpact.fatigueReadinessCost,
+                    detail: causes.isEmpty
+                        ? "Fatiga de tránsito, que se resuelve en horas o pocos días — distinta del desajuste horario."
+                        : causes.map(\.description).joined(separator: " · ") + ". Se resuelve en horas o pocos días, a diferencia del desajuste horario."
+                ))
+            }
+        }
+
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: score, muscles: muscleReadiness, checkIn: checkIn,
-                                             context: context, physiologicalAlert: physiologicalAlert, now: now)
+                                             context: context, physiologicalAlert: physiologicalAlert,
+                                             travel: travelImpact, now: now)
         // PR8: el titular sale del plan (kind + patrón ya elegido y ya
         // compatible con las restricciones activas), no de un segundo
         // selector de patrón aquí ni de una reescritura por substrings del
@@ -355,7 +402,8 @@ enum TwinEngine {
         let physiology = TwinPhysiology.derive(health: health, imports: imports, muscleReadiness: muscleReadiness,
                                                hrvDeviation: personal.hrv.deviation ?? 0,
                                                restingHeartRateDeviation: personal.restingHeartRate.deviation ?? 0,
-                                               sleepDebtHours: sleepDebtHours, illness: checkIn?.illness ?? false, now: now)
+                                               sleepDebtHours: sleepDebtHours, illness: checkIn?.illness ?? false,
+                                               travel: travelImpact, now: now)
         let readout = TwinReadout(score: score, state: state, confidence: personal.confidence)
         // No hay forma honesta de conocer hoy el HRV/sueño/check-in reales
         // de mañana — RecoverySignals.none dice explícitamente "sin
@@ -372,7 +420,7 @@ enum TwinEngine {
         let tomorrowPhysiology = step(physiology, session: SessionLoad.forecast(plan.nextSession), recoverySignals: .none, dtDays: 1)
         let predictedTomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: anchor, calibration: calibration)
 
-        return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert, physiology: physiology, readout: readout, predictedTomorrow: predictedTomorrow)
+        return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert, physiology: physiology, readout: readout, travel: travelImpact, predictedTomorrow: predictedTomorrow)
     }
 
     private static func calculateMuscles(_ workouts: [ImportedWorkout], healthWorkouts: [HealthWorkout], learnedRecovery: [String: Double], checkIn: DailyCheckIn?, now: Date) -> [MuscleReadiness] {

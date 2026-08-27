@@ -63,13 +63,18 @@ enum WhatIfSimulatorEngine {
     // WhatIfScenario. Every active factor gets its own impact, summed;
     // see combineImpacts for how honesty about the combination itself
     // (not just each piece) is handled.
-    static func simulate(_ scenario: WhatIfScenario, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?, now: Date = Date()) -> WhatIfProjection {
+    // PR15: `travel` inyectado y no leído de un `.shared` como los cinco de
+    // abajo — TravelEpisodeStore no tiene singleton a propósito. Sin él, este
+    // simulador proyectaría un mañana que ignora el viaje mientras la tarjeta
+    // de hoy lo tiene en cuenta.
+    static func simulate(_ scenario: WhatIfScenario, health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
+                         travel: TravelEpisode?, now: Date = Date()) -> WhatIfProjection {
         // TwinCore's TwinEngine.assess no longer reads these singletons
         // internally — this (outside TwinCore) is where they're read.
         let events = LifestyleFactorStore.shared.events
         let context = TwinContext(profile: GoalStore.shared.profile, events: events, reviews: WorkoutReviewStore.shared.reviews,
                                   activeInjuries: InjuryStore.shared.active, calibration: TwinStateStore.shared.calibration,
-                                  personalAnchor: TwinStateStore.shared.personalAnchor(now: now))
+                                  personalAnchor: TwinStateStore.shared.personalAnchor(now: now), travel: travel)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let associations = HabitAssociationEngine.analyze(
             events: events, alcohol: health.alcoholHistory,

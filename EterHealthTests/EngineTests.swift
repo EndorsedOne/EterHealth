@@ -4919,7 +4919,8 @@ final class EngineTests: XCTestCase {
         for decision: SimulatedDecision in [.alcohol, .fastingTonight, .poorHydration, .sauna] {
             let simulation = DecisionSimulatorEngine.simulate(decision, health: HealthStore(), imports: ImportStore(), checkIn: nil,
                                                               profile: neutralProfile, events: [], reviews: [], activeInjuries: [],
-                                                              calibration: neutralCalibration, personalAnchor: neutralAnchor)
+                                                              calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                                              travel: nil)
             XCTAssertEqual(simulation.addedLoad, 0, "Lifestyle decisions never add training load.")
             XCTAssertEqual(simulation.confidence, .low, "No episodes logged yet -> no confident personal effect to apply.")
             XCTAssertTrue((0...100).contains(simulation.tomorrowReadiness))
