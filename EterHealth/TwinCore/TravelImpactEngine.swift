@@ -442,15 +442,25 @@ enum TravelImpactEngine {
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
-        // La hora de acostarse a la que se compara: la mediana de las noches
-        // ya pasadas EN DESTINO (o en casa, tras volver), en hora local de ese
-        // sitio. No la de antes del viaje: adaptarse significa converger al
-        // reloj de donde estás, no volver al de donde venías.
+        // El horario contra el que se compara: el ANCLA PERSONAL, no la mediana
+        // de las mismas noches que se están juzgando.
+        //
+        // La primera versión de esta comprobación hacía justo eso, y un
+        // comentario de review lo señaló: tres noches seguidas acostándose a
+        // las 07:00 en Tokio son perfectamente "regulares" y pasaban como
+        // estables, aunque 07:00 en Tokio sea 23:00 en Lisboa — es decir,
+        // alguien que no ha movido su reloj en absoluto. Aquello medía
+        // regularidad y yo lo había documentado como si midiera adaptación.
+        //
+        // El ancla es la hora habitual de acostarse del atleta, aprendida de
+        // las noches ANTES de salir y leída en hora de casa; adaptarse
+        // significa volver a esa misma hora de reloj pero en el huso de donde
+        // estás. Así "23:30 en Tokio" cuenta como adaptado y "07:00 en Tokio"
+        // (= 23:30 en Lisboa) no, que es la distinción que hace falta.
         let localZone = (measuringLeg ?? (phase == .homeReadaptation ? .homeReturn : .outbound)) == .homeReturn
             ? TimeZone(identifier: episode.homeTimeZoneID)
             : TimeZone(identifier: episode.destinationTimeZoneID)
-        let medianBedtimeMinutes = medianBedtimeMinutesFromMidnight(
-            schedule: signals.sleepSchedule, from: start, to: date, in: localZone)
+        let habitualBedtimeMinutes = habitualBedtimeMinutes(episode: episode, signals: signals)
 
         var streak = 0
         var cursor = calendar.startOfDay(for: start)
@@ -458,7 +468,7 @@ enum TravelImpactEngine {
         while cursor <= limit {
             if dayIsStable(cursor, calendar: calendar, signals: signals,
                            sleepFloor: sleepFloor, hrvFloor: hrvFloor, restingCeiling: restingCeiling,
-                           medianBedtimeMinutes: medianBedtimeMinutes, localZone: localZone) {
+                           habitualBedtimeMinutes: habitualBedtimeMinutes, localZone: localZone) {
                 streak += 1
                 if streak >= stabilityDays { return cursor }
             } else {
@@ -476,7 +486,7 @@ enum TravelImpactEngine {
     private nonisolated static func dayIsStable(
         _ day: Date, calendar: Calendar, signals: TravelSignalContext,
         sleepFloor: Double, hrvFloor: Double, restingCeiling: Double?,
-        medianBedtimeMinutes: Double?, localZone: TimeZone?
+        habitualBedtimeMinutes: Double?, localZone: TimeZone?
     ) -> Bool {
         guard let sleep = value(in: signals.sleepHistory, on: day, calendar: calendar),
               let hrv = value(in: signals.hrvHistory, on: day, calendar: calendar),
@@ -484,27 +494,53 @@ enum TravelImpactEngine {
         if let restingCeiling,
            let resting = value(in: signals.restingHeartRateHistory, on: day, calendar: calendar),
            resting > restingCeiling { return false }
-        if let medianBedtimeMinutes, let localZone,
+        if let habitualBedtimeMinutes, let localZone,
            let bedtime = signals.sleepSchedule.first(where: { calendar.isDate($0.night, inSameDayAs: day) })?.bedtime {
+            // La hora de acostarse leída en el huso de DONDE ESTÁ, comparada
+            // con su hora habitual de reloj. Es la comparación que distingue
+            // haberse adaptado de haber mantenido el horario de origen.
             let minutes = minutesFromLocalMidnight(bedtime, in: localZone)
-            if abs(shortestAngularDifference(minutes, medianBedtimeMinutes)) > bedtimeStabilityToleranceMinutes {
+            if abs(shortestAngularDifference(minutes, habitualBedtimeMinutes)) > bedtimeStabilityToleranceMinutes {
                 return false
             }
         }
         return true
     }
 
-    private nonisolated static func medianBedtimeMinutesFromMidnight(
-        schedule: [NightlySleepSchedule], from start: Date, to end: Date, in zone: TimeZone?
-    ) -> Double? {
-        guard let zone else { return nil }
-        let values = schedule.filter { $0.night >= start && $0.night <= end }
-            .map { minutesFromLocalMidnight($0.bedtime, in: zone) }
-        // Con menos de tres noches no hay mediana que describa una costumbre,
-        // y comparar contra una o dos convertiría el ruido en criterio.
+    /// Cuántas noches de antes de salir se miran para establecer la costumbre.
+    /// Tres semanas: suficiente para que la mediana describa un hábito y no un
+    /// par de noches raras, y corto como para que sea el hábito ACTUAL.
+    static let habitualBedtimeLookbackDays = 21.0
+
+    /// La hora habitual de acostarse del atleta, en minutos desde la medianoche
+    /// de SU CASA, aprendida de las noches previas a la salida.
+    ///
+    /// nil cuando no hay noches suficientes antes del viaje: entonces la
+    /// comprobación de horario no se aplica y no penaliza, la misma convención
+    /// que el pulso en reposo. Sin ancla no se afirma nada sobre adaptación de
+    /// horario — que es distinto de afirmar que no hubo.
+    nonisolated static func habitualBedtimeMinutes(episode: TravelEpisode,
+                                                   signals: TravelSignalContext) -> Double? {
+        guard let departure = episode.outboundDeparture,
+              let homeZone = TimeZone(identifier: episode.homeTimeZoneID) else { return nil }
+        let windowStart = departure.addingTimeInterval(-habitualBedtimeLookbackDays * 86_400)
+        let values = signals.sleepSchedule
+            .filter { $0.night >= windowStart && $0.night < departure }
+            .map { minutesFromLocalMidnight($0.bedtime, in: homeZone) }
         guard values.count >= stabilityDays else { return nil }
-        let sorted = values.sorted(), middle = sorted.count / 2
-        return sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+        return median(values)
+    }
+
+    /// Mediana circular sobre un reloj de 24 h. Una mediana aritmética de
+    /// [23:40, 00:10, 23:50] daría las 15:53, que no es la hora a la que se
+    /// acuesta nadie: los valores hay que centrarlos antes de ordenarlos.
+    private nonisolated static func median(_ minutes: [Double]) -> Double? {
+        guard let reference = minutes.first else { return nil }
+        let centred = minutes.map { reference + shortestAngularDifference($0, reference) }
+        let sorted = centred.sorted(), middle = sorted.count / 2
+        let raw = sorted.count.isMultiple(of: 2) ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+        let day = 24.0 * 60
+        return (raw.truncatingRemainder(dividingBy: day) + day).truncatingRemainder(dividingBy: day)
     }
 
     private nonisolated static func minutesFromLocalMidnight(_ date: Date, in zone: TimeZone) -> Double {

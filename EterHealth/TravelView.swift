@@ -254,6 +254,13 @@ private struct CurrentTravelCard: View {
     }
 
     private var remainingDescription: String? {
+        if phase == .recovered {
+            // Con qué autoridad se cerró: medido o sólo predicho. Sin esto,
+            // "Recuperado" leía igual en los dos casos.
+            return episode.phaseBasis(at: now, rates: rates) == .measuredStability
+                ? "confirmado por tus señales"
+                : "por duración estimada, sin confirmar"
+        }
         guard let end = episode.currentPhaseEnd(at: now, rates: rates), end > now else { return nil }
         return "hasta " + end.formatted(date: .abbreviated, time: .shortened)
     }
@@ -302,9 +309,19 @@ private struct TravelTimelineStrip: View {
         case .homeReadaptation:
             return "Readaptación estimada: \(TravelFormat.days(episode.homeReadaptationDays(rates: rates))) desde la vuelta — su propia fase, con la tasa de la dirección contraria a la ida."
         case .destinationStable:
-            return episode.resolvedStayPolicy == .keepHomeSchedule
-                ? "Sin adaptación en destino: se mantiene el horario de origen."
-                : "Estable en hora local del destino."
+            guard episode.resolvedStayPolicy == .adaptToDestination else {
+                return "Sin adaptación en destino: se mantiene el horario de origen."
+            }
+            // PR18: `phaseBasis` existía desde PR17 y no se usaba, así que la
+            // pantalla decía "Estable en hora local" tanto si lo confirmaron
+            // tus señales como si sólo se había agotado la predicción — que es
+            // exactamente la confusión que el tipo se creó para evitar.
+            switch episode.phaseBasis(at: now, rates: rates) {
+            case .measuredStability:
+                return "Estable en hora local del destino, confirmado por tus señales: sueño, HRV y horario dentro de tus bandas varios días seguidos."
+            default:
+                return "Se agotó la duración estimada de la adaptación. Nadie ha confirmado estabilidad todavía: es una predicción cumplida, no una medición tuya."
+            }
         default:
             return nil
         }
@@ -397,7 +414,9 @@ private struct OutcomeRow: View {
     private var summary: String {
         var parts = [String(format: "%+.0f h", outcome.shiftHours)]
         if let actual = outcome.actualDays {
-            parts.append(String(format: "%.1f días reales frente a %.1f del prior", actual, outcome.priorDays))
+            parts.append(String(format: "%.1f días medidos frente a %.1f del prior", actual, outcome.priorDays))
+        } else {
+            parts.append("sin estabilidad confirmada")
         }
         if !outcome.confounders.isEmpty {
             parts.append("fuera de la estimación: " + outcome.confounders.descriptions.joined(separator: ", "))

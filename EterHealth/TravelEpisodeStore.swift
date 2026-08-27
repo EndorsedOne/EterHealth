@@ -31,7 +31,7 @@ final class TravelEpisodeStore: ObservableObject {
     ///
     /// Se resuelve aquí y no como parámetro porque TravelLearningEngine.profile
     /// es una función pura de `episodes`, que es justo lo que este store posee.
-    /// Así los siete call sites de `currentEpisode()` lo heredan sin cambiar.
+    /// Así todos los call sites lo heredan sin cambiar.
     private var learnedRates: ReentrainmentRates {
         TravelLearningEngine.profile(episodes: episodes).rates
     }
@@ -90,6 +90,54 @@ final class TravelEpisodeStore: ObservableObject {
         // Ninguno empezado: el próximo por salir, que es el que la fase
         // `.preDeparture` describe.
         return live.min { ($0.outboundDeparture ?? .distantFuture) < ($1.outboundDeparture ?? .distantFuture) }
+    }
+
+    /// El episodio que el GEMELO debe evaluar. No es lo mismo que
+    /// `currentEpisode`, y confundirlos dejaba muerta la medición tardía:
+    ///
+    /// `currentEpisode` responde "cuál es mi viaje ahora" y excluye los
+    /// recuperados, que es lo correcto para la tarjeta — un viaje terminado no
+    /// es el viaje actual. Pero TravelImpactEngine sí sigue buscando la
+    /// estabilidad de la vuelta dentro de la ventana de gracia aunque la fase
+    /// ya haya cerrado (ver TravelEpisode.stabilityMeasurableUntil), y si el
+    /// dashboard sólo inyecta `currentEpisode`, ese episodio nunca llega al
+    /// motor y la medición tardía NO OCURRE EN USO REAL. El código estaba
+    /// escrito y era inalcanzable.
+    ///
+    /// Prioridad: primero el activo, porque es el único que tiene impacto de
+    /// verdad. Con un viaje activo y otro recuperado-pendiente a la vez se
+    /// pierde la medición tardía del segundo — una esquina rara (dos viajes
+    /// solapados) en la que preferir el impacto real es lo correcto.
+    func episodeForEvaluation(at date: Date = Date()) -> TravelEpisode? {
+        if let active = currentEpisode(at: date) { return active }
+        return episodes
+            .filter { episode in
+                guard episode.phase(at: date, rates: learnedRates) == .recovered,
+                      let window = episode.stabilityMeasurableUntil(leg: .homeReturn, rates: learnedRates)
+                else { return false }
+                return date <= window
+            }
+            .max { ($0.homeArrival ?? .distantPast) < ($1.homeArrival ?? .distantPast) }
+    }
+
+    /// Guarda la estabilidad que el motor acaba de confirmar, si la hay.
+    ///
+    /// Vive aquí y no en la vista a propósito: cuando esta decisión estaba
+    /// dentro de ContentView no había forma de testear el recorrido completo
+    /// (store → contexto → gemelo → persistencia), y el test que la cubría
+    /// ejercía el motor en aislamiento — que es exactamente por lo que el
+    /// camino muerto de la medición tardía pasó la revisión anterior.
+    func recordStabilityIfConfirmed(_ impact: TravelImpact, at date: Date = Date()) {
+        guard let stabilizedAt = impact.stabilizedAt,
+              let episode = episodeForEvaluation(at: date) else { return }
+        // `.recovered` cuenta como tramo de vuelta: es la fase en la que la
+        // ventana de gracia sigue abierta.
+        let leg: TravelLeg = [.homeReadaptation, .recovered].contains(impact.phase) ? .homeReturn : .outbound
+        guard let anchor = leg == .homeReturn ? episode.homeArrival : episode.destinationArrival,
+              stabilizedAt >= anchor else { return }
+        recordStability(episodeID: episode.id, leg: leg,
+                        days: stabilizedAt.timeIntervalSince(anchor) / 86_400,
+                        confounders: impact.confounders, at: date)
     }
 
     /// Los episodios ya terminados, del más reciente al más antiguo — la

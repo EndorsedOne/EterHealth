@@ -487,11 +487,17 @@ cobrar: ya cuentan una vez en las señales propias de `assess`.
 
 **Cuándo se considera estable**: `stabilityDays` = 3 días consecutivos con
 todas las señales disponibles dentro de banda. Sueño (duración) y HRV son
-obligatorias; **pulso en reposo** y **regularidad del horario local de sueño**
-confirman cuando hay dato y no penalizan cuando falta. El horario importa
-porque duración y HRV no distinguen "me he adaptado a Tokio" de "duermo bien a
-la hora de Madrid mientras estoy en Tokio", y esa distinción *es* la
-re-sincronización circadiana. Un día sin dato rompe la racha.
+obligatorias; **pulso en reposo** y **horario de sueño** confirman cuando hay
+dato y no penalizan cuando falta. Un día sin dato rompe la racha.
+
+El horario se compara contra un **ancla personal** —la hora habitual de
+acostarse, mediana de las 21 noches previas a salir, leída en hora de casa— y
+la noche en destino se lee en hora **del destino**. Así "23:30 en Tokio" cuenta
+como adaptado y "07:30 en Tokio" (= 23:30 en Madrid) no. Comparar cada noche
+contra la mediana de esas mismas noches, como hacía la primera versión, medía
+**regularidad** y no adaptación: tres noches seguidas a las 07:30 en Tokio son
+perfectamente regulares y son exactamente lo contrario de haberse adaptado. Sin
+noches previas suficientes no hay ancla y la comprobación no se aplica.
 
 **"Recuperado" no significa "se agotó la estimación"**: la fase cierra en la
 estabilidad **medida** cuando existe, y sólo cae a la duración estimada cuando
@@ -501,7 +507,10 @@ presente una predicción cumplida como una medición.
 
 **Ventana de gracia** (`stabilityGraceMultiple` = ×2): la estabilidad se sigue
 buscando hasta el doble de la duración estimada aunque la fase ya haya
-cerrado. Sin esto el aprendizaje tenía un **sesgo sistemático**: una respuesta
+cerrado. Para que eso ocurra de verdad, el gemelo recibe el episodio vía
+`TravelEpisodeStore.episodeForEvaluation` y no `currentEpisode`: el segundo
+excluye los recuperados —correcto para la tarjeta, un viaje terminado no es el
+viaje actual— y con él la medición tardía era código inalcanzable. Sin esto el aprendizaje tenía un **sesgo sistemático**: una respuesta
 más lenta que el prior nunca podía registrarse, así que el aprendiz sólo veía
 respuestas iguales o más rápidas y la tasa aprendida derivaba hacia arriba
 viaje tras viaje. El margen no alarga la fase — eso haría que la línea temporal

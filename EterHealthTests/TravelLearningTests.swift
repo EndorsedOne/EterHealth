@@ -590,4 +590,198 @@ final class TravelLearningTests: XCTestCase {
         //    los episodios, nunca del campo.
         XCTAssertTrue(HabitAssociationEngine.travelOccurrences(episodes: [], now: Date()).isEmpty)
     }
+
+    // MARK: - PR18: el recorrido completo, no sólo el motor
+
+    /// Un HealthStore con 60 días de sueño, HRV, pulso y horarios reales, para
+    /// que PersonalBaselineEngine pueda producir bandas de verdad. El test de
+    /// PR17 ejercía TravelImpactEngine en aislamiento y por eso no vio que el
+    /// store nunca le entregaba el episodio.
+    private func seededHealth(bedtimeHourHome: Int, from start: Date,
+                              destinationNights: [(day: Int, bedtimeHourLocal: Int, zone: String)] = [],
+                              poorHrvDays: Set<Int> = []) -> HealthStore {
+        let health = HealthStore()
+        var homeCalendar = Calendar(identifier: .gregorian)
+        homeCalendar = { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "Europe/Madrid")!; return c }()
+        var sleep: [TrendPoint] = [], hrv: [TrendPoint] = [], resting: [TrendPoint] = []
+        var schedule: [NightlySleepSchedule] = []
+        for offset in -60...30 {
+            let night = start.addingTimeInterval(Double(offset) * 86_400)
+            sleep.append(TrendPoint(date: night, value: 7.8))
+            // Días deliberadamente malos, para poder representar a alguien que
+            // tarda MÁS que el prior en estabilizar — que es el caso que el
+            // margen de gracia existe para poder medir.
+            hrv.append(TrendPoint(date: night, value: poorHrvDays.contains(offset) ? 38 : 70))
+            resting.append(TrendPoint(date: night, value: 48))
+            let bedtime = homeCalendar.date(bySettingHour: bedtimeHourHome, minute: 30, second: 0, of: night)!
+            schedule.append(NightlySleepSchedule(night: night, bedtime: bedtime,
+                                                 wakeTime: bedtime.addingTimeInterval(8 * 3_600)))
+        }
+        // Noches concretas en destino con su propio horario local declarado.
+        for override in destinationNights {
+            let night = start.addingTimeInterval(Double(override.day) * 86_400)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: override.zone)!
+            let bedtime = calendar.date(bySettingHour: override.bedtimeHourLocal, minute: 30, second: 0, of: night)!
+            schedule.removeAll { Calendar.current.isDate($0.night, inSameDayAs: night) }
+            schedule.append(NightlySleepSchedule(night: night, bedtime: bedtime,
+                                                 wakeTime: bedtime.addingTimeInterval(8 * 3_600)))
+        }
+        health.sleepHistory = sleep
+        health.hrvHistory = hrv
+        health.restingHeartRateHistory = resting
+        health.sleepScheduleHistory = schedule.sorted { $0.night < $1.night }
+        return health
+    }
+
+    func testTheStoreActuallyHandsARecoveredEpisodeToTheTwinSoLateMeasurementHappens() {
+        // EL fallo de la review: TravelImpactEngine sabía medir en la ventana de
+        // gracia con la fase ya en .recovered, pero currentEpisode() excluía
+        // precisamente los recuperados — así que el dashboard nunca inyectaba
+        // ese viaje y la medición tardía no ocurría en uso real. El test de
+        // PR17 no lo vio porque llamaba al motor directamente.
+        let store = TravelEpisodeStore()
+        for episode in store.episodes { store.delete(id: episode.id) }
+        defer { for episode in store.episodes { store.delete(id: episode.id) } }
+
+        // Un viaje cuya IDA sí se midió y cuya VUELTA quedó sin medir.
+        let episode = measuredTokyo(index: 0, destinationDays: 4, homeDays: nil)
+        store.save(episode)
+        let homeArrival = episode.homeArrival!
+        // Ocho días después de volver: el prior daba 5.3, así que la fase ya es
+        // .recovered, pero la ventana de gracia (10.6) sigue abierta.
+        let lateDay = homeArrival.addingTimeInterval(8 * 86_400)
+        XCTAssertEqual(episode.phase(at: lateDay), .recovered)
+
+        // 1. currentEpisode NO lo devuelve — y eso es correcto, un viaje
+        //    terminado no es "el viaje actual".
+        XCTAssertNil(store.currentEpisode(at: lateDay))
+        // 2. pero episodeForEvaluation SÍ, que es lo que el gemelo necesita.
+        XCTAssertEqual(store.episodeForEvaluation(at: lateDay)?.id, episode.id,
+                       "Sin esto la medición tardía es código inalcanzable.")
+
+        // 3. El recorrido completo: contexto construido como lo construye la
+        //    app, assess de verdad, y la persistencia al final.
+        // Los seis primeros días en casa con el HRV hundido: este atleta tarda
+        // más de lo que el prior predijo (5.3 días), que es exactamente el caso
+        // que antes era imposible de registrar.
+        let health = seededHealth(bedtimeHourHome: 23, from: homeArrival,
+                                  poorHrvDays: Set(0...5))
+        let context = TwinContext(profile: neutralProfile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor,
+                                  travel: store.episodeForEvaluation(at: lateDay),
+                                  travelHistory: store.episodes)
+        let assessment = TwinEngine.assess(health: health, imports: ImportStore(persistToDisk: false),
+                                           checkIn: nil, context: context, now: lateDay)
+        XCTAssertNotNil(assessment.travel.stabilizedAt,
+                        "El motor tiene que confirmar estabilidad con estas señales.")
+        // Y el episodio recuperado no aporta impacto ninguno: no puede limitar
+        // nada ni aparecer como señal.
+        XCTAssertFalse(assessment.travel.isMeaningful)
+        XCTAssertEqual(assessment.travel.circadianOffsetHours, 0)
+
+        store.recordStabilityIfConfirmed(assessment.travel, at: lateDay)
+        guard let outcome = store.episodes.first(where: { $0.id == episode.id })?.measuredOutcome else {
+            return XCTFail("La medición tardía tiene que llegar al disco.")
+        }
+        XCTAssertNotNil(outcome.homeStabilityDays, "La vuelta pasa a estar medida.")
+        XCTAssertEqual(outcome.destinationStabilityDays, 4, "Y la ida no se toca.")
+        // Que es lo que rompía el sesgo: una respuesta MÁS LENTA que el prior
+        // (5.3 días) queda registrada.
+        XCTAssertGreaterThan(outcome.homeStabilityDays!, 5.3)
+    }
+
+    func testKeepingTheHomeScheduleAbroadIsNotStability() {
+        // El segundo punto de la review: comparar cada noche contra la mediana
+        // de esas mismas noches medía REGULARIDAD, no adaptación. Tres noches
+        // seguidas a las 07:00 en Tokio son regulares y son exactamente lo
+        // contrario de haberse adaptado — son las 23:30 de Madrid.
+        let episode = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let arrival = episode.destinationArrival!
+        let days = [1, 2, 3]
+
+        func stabilized(destinationBedtimeHour: Int) -> Date? {
+            let health = seededHealth(
+                bedtimeHourHome: 23, from: arrival,
+                destinationNights: days.map { (day: $0, bedtimeHourLocal: destinationBedtimeHour, zone: "Asia/Tokyo") })
+            return TravelImpactEngine.stabilizedDate(
+                episode: episode, at: arrival.addingTimeInterval(3 * 86_400),
+                signals: TravelSignalContext(
+                    baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+                    sleepHistory: health.sleepHistory, hrvHistory: health.hrvHistory,
+                    restingHeartRateHistory: health.restingHeartRateHistory,
+                    sleepSchedule: health.sleepScheduleHistory, confounders: .none))
+        }
+
+        // El ancla es 23:30 en hora de casa, aprendida de las noches previas.
+        let anchor = TravelImpactEngine.habitualBedtimeMinutes(
+            episode: episode,
+            signals: TravelSignalContext(
+                baseline: nil, sleepHistory: [], hrvHistory: [], restingHeartRateHistory: [],
+                sleepSchedule: seededHealth(bedtimeHourHome: 23, from: arrival).sleepScheduleHistory,
+                confounders: .none))
+        XCTAssertEqual(anchor, 23 * 60 + 30, "23:30 en hora de casa.")
+
+        // Acostándose a las 23:30 en hora de TOKIO: adaptado.
+        XCTAssertNotNil(stabilized(destinationBedtimeHour: 23))
+        // Acostándose a las 07:30 en hora de Tokio (= 23:30 en Madrid, ocho
+        // horas de diferencia): regular como un reloj, y sin adaptar nada.
+        XCTAssertNil(stabilized(destinationBedtimeHour: 7),
+                     "Mantener el horario de casa en destino no es estabilidad.")
+    }
+
+    func testTheCircularMedianDoesNotPutTheHabitInTheAfternoon() {
+        // Una mediana aritmética de [23:40, 00:10, 23:50] da las 15:53, que no
+        // es la hora a la que se acuesta nadie.
+        let episode = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let departure = episode.outboundDeparture!
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Madrid")!
+        let nights = [(23, 40), (0, 10), (23, 50), (23, 45), (0, 5)]
+        let schedule = nights.enumerated().map { index, time -> NightlySleepSchedule in
+            let night = departure.addingTimeInterval(Double(-index - 1) * 86_400)
+            let bedtime = calendar.date(bySettingHour: time.0, minute: time.1, second: 0, of: night)!
+            return NightlySleepSchedule(night: night, bedtime: bedtime,
+                                        wakeTime: bedtime.addingTimeInterval(8 * 3_600))
+        }
+        let anchor = TravelImpactEngine.habitualBedtimeMinutes(
+            episode: episode,
+            signals: TravelSignalContext(baseline: nil, sleepHistory: [], hrvHistory: [],
+                                         restingHeartRateHistory: [], sleepSchedule: schedule,
+                                         confounders: .none))!
+        // Cerca de medianoche por cualquiera de los dos lados, nunca por la tarde.
+        XCTAssertTrue(anchor > 23 * 60 || anchor < 60, "Salió \(anchor) minutos desde medianoche.")
+    }
+
+    func testWithoutEnoughPreTravelNightsTheScheduleCheckDoesNotPenalise() {
+        // Sin ancla no se afirma nada sobre adaptación de horario — que es
+        // distinto de afirmar que no hubo. Misma convención que el pulso.
+        let episode = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let arrival = episode.destinationArrival!
+        let days = [1, 2, 3]
+        let sleep = days.map { TrendPoint(date: arrival.addingTimeInterval(Double($0) * 86_400), value: 7.9) }
+        let hrv = days.map { TrendPoint(date: arrival.addingTimeInterval(Double($0) * 86_400), value: 71) }
+        // Horario en destino a una hora "no adaptada", pero SIN noches previas
+        // con las que construir el ancla.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let schedule = days.map { day -> NightlySleepSchedule in
+            let night = arrival.addingTimeInterval(Double(day) * 86_400)
+            let bedtime = calendar.date(bySettingHour: 7, minute: 30, second: 0, of: night)!
+            return NightlySleepSchedule(night: night, bedtime: bedtime,
+                                        wakeTime: bedtime.addingTimeInterval(8 * 3_600))
+        }
+        XCTAssertNil(TravelImpactEngine.habitualBedtimeMinutes(
+            episode: episode,
+            signals: TravelSignalContext(baseline: nil, sleepHistory: [], hrvHistory: [],
+                                         restingHeartRateHistory: [], sleepSchedule: schedule,
+                                         confounders: .none)))
+        XCTAssertNotNil(TravelImpactEngine.stabilizedDate(
+            episode: episode, at: arrival.addingTimeInterval(3 * 86_400),
+            signals: TravelSignalContext(baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+                                         sleepHistory: sleep, hrvHistory: hrv,
+                                         restingHeartRateHistory: [], sleepSchedule: schedule,
+                                         confounders: .none)),
+            "Sin ancla, el horario no puede impedir la estabilidad.")
+    }
 }
