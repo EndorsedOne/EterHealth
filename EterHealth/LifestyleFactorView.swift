@@ -172,14 +172,6 @@ struct LifestyleFactorView: View {
                         Stepper("Temperatura agua: \(event.coldTemperatureC) °C", value: $event.coldTemperatureC, in: 0...25)
                     }
                 }
-                Section("Viaje intercontinental") {
-                    Stepper("Diferencia horaria: \(event.timeZoneDifference) h", value: $event.timeZoneDifference, in: 0...14)
-                    if event.timeZoneDifference > 0 {
-                        Picker("Dirección", selection: $event.travelDirection) {
-                            ForEach(TravelDirection.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                    }
-                }
             }
             .navigationTitle("Editar factores")
             .toolbar {

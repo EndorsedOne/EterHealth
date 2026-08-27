@@ -21,6 +21,7 @@ private enum ContentSheet: Identifiable {
     case workoutDetail(RecentTrainingSession)
     case goalEditor
     case injuryHistory
+    case travel
 
     var id: String {
         switch self {
@@ -29,6 +30,7 @@ private enum ContentSheet: Identifiable {
         case .workoutDetail(let session): return "workoutDetail-\(session.id)"
         case .goalEditor: return "goalEditor"
         case .injuryHistory: return "injuryHistory"
+        case .travel: return "travel"
         }
     }
 }
@@ -54,6 +56,7 @@ struct ContentView: View {
     @EnvironmentObject private var strengthRoutines: StrengthRoutineStore
     @EnvironmentObject private var goals: GoalStore
     @EnvironmentObject private var injuries: InjuryStore
+    @EnvironmentObject private var travel: TravelEpisodeStore
     @EnvironmentObject private var watchMetrics: WatchMetricsStore
     @EnvironmentObject private var twinStates: TwinStateStore
     @State private var activeImporter: ContentImporter?
@@ -198,6 +201,8 @@ struct ContentView: View {
                 GoalEditorView(profile: goals.profile).environmentObject(goals)
             case .injuryHistory:
                 InjuryHistoryView().environmentObject(injuries)
+            case .travel:
+                TravelView().environmentObject(travel)
             }
         }
         .sheet(isPresented: $showLifestyleFactors) {
@@ -616,6 +621,7 @@ struct ContentView: View {
             dataSources
             backupCard
             injuryCard
+            travelCard
             updateControl
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -645,6 +651,29 @@ struct ContentView: View {
                     Text("Lesiones y restricciones").font(.headline).foregroundStyle(.primary)
                     Text(injuries.active.isEmpty ? "No hay restricciones activas" : "\(injuries.active.count) activas · afectan a las recomendaciones")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
+            }
+        }.buttonStyle(.plain).cardStyle()
+    }
+
+    // PR14: el viaje se da de alta como episodio, no se marca cada día. La
+    // tarjeta muestra la fase actual porque es la respuesta a "¿sigo en
+    // viaje?, ¿cuánto tiempo?", que es justo lo que el check diario no podía
+    // responder.
+    private var travelCard: some View {
+        let current = travel.currentEpisode()
+        return Button { activeSheet = .travel } label: {
+            HStack(spacing: 13) {
+                Image(systemName: "airplane").font(.title2).foregroundStyle(current == nil ? .teal : .orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Viajes").font(.headline).foregroundStyle(.primary)
+                    if let current {
+                        Text("\(current.title) · \(current.phase(at: Date()).rawValue)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Sin viajes en curso").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
             }
@@ -682,7 +711,7 @@ struct ContentView: View {
     private func exportBackup() {
         let backup = EterBackupManager.make(imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                              workoutReviews: workoutReviews, planHistory: planHistory,
-                                             strengthRoutines: strengthRoutines, health: health)
+                                             strengthRoutines: strengthRoutines, health: health, travel: travel)
         backupDocument = EterBackupDocument(backup: backup)
         showBackupExporter = true
     }
@@ -702,7 +731,7 @@ struct ContentView: View {
         pendingBackup = nil
         EterBackupManager.restore(backup, imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                   workoutReviews: workoutReviews, planHistory: planHistory,
-                                  strengthRoutines: strengthRoutines)
+                                  strengthRoutines: strengthRoutines, travel: travel)
         backupMessage = "Restauración terminada. Se han procesado \(backup.totalRecords) registros."
     }
 
@@ -713,7 +742,7 @@ struct ContentView: View {
             try EterBackupManager.writeAutomaticBackupIfNeeded(
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
-                strengthRoutines: strengthRoutines, health: health, force: true
+                strengthRoutines: strengthRoutines, health: health, travel: travel, force: true
             )
             automaticBackupRevision += 1
             backupMessage = "Copia automática activada en \(folder.lastPathComponent)."
@@ -727,7 +756,7 @@ struct ContentView: View {
             let written = try EterBackupManager.writeAutomaticBackupIfNeeded(
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
-                strengthRoutines: strengthRoutines, health: health, force: force
+                strengthRoutines: strengthRoutines, health: health, travel: travel, force: force
             )
             if written { automaticBackupRevision += 1 }
         } catch {

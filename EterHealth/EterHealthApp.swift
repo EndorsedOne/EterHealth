@@ -14,6 +14,9 @@ struct EterHealthApp: App {
     @StateObject private var injuries = InjuryStore.shared
     @StateObject private var twinStates = TwinStateStore.shared
     @StateObject private var temperatureDeviations = TemperatureDeviationStore.shared
+    // PR14: sin .shared — el brief prohíbe singletons nuevos y el patrón
+    // correcto es este (mismo que health/imports/checkIns).
+    @StateObject private var travel = TravelEpisodeStore()
 
     var body: some Scene {
         WindowGroup {
@@ -30,6 +33,7 @@ struct EterHealthApp: App {
                 .environmentObject(injuries)
                 .environmentObject(twinStates)
                 .environmentObject(temperatureDeviations)
+                .environmentObject(travel)
                 .task { await health.prepare() }
         }
     }

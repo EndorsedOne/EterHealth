@@ -7,8 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		WW001 /* EterHealthWatch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 2E4C652A302CB61A00A02A2B /* EterHealthWatch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		W001 /* EterHealthWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = W004 /* EterHealthWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		WW001 /* EterHealthWatch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 2E4C652A302CB61A00A02A2B /* EterHealthWatch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -19,13 +19,6 @@
 			remoteGlobalIDString = A010;
 			remoteInfo = EterHealth;
 		};
-		WW002 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = A001 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 2E4C6529302CB61A00A02A2B;
-			remoteInfo = "EterHealthWatch Watch App";
-		};
 		W002 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A001 /* Project object */;
@@ -33,20 +26,16 @@
 			remoteGlobalIDString = W010;
 			remoteInfo = EterHealthWidgets;
 		};
+		WW002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2E4C6529302CB61A00A02A2B;
+			remoteInfo = "EterHealthWatch Watch App";
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		WW003 /* Embed Watch Content */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
-			dstSubfolderSpec = 16;
-			files = (
-				WW001 /* EterHealthWatch Watch App.app in Embed Watch Content */,
-			);
-			name = "Embed Watch Content";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		W003 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -56,6 +45,17 @@
 				W001 /* EterHealthWidgets.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		WW003 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				WW001 /* EterHealthWatch Watch App.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -348,15 +348,15 @@
 			target = A010 /* EterHealth */;
 			targetProxy = T105 /* PBXContainerItemProxy */;
 		};
-		WW009 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 2E4C6529302CB61A00A02A2B /* EterHealthWatch Watch App */;
-			targetProxy = WW002 /* PBXContainerItemProxy */;
-		};
 		W009 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = W010 /* EterHealthWidgets */;
 			targetProxy = W002 /* PBXContainerItemProxy */;
+		};
+		WW009 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2E4C6529302CB61A00A02A2B /* EterHealthWatch Watch App */;
+			targetProxy = WW002 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 

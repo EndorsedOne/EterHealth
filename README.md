@@ -407,7 +407,37 @@ espejada en HealthKit se cuenta una sola vez.
 `AthletePlanProfile`: objetivos y fechas, `gymAvailable`,
 `trainingDaysPerWeek`, `preferredLongRunWeekday`, `maximumHeartRate`,
 `birthDate`, `manualHeartRateZones` (test de lactato — manda sobre la
-estimación), `progressionPace`, `wellnessMode`. Además: check-in diario, lesiones activas
+estimación), `progressionPace`, `wellnessMode`.
+
+**Episodios de viaje** (`TravelEpisodeStore`, pantalla Datos → Viajes): un
+viaje intercontinental se da de alta **una vez**, con sus vuelos de ida y
+vuelta (husos IANA + fechas y horas locales), no se marca cada día. De ahí se
+derivan el desplazamiento con signo (+ este / − oeste, calculado con
+`secondsFromGMT(for:)` sobre la fecha real de cada tramo, así que el horario
+de verano entra solo), si hay vuelos nocturnos, las escalas, el tránsito
+puerta a puerta y la fase actual del episodio:
+
+```
+Preparación → Ida → Adaptación → Estancia → Vuelta → Readaptación → Recuperado
+```
+
+La fase se **deriva** de las fechas, nunca se almacena: un estado guardado que
+nadie actualiza es exactamente el fallo que tenía el check diario de
+`timeZoneDifference` que esto sustituye — no tenía final definido, así que no
+había forma de saber cuándo dejar de marcarlo.
+
+Las duraciones de adaptación y readaptación salen de los priors de
+re-sincronización de la literatura (`CircadianReentrainment`: ≈1 h/día para
+adelantar fase al viajar al este, ≈1.5 h/día para retrasarla al oeste). La
+asimetría es la razón de que ida y vuelta sean **fases distintas con
+duraciones distintas**: Madrid→Tokio son ~8 días de adaptación y la vuelta
+~5.3 de readaptación, no el mismo número dos veces. Son priors, sustituibles
+por lo aprendido de este atleta, igual que los MAV.
+
+Estancias cortas activan `.keepHomeSchedule`: por debajo de 48 h **o** de la
+mitad de lo que costaría re-sincronizarse, no se estima adaptación en absoluto
+— "0 días de adaptación" en el sentido de "no se intenta", que es distinto de
+"ya está adaptado". Además: check-in diario, lesiones activas
 con restricciones, factores de estilo de vida, y reviews de sesión (RPE
 real), que es lo que permite clasificar calidad por evidencia en vez de por
 kcal/min.
@@ -431,31 +461,36 @@ Están documentadas en el código, en el sitio donde ocurren. Resumen:
    `recentSets` sale de las series de Hevy; una tirada larga no aparece ahí.
    Los priors de tren inferior están calibrados a la baja precisamente por
    eso, pero es una compensación de tabla, no una medición.
-3. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
+3. **Los episodios de viaje todavía no llegan al gemelo.** Se dan de alta,
+   se derivan sus fases y se muestran, pero `TravelEpisode` no entra aún en
+   `TwinPhysiology`, ni en `step()`, ni en la decisión de entrenamiento: ese
+   es el PR siguiente. Hasta entonces un viaje no cambia readiness ni la
+   sesión propuesta.
+4. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
    Banister-style que ya usaba `TrainingScenarioEngine`, partida en dos
    canales. No se ajustan por atleta.
-4. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
+5. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
    `DualLoad.split` da 0.6/0.4 a híbrido y brick. No sale de medición.
-5. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
+6. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
    partir el historial de alguien por tipo de sesión *planificada*, así que
    la carga estimada por `PlannedSessionKind` es una tabla, no un ajuste.
-6. **La dosis de carrera no se escala por distancia objetivo** en
+7. **La dosis de carrera no se escala por distancia objetivo** en
    `status` (sí en `WorkoutPlanner`, que es donde sale la prescripción real).
    Es una señal secundaria de ponderación, y duplicar ahí la resolución de
    `targetKilometers` no compensa.
-7. **La dosis de brick no tiene techo personal**: no existe una actividad
+8. **La dosis de brick no tiene techo personal**: no existe una actividad
    HealthKit única "brick" contra la que medir "el brick más largo
    reciente".
-8. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
+9. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
    ventana simulada (readiness, `hoursSince*`, y la semilla de `recentSets`
    no rueda fuera de su ventana de 7 días). Es una simplificación asumida y
    comentada, no un descuido.
-9. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
+10. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
    de un solo canal combinado dentro de `ForwardState`, no en los dos
    canales de `DualLoad`.
-10. **`MuscleMap` hace matching de substrings en inglés** (la convención de
+11. **`MuscleMap` hace matching de substrings en inglés** (la convención de
    los exports de Hevy). Nombres en español caen al bucket genérico.
-11. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
+12. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
     (macOS purga `/tmp`). No es un fallo: es un skip explícito.
 
 ---
