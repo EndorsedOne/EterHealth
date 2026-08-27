@@ -478,6 +478,12 @@ construyen `HealthStore`/`ImportStore`/`TwinContext` a mano e inyectan `now`,
 sin UI y sin HealthKit real. `LabImportRealPDFTests` lee PDFs reales desde
 `/tmp/eter-lab-pdfs` y se salta si no están.
 
+**Usa `ImportStore(persistToDisk: false)`** en cualquier test cuyo resultado
+dependa de qué entrenamientos existen: el `ImportStore()` por defecto lee el
+historial de Hevy realmente guardado en esa máquina, y eso ya ha sido la
+causa de fallos difíciles de reproducir. `ImportStore()` sólo es seguro
+cuando el test añade una sesión encima y no le importa lo que hubiera antes.
+
 Filtrar un test concreto:
 
 ```bash

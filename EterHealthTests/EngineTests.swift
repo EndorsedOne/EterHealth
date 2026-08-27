@@ -5148,7 +5148,7 @@ final class EngineTests: XCTestCase {
         return WorkoutPlanner.proposal(for: kind, pattern: pattern, upperBodyOnlyToday: upperBodyOnly,
                                        block: planBlock(now: now), isDeload: false, readiness: readiness,
                                        rationale: "Fixture", muscles: muscles(legs: 85),
-                                       health: HealthStore(), imports: ImportStore(), context: context, now: now)
+                                       health: HealthStore(), imports: ImportStore(persistToDisk: false), context: context, now: now)
     }
 
     func testEveryPlannedSessionKindBuildsItsOwnProposalInsteadOfFallingThroughToTheGym() {
@@ -5216,7 +5216,7 @@ final class EngineTests: XCTestCase {
         let strengthDay = WorkoutPlanner.proposal(for: .strength, pattern: .push, upperBodyOnlyToday: false,
                                                   block: planBlock(now: now), isDeload: false, readiness: 75,
                                                   rationale: strengthDayRationale, muscles: muscles(legs: 85),
-                                                  health: HealthStore(), imports: ImportStore(), context: context, now: now)
+                                                  health: HealthStore(), imports: ImportStore(persistToDisk: false), context: context, now: now)
         XCTAssertEqual(strengthDay.kind, .strength,
                        "Con ese rationale el plan pide ENTRENAR fuerza; el menú de descanso no puede abrirse por el texto.")
     }
@@ -5306,7 +5306,7 @@ final class EngineTests: XCTestCase {
                                      resolvedAt: nil, severity: 2, restrictions: [.avoidRunning], note: "")]
         let context = TwinContext(profile: neutralProfile, events: [], reviews: [], activeInjuries: injuries,
                                   calibration: neutralCalibration, personalAnchor: neutralAnchor)
-        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 85,
+        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(persistToDisk: false), readiness: 85,
                                               muscles: muscles(legs: 90), checkIn: nil, context: context, now: now)
         XCTAssertTrue(InjurySafetyEngine.allows(status.nextSession, injuries: injuries),
                       "El plan publicó \(status.nextSession.rawValue), que la restricción activa prohíbe.")
@@ -5443,7 +5443,7 @@ final class EngineTests: XCTestCase {
         // El criterio explícito del brief: el rationale tiene que explicar el
         // orden, no sólo la estructura de la sesión.
         let now = Date(timeIntervalSince1970: 1_700_000_000)
-        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 85,
+        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(persistToDisk: false), readiness: 85,
                                               muscles: muscles(legs: 90), checkIn: nil, context: neutralContext, now: now)
         // El fixture neutral (stores vacíos, readiness 85, piernas frescas,
         // now fijo) da un día de fuerza con la cuota de carrera entera sin
@@ -5491,7 +5491,7 @@ final class EngineTests: XCTestCase {
     func testDominantAerobicModalityStaysSilentWithoutEnoughVolumeOrAClearMajority() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         func workout(_ activity: String, minutes: Double, daysAgo: Int) -> HealthWorkout {
             HealthWorkout(id: UUID(), date: Calendar.current.date(byAdding: .day, value: -daysAgo, to: now)!,
                           durationMinutes: minutes, calories: nil, distanceKilometers: nil,
@@ -5615,7 +5615,7 @@ final class EngineTests: XCTestCase {
         // Sin taper: blocks(for:) sólo genera .taper alrededor de una fecha,
         // así que un plan sin eventos no puede afinar. Se comprueba sobre la
         // semana entera, no sólo sobre hoy.
-        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil,
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil,
                                                 context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
                                                                      calibration: neutralCalibration, personalAnchor: neutralAnchor),
                                                 now: now)
@@ -5650,7 +5650,7 @@ final class EngineTests: XCTestCase {
         for kind: PlannedSessionKind in [.easyRun, .longRun] {
             let workout = WorkoutPlanner.proposal(for: kind, pattern: nil, upperBodyOnlyToday: false,
                                                   block: block, isDeload: false, readiness: 80, rationale: "Fixture",
-                                                  muscles: muscles(legs: 85), health: HealthStore(), imports: ImportStore(),
+                                                  muscles: muscles(legs: 85), health: HealthStore(), imports: ImportStore(persistToDisk: false),
                                                   context: context, now: now)
             XCTAssertFalse(workout.note.contains("sube progresivamente"),
                            "\(kind.rawValue) no puede prometer una rampa que la fase no tiene: \(workout.note)")
@@ -5669,7 +5669,7 @@ final class EngineTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let context = TwinContext(profile: wellnessProfile(), events: [], reviews: [], activeInjuries: [],
                                   calibration: neutralCalibration, personalAnchor: neutralAnchor)
-        let ill = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 90,
+        let ill = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(persistToDisk: false), readiness: 90,
                                            muscles: muscles(legs: 95),
                                            checkIn: {
                                                var checkIn = DailyCheckIn.empty(for: now)
@@ -5679,7 +5679,7 @@ final class EngineTests: XCTestCase {
                                            context: context, now: now)
         XCTAssertEqual(ill.nextSession, .recovery)
         XCTAssertEqual(ill.block.phase, .maintenance, "Sigue siendo el bloque de mantenimiento; lo que manda es la señal.")
-        let lowReadiness = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 38,
+        let lowReadiness = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(persistToDisk: false), readiness: 38,
                                                     muscles: muscles(legs: 95), checkIn: nil, context: context, now: now)
         XCTAssertEqual(lowReadiness.nextSession, .recovery)
     }
@@ -5691,6 +5691,300 @@ final class EngineTests: XCTestCase {
         XCTAssertNil(WellnessModeSetting.automatic.flag)
         XCTAssertEqual(WellnessModeSetting.on.flag, true)
         XCTAssertEqual(WellnessModeSetting.off.flag, false)
+    }
+
+
+    // MARK: - PR13: regresión sobre los gates que de verdad protegen al atleta
+
+    private func alert(_ severity: PhysiologicalAlertSeverity) -> PhysiologicalAlert {
+        PhysiologicalAlert(severity: severity, title: "Fixture",
+                           summary: "HRV y pulso en reposo se apartan a la vez de tu rango personal reciente.",
+                           action: "No añadas intensidad hoy.",
+                           signals: [], confidence: ConfidenceAssessment(score: 80, level: .medium, reason: ""))
+    }
+
+    private func planStatus(readiness: Int, checkIn: DailyCheckIn? = nil,
+                            physiologicalAlert: PhysiologicalAlert? = nil,
+                            profile: AthletePlanProfile? = nil,
+                            muscles: [MuscleReadiness]? = nil,
+                            health: HealthStore = HealthStore(),
+                            imports: ImportStore = ImportStore(persistToDisk: false),
+                            now: Date = Date(timeIntervalSince1970: 1_700_000_000)) -> WeeklyPlanStatus {
+        let context = TwinContext(profile: profile ?? neutralProfile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        return TrainingPlanEngine.status(health: health, imports: imports, readiness: readiness,
+                                         muscles: muscles ?? self.muscles(legs: 90), checkIn: checkIn,
+                                         context: context, physiologicalAlert: physiologicalAlert, now: now)
+    }
+
+    func testHardOverridesForceRecoveryAndTheirBoundaryIsExactlyWhereItIsDocumented() {
+        // Los tres overrides duros del primer gate de status(), y —lo que
+        // ningún test fijaba— el LÍMITE. 42 es el número escrito en el
+        // código; si alguien lo mueve a 45 o a 40, esto tiene que fallar,
+        // porque ese umbral es el que decide si un atleta con síntomas
+        // entrena o no.
+        XCTAssertNotEqual(planStatus(readiness: 85).nextSession, .recovery,
+                          "Sanity check: con 85 y piernas frescas el fixture NO debe estar ya en recuperación, o el resto no prueba nada.")
+        var ill = DailyCheckIn.empty(for: Date(timeIntervalSince1970: 1_700_000_000))
+        ill.illness = true
+        XCTAssertEqual(planStatus(readiness: 85, checkIn: ill).nextSession, .recovery)
+        XCTAssertEqual(planStatus(readiness: 41).nextSession, .recovery)
+        XCTAssertEqual(planStatus(readiness: 85, physiologicalAlert: alert(.recover)).nextSession, .recovery)
+        // 42 exactamente NO dispara el override duro (el gate es `< 42`).
+        // Puede acabar en recuperación por OTRO gate más abajo —el suelo de
+        // readiness del ritmo, que en Óptimo es 58— y eso está bien: lo que
+        // se fija aquí es que el rationale no sea el del override duro.
+        let boundary = planStatus(readiness: 42)
+        XCTAssertFalse(boundary.rationale.contains("Tus señales actuales tienen prioridad sobre el calendario"),
+                       "42 no debe entrar por el override duro: \(boundary.rationale)")
+    }
+
+    func testCautionAlertDowngradesKeySessionsButNeverTouchesStrength() {
+        // El segundo tramo de la alerta: `.caution` no manda como `.recover`,
+        // pero tampoco puede dejar pasar calidad, tirada larga, híbrido o
+        // brick. La fuerza SÍ se deja pasar, porque su propio factor de carga
+        // por readiness ya modera la intensidad. Se prueba sobre la función
+        // de decisión directamente para poder recorrer los cuatro kinds sin
+        // montar cuatro escenarios de historial distintos.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        var profile = neutralProfile
+        // Un objetivo de carrera con fecha lejana: garantiza que el bloque es
+        // periodizado (no mantenimiento) y que la calidad tiene cuota.
+        profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón",
+                                      date: now.addingTimeInterval(70 * 86_400), targetValue: nil,
+                                      unit: "min", priority: .primary, isActive: true)]
+        let withCaution = planStatus(readiness: 85, physiologicalAlert: alert(.caution), profile: profile, now: now)
+        XCTAssertFalse([.qualityRun, .longRun, .hybrid, .brick].contains(withCaution.nextSession),
+                       "Con alerta .caution ninguna sesión clave puede pasar; salió \(withCaution.nextSession.rawValue).")
+        if withCaution.nextSession == .easyRun {
+            XCTAssertTrue(withCaution.rationale.contains("Se sustituye"),
+                          "La sustitución tiene que decirse, no aplicarse en silencio: \(withCaution.rationale)")
+        }
+        // Y una sesión de fuerza no se degrada: la alerta .caution no la toca.
+        let strengthDay = planStatus(readiness: 85, physiologicalAlert: alert(.caution), now: now)
+        if strengthDay.nextSession == .strength {
+            XCTAssertNotNil(strengthDay.strengthPattern)
+            XCTAssertFalse(strengthDay.rationale.contains("Se sustituye"))
+        }
+    }
+
+    func testEveryTrackedLiftIncludingDeadliftEarnsItsOwnPatternWhenItGoesStale() {
+        // El brief pide dosis mínima de los TRES lifts trackeados. Banca y
+        // sentadilla ya tenían test; el peso muerto no, y es el caso con
+        // trampa: no tiene un bucket propio (sólo existen pierna/empuje/
+        // tirón), así que comparte el de pierna con la sentadilla. Si alguien
+        // añadiera un cuarto patrón inexistente, esto lo detecta.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func profile(_ kind: TrainingGoalKind) -> AthletePlanProfile {
+            var profile = neutralProfile
+            profile.goals = [TrainingGoal(id: UUID(), kind: kind, title: kind.rawValue, date: nil,
+                                          targetValue: 100, unit: "kg", priority: .maintenance, isActive: true)]
+            return profile
+        }
+        let empty = ImportStore(persistToDisk: false)   // ninguna sesión: 999 días, vencido
+        XCTAssertEqual(TrainingPlanEngine.urgentLiftPattern(imports: empty, profile: profile(.benchPress), now: now), .push)
+        XCTAssertEqual(TrainingPlanEngine.urgentLiftPattern(imports: empty, profile: profile(.squat), now: now), .legs)
+        XCTAssertEqual(TrainingPlanEngine.urgentLiftPattern(imports: empty, profile: profile(.deadlift), now: now), .legs,
+                       "El peso muerto comparte el bucket de pierna: no hay un cuarto patrón que reclamar.")
+        // Un lift NO vencido no reclama nada — el override es por antigüedad,
+        // no por existir.
+        let fresh = ImportStore(persistToDisk: false)
+        fresh.restore(workouts: [ImportedWorkout(
+            title: "Pierna", start: now.addingTimeInterval(-2 * 86_400), end: now.addingTimeInterval(-2 * 86_400 + 3_600),
+            exercises: [ImportedExercise(name: "Deadlift (Barbell)", sets: 4, volume: 4_000, totalReps: 20,
+                                         averageWeight: 140, setDetails: nil)],
+            muscleSets: ["Isquios": 4])], labs: [])
+        XCTAssertNil(TrainingPlanEngine.urgentLiftPattern(imports: fresh, profile: profile(.deadlift), now: now))
+        // Y un objetivo sin lift trackeado no inventa urgencia.
+        XCTAssertNil(TrainingPlanEngine.urgentLiftPattern(imports: empty, profile: profile(.hypertrophy), now: now))
+    }
+
+    func testRaceDayIsNeverTreatedAsADeloadOrAsOrdinaryTraining() {
+        // Cuatro confusiones distintas que el día de competición ha sufrido,
+        // fijadas juntas porque comparten causa: tratar el evento como un día
+        // más del microciclo.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        var profile = neutralProfile
+        profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón de prueba",
+                                      date: now, targetValue: nil, unit: "min", priority: .primary, isActive: true)]
+        let health = HealthStore()
+        // Un bloque sostenido real: sin la excepción del evento, esto sería
+        // una semana de descarga.
+        health.recentWorkouts = (1...42).map { day in
+            healthWorkout(activity: "Carrera", kilometers: 12, minutes: 70,
+                          date: Calendar.current.date(byAdding: .day, value: -day, to: now)!)
+        }
+        health.workoutHistory = health.recentWorkouts
+        let status = planStatus(readiness: 85, profile: profile, health: health, now: now)
+        XCTAssertEqual(status.nextSession, .raceDay, "1. El evento de hoy no es una sesión de entrenamiento.")
+        XCTAssertFalse(status.isDeload, "2. Una competición no es una descarga, por muy sostenida que venga la carga.")
+        XCTAssertNil(status.concurrentDay, "3. Un día de competición no admite un segundo estímulo.")
+        XCTAssertNil(status.strengthPattern, "4. No hay patrón de fuerza que elegir en un día de competición.")
+    }
+
+    func testWeekAheadPutsRaceDayExactlyOnTheEventDayAndNowhereElse() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = Calendar.current
+        let eventDate = calendar.date(byAdding: .day, value: 3, to: now)!
+        var profile = neutralProfile
+        profile.goals = [TrainingGoal(id: UUID(), kind: .fiveK, title: "5K de prueba", date: eventDate,
+                                      targetValue: nil, unit: "min", priority: .primary, isActive: true)]
+        let week = TrainingPlanEngine.weekAhead(
+            health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil,
+            context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                 calibration: neutralCalibration, personalAnchor: neutralAnchor),
+            now: now
+        )
+        let raceDays = week.filter { $0.kind == .raceDay }
+        XCTAssertEqual(raceDays.count, 1, "Exactamente un día de competición en la semana.")
+        XCTAssertTrue(calendar.isDate(raceDays[0].date, inSameDayAs: eventDate),
+                      "Y en el día del evento, no antes ni después.")
+        // Los días previos son afinamiento: no puede haber una tirada larga
+        // ni una sesión de calidad el día antes de competir.
+        if let dayBefore = week.first(where: { calendar.isDate($0.date, inSameDayAs: calendar.date(byAdding: .day, value: -1, to: eventDate)!) }) {
+            XCTAssertFalse([.longRun, .qualityRun, .brick].contains(dayBefore.kind),
+                           "El día antes de competir no puede ser una sesión clave; salió \(dayBefore.kind.rawValue).")
+        }
+    }
+
+    func testLongRunProposalNeverJumpsBeyondThePaceGrowthCapOverRealHistory() {
+        // "La progresión de volumen no salta de forma absurda", de punta a
+        // punta: no sobre progressedCeiling en aislamiento (que ya tiene sus
+        // tests) sino sobre los minutos que la propuesta real prescribe.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let health = HealthStore()
+        // Historial honesto: su tirada más larga reciente es de 40 min. La
+        // tabla de fase para buildSpecific pediría hasta 80.
+        health.workoutHistory = (1...4).map { week in
+            healthWorkout(activity: "Carrera", kilometers: 7, minutes: 40,
+                          date: Calendar.current.date(byAdding: .day, value: -7 * week, to: now)!)
+        }
+        health.recentWorkouts = health.workoutHistory
+        for pace in ProgressionPace.allCases {
+            var profile = neutralProfile
+            profile.progressionPace = pace
+            profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón",
+                                          date: now.addingTimeInterval(30 * 86_400), targetValue: nil,
+                                          unit: "min", priority: .primary, isActive: true)]
+            let block = TrainingPlanEngine.activeBlock(on: now, profile: profile)
+            let workout = WorkoutPlanner.proposal(
+                for: .longRun, pattern: nil, upperBodyOnlyToday: false, block: block, isDeload: false,
+                readiness: 85, rationale: "Fixture", muscles: muscles(legs: 90), health: health,
+                imports: ImportStore(persistToDisk: false),
+                context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                     calibration: neutralCalibration, personalAnchor: neutralAnchor),
+                now: now
+            )
+            // El bloque principal lleva los minutos reales prescritos.
+            guard let main = workout.exercises.first(where: { $0.prescription.contains("min · Z2") }),
+                  let minutes = Int(main.prescription.split(separator: " ").first ?? "") else {
+                return XCTFail("No se encontró el bloque continuo con minutos: \(workout.exercises.map(\.prescription))")
+            }
+            // Techo: su propia tirada más larga (40) crecida al ritmo elegido,
+            // más el redondeo a múltiplos de 5 que la propuesta aplica.
+            let cap = 40.0 * (1 + pace.weeklyGrowthRate) + 5
+            XCTAssertLessThanOrEqual(Double(minutes), cap,
+                                     "\(pace.rawValue): la propuesta salta a \(minutes) min desde una tirada real de 40 (techo \(Int(cap))).")
+            XCTAssertGreaterThan(minutes, 20, "\(pace.rawValue): tampoco puede colapsar a nada.")
+        }
+    }
+
+    func testStepDecaysMeasuredAutonomicDeviationInsteadOfHoldingItConstant() {
+        // Proyectar el HRV de hoy como constante sería afirmar un HRV futuro
+        // que nadie ha medido; borrarlo del todo sería tirar la única
+        // información real que hay. step() lo decae, y esto lo fija: la
+        // desviación de mañana está estrictamente entre 0 y la de hoy.
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        var state = TwinPhysiology.baseline(asOf: today)
+        state.hrvDeviation = -1.8
+        state.restingHeartRateDeviation = -1.2
+        state.sleepDebtHours = 3
+        let tomorrow = step(state, session: nil, recoverySignals: .none, dtDays: 1)
+        XCTAssertGreaterThan(tomorrow.hrvDeviation, state.hrvDeviation)
+        XCTAssertLessThan(tomorrow.hrvDeviation, 0)
+        XCTAssertGreaterThan(tomorrow.restingHeartRateDeviation, state.restingHeartRateDeviation)
+        XCTAssertLessThan(tomorrow.restingHeartRateDeviation, 0)
+        // La deuda de sueño se drena, no desaparece de golpe.
+        XCTAssertEqual(tomorrow.sleepDebtHours, 1, accuracy: 0.001)
+        // Una medición nueva manda sobre la decaída — es información real.
+        let measured = step(state, session: nil,
+                            recoverySignals: RecoverySignals(hrvDeviation: 0.5, restingHeartRateDeviation: nil,
+                                                             sleepDeficitHours: nil, checkIn: nil, physiologicalAlert: nil),
+                            dtDays: 1)
+        XCTAssertEqual(measured.hrvDeviation, 0.5, accuracy: 0.001)
+    }
+
+    func testStepKeepsIllnessUntilSomethingActuallyContradictsIt() {
+        // Una enfermedad no se cura sola de un día para otro sin que nadie lo
+        // confirme, y una alerta `.recover` de hoy trata mañana con la misma
+        // cautela mientras no llegue una señal que la contradiga.
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        var state = TwinPhysiology.baseline(asOf: today)
+        state.illness = true
+        XCTAssertTrue(step(state, session: nil, recoverySignals: .none, dtDays: 1).illness,
+                      "Sin información nueva, la enfermedad de hoy sigue mañana.")
+        var recovered = DailyCheckIn.empty(for: today)
+        recovered.illness = false
+        let cleared = step(state, session: nil,
+                           recoverySignals: RecoverySignals(hrvDeviation: nil, restingHeartRateDeviation: nil,
+                                                            sleepDeficitHours: nil, checkIn: recovered,
+                                                            physiologicalAlert: nil),
+                           dtDays: 1)
+        XCTAssertFalse(cleared.illness, "Un check-in que dice que no hay síntomas SÍ la contradice.")
+        // Y al revés: una alerta `.recover` la enciende aunque el estado
+        // previo estuviera sano.
+        let healthy = TwinPhysiology.baseline(asOf: today)
+        let alerted = step(healthy, session: nil,
+                           recoverySignals: RecoverySignals(hrvDeviation: nil, restingHeartRateDeviation: nil,
+                                                            sleepDeficitHours: nil, checkIn: nil,
+                                                            physiologicalAlert: alert(.recover)),
+                           dtDays: 1)
+        XCTAssertTrue(alerted.illness)
+    }
+
+    func testWeekAheadNeverStacksTwoKeyRunSessionsOnConsecutiveDays() {
+        // La invariante del microciclo que ForwardState existe para
+        // mantener: calidad y tirada larga necesitan separación, y la
+        // simulación tiene que respetarla igual que la decisión de hoy (las
+        // ventanas de 24 h y 36 h de status()). Sin esto, un forecast puede
+        // dibujar una semana que ningún atleta debería ejecutar.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        var profile = neutralProfile
+        profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón",
+                                      date: now.addingTimeInterval(56 * 86_400), targetValue: nil,
+                                      unit: "min", priority: .primary, isActive: true)]
+        let week = TrainingPlanEngine.weekAhead(
+            health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil,
+            context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                 calibration: neutralCalibration, personalAnchor: neutralAnchor),
+            now: now
+        )
+        XCTAssertEqual(week.count, 7)
+        let key: Set<PlannedSessionKind> = [.qualityRun, .longRun, .brick]
+        for (previous, current) in zip(week, week.dropFirst()) where key.contains(previous.kind) {
+            XCTAssertFalse(key.contains(current.kind),
+                           "\(previous.kind.rawValue) el \(previous.date) seguido de \(current.kind.rawValue) — dos sesiones clave consecutivas.")
+        }
+        // Y la invariante no puede "cumplirse" no proponiendo nada: tiene que
+        // haber al menos una sesión clave real en la semana.
+        XCTAssertTrue(week.contains { key.contains($0.kind) },
+                      "Sin ninguna sesión clave la invariante se cumple por vacío: \(week.map(\.kind.rawValue))")
+        XCTAssertGreaterThanOrEqual(week.filter { $0.kind != .recovery }.count, 2,
+                                    "Una semana entera de recuperación no es un plan: \(week.map(\.kind.rawValue))")
+        // OBSERVACIÓN, no aserción: con este fixture (historial vacío) la
+        // semana sale escasa — calidad, recuperación, rodaje y luego cuatro
+        // días de recuperación seguidos. No es un fallo introducido aquí y no
+        // se fija con un número, porque un umbral apretado sobre el
+        // comportamiento actual convertiría cualquier ajuste futuro del
+        // microciclo en un fallo de test. La causa es la limitación que
+        // weekAhead ya documenta en su sitio: readiness y hoursSince* se
+        // congelan a su valor de hoy a lo largo de la ventana simulada,
+        // así que las ventanas de separación de 24 h / 36 h y el contador de
+        // días entrenados en 72 h se comportan como si el tiempo no pasara
+        // para ellos. Con days: 14 la segunda semana degenera a recuperación
+        // completa por lo mismo. Queda anotado aquí porque el test es donde
+        // alguien lo va a buscar; el arreglo (hacer evolucionar esas entradas
+        // con el estado simulado) es un cambio propio, no de este PR.
     }
 
     private func muscles(legs readiness: Int) -> [MuscleReadiness] {
