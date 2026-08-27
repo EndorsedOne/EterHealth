@@ -12,6 +12,29 @@ import Foundation
 // persiste como serie temporal en ningún sitio, así que no hay historial que
 // mirar. Preferimos dejarlo escrito antes que aproximarlo con otra cosa y
 // presentarlo como si fuera ese criterio.
+// PR9: los dos ajustes personales que salen de datos reales de
+// entrenamiento, juntos porque viajan juntos a TODOS los sitios que
+// preguntan por un landmark (volumeUrgency, bestStrengthPattern,
+// strengthPattern, balancedDecision, la simulación de weekAhead). Antes
+// esas seis firmas arrastraban un `learnedLandmarks: [String:
+// LearnedVolumeLandmark]`; añadir el volumen sostenido como SÉPTIMO
+// parámetro suelto en cada una es justo el patrón que TwinContext ya
+// resolvió agrupando. Mismo criterio, mismo tipo de valor: struct plano,
+// cero acceso a stores, construido fuera y sólo recibido dentro.
+//
+// No se fusionan en un solo diccionario porque son dos claims distintos con
+// dos barras de evidencia distintas: el MRV aprendido exige 8 semanas con
+// volumen, 5 juzgables, 3 de cada clase Y una frontera real; el volumen
+// sostenido sólo exige unas semanas de historial, porque lo único que
+// afirma es "esto es lo que este atleta hace de verdad". Meterlos en la
+// misma estructura poblada a la vez ataría el empujón del prior a que el
+// aprendizaje del MRV haya convergido, y entonces nunca serviría de nada.
+struct VolumeLandmarkContext: Equatable {
+    var learnedMRV: [String: LearnedVolumeLandmark] = [:]
+    var sustainedWeeklySets: [String: Double] = [:]
+    static let none = VolumeLandmarkContext()
+}
+
 struct LearnedVolumeLandmark: Equatable {
     let muscle: String
     let mrv: Double
@@ -100,13 +123,70 @@ enum VolumeLandmarkLearning {
             guard let stalledCenter = median(stalled), let progressedCeiling = percentile(progressed, 0.75),
                   stalledCenter > progressedCeiling else { continue }
 
-            let prior = MuscleVolumeLandmarkTable.landmarks(for: muscle).mrv
+            // El prior PURO de tabla, no el MAV ya ajustado por tolerancia:
+            // acotar contra el ajustado dejaría que el empujón del prior y
+            // el MRV aprendido se amplificaran mutuamente (más volumen
+            // sostenido → MAV más alto → tope del MRV aprendido más alto →
+            // más volumen tolerado), que es el bucle que un tope existe
+            // para impedir. Ver MuscleVolumeLandmarkTable.priorMAV.
+            let prior = (MuscleVolumeLandmarkTable.priorMAV(for: muscle) * 1.5).rounded()
             let estimate = (progressedCeiling + stalledCenter) / 2
             let bounded = min(prior * maximumPriorMultiple, max(prior * minimumPriorMultiple, estimate))
             result[muscle] = LearnedVolumeLandmark(muscle: muscle, mrv: bounded, weeksObserved: volumes.count,
                                                    stalledWeeks: stalled.count, progressedWeeks: progressed.count)
         }
         return result
+    }
+
+    // Semanas mínimas con volumen real para afirmar "esto es lo que este
+    // atleta sostiene". Más bajo que minimumWeeksWithVolume (8) a propósito,
+    // y no por descuido: el claim es mucho más pequeño. El MRV aprendido
+    // afirma dónde está una FRONTERA fisiológica y sustituye el prior; esto
+    // sólo afirma cuánto volumen hay de verdad en el historial y mueve el
+    // prior un ±25% como máximo. Exigirle las mismas 8 semanas que al MRV
+    // significaría que nunca aporta nada antes de que el aprendizaje del
+    // MRV ya haya convergido, y entonces sobra.
+    static let minimumWeeksForTolerance = 6
+
+    /// El volumen semanal que este atleta SOSTIENE en cada músculo: la
+    /// mediana de las semanas con volumen real, no la media (una semana de
+    /// descarga o una de pico no deben mover el número) ni el máximo (que
+    /// mediría su mejor semana, no su costumbre). Ventana más corta que la
+    /// del MRV aprendido —12 semanas frente a 26— porque lo que se busca es
+    /// el hábito ACTUAL: un bloque de hipertrofia de hace cinco meses no
+    /// dice cuánto volumen tolera hoy.
+    ///
+    /// Sólo devuelve entrada para los músculos con evidencia suficiente. Un
+    /// músculo ausente significa "sin datos", que es distinto de "cero", y
+    /// hace que el prior se use tal cual.
+    static func sustainedWeeklySets(workouts: [ImportedWorkout], now: Date = Date(),
+                                    weeks lookbackWeeks: Int = 12) -> [String: Double] {
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.firstWeekday = 2
+        guard let start = calendar.date(byAdding: .weekOfYear, value: -lookbackWeeks, to: now) else { return [:] }
+        var weeklyVolume: [String: [Date: Double]] = [:]
+        for workout in workouts where workout.start >= start && workout.start <= now {
+            guard let week = calendar.dateInterval(of: .weekOfYear, for: workout.start)?.start else { continue }
+            // effectiveMuscleSets, la fuente canónica — nunca el muscleSets
+            // guardado, por la misma razón que el resto del archivo.
+            for (muscle, sets) in workout.effectiveMuscleSets where sets > 0 && muscles.contains(muscle) {
+                weeklyVolume[muscle, default: [:]][week, default: 0] += sets
+            }
+        }
+        var result: [String: Double] = [:]
+        for (muscle, weeks) in weeklyVolume where weeks.count >= minimumWeeksForTolerance {
+            if let value = median(Array(weeks.values)) { result[muscle] = value }
+        }
+        return result
+    }
+
+    /// Los dos ajustes de una vez, que es como los consume el plan. Se
+    /// calcula UNA vez por llamada a status()/weekAhead y se reparte, igual
+    /// que el clasificador de calidad del PR4 y que el MRV aprendido del PR6
+    /// — no cada consumidor por su cuenta.
+    static func context(workouts: [ImportedWorkout], now: Date = Date()) -> VolumeLandmarkContext {
+        VolumeLandmarkContext(learnedMRV: learnedMRV(workouts: workouts, now: now),
+                              sustainedWeeklySets: sustainedWeeklySets(workouts: workouts, now: now))
     }
 
     // Mismo estimador de e1RM que PersonalBaselineEngine.learnedRecovery ya

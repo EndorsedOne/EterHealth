@@ -5392,16 +5392,120 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(unknown.mav, 14)
     }
 
-    func testMuscleVolumeLandmarkBucketsMatchMuscleRadarsPreexistingAggregates() {
-        // Zero-regression check: MuscleRadar's own displayed targets must
-        // be unchanged now that they're sourced from the shared table
-        // instead of a second, separately hand-picked dictionary.
-        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Piernas"), 22)
-        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Brazos"), 16)
-        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Espalda"), 16)
-        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Pecho"), 15)
-        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Hombros"), 13)
-        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Core"), 8)
+    func testMuscleVolumeLandmarkBucketsAreTheSumOfTheirOwnMusclesPriors() {
+        // Este test era un "zero-regression check" que fijaba los números
+        // que MuscleRadar tenía escritos a mano antes del PR6 (Piernas 22,
+        // Brazos 16). PR9 sube la mitad de la tabla justamente porque esos
+        // números eran los de un gráfico retrospectivo, no landmarks: lo que
+        // hay que fijar no son los valores congelados, sino la INVARIANTE
+        // que impide que vuelvan a existir dos tablas — el eje del radar es
+        // la suma de los MAV reales de sus músculos, no un agregado aparte.
+        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Piernas"),
+                       ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].reduce(0) { $0 + MuscleVolumeLandmarkTable.priorMAV(for: $1) })
+        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Brazos"),
+                       ["Bíceps", "Tríceps"].reduce(0) { $0 + MuscleVolumeLandmarkTable.priorMAV(for: $1) })
+        for single in ["Espalda", "Pecho", "Hombros", "Core"] {
+            XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV(single), MuscleVolumeLandmarkTable.priorMAV(for: single),
+                           "Un eje de un solo músculo tiene que ser exactamente su propio MAV.")
+        }
+        // Y los valores concretos de PR9, para que un cambio de tabla sea
+        // deliberado y no un efecto colateral.
+        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Piernas"), 42)
+        XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Brazos"), 20)
+    }
+
+    // MARK: - PR9: los priors de volumen, revisados y documentados
+
+    func testEveryMuscleLandmarkPriorSitsInsideTheLiteratureBand() {
+        // La banda productiva que los meta-análisis de dosis-respuesta
+        // describen para intermedios es ~10–20 series directas por músculo y
+        // semana. Antes de PR9, Isquios y Gemelos tenían MAV 4 — lo que con
+        // el ratio 0.5x dejaba su MEV en DOS series semanales, por debajo de
+        // cualquier umbral de estímulo reconocido. Este test es el que
+        // impide que vuelva a colarse un músculo fuera de banda.
+        let all = ["Cuádriceps", "Glúteos", "Isquios", "Gemelos", "Pecho",
+                   "Espalda", "Hombros", "Bíceps", "Tríceps", "Core"]
+        for muscle in all {
+            let landmarks = MuscleVolumeLandmarkTable.landmarks(for: muscle)
+            XCTAssertTrue((10.0...20.0).contains(landmarks.mav),
+                          "\(muscle) tiene MAV \(landmarks.mav), fuera de la banda 10–20 de la literatura.")
+            XCTAssertGreaterThanOrEqual(landmarks.mev, 5,
+                                        "\(muscle) tiene MEV \(landmarks.mev): un mínimo efectivo por debajo de 5 series no describe un estímulo.")
+            // El orden de los tres landmarks es la única cosa que no puede
+            // romperse nunca: MEV < MAV < MRV.
+            XCTAssertLessThan(landmarks.mev, landmarks.mav)
+            XCTAssertLessThan(landmarks.mav, landmarks.mrv)
+        }
+        // El fallback para un músculo que no está en la tabla también.
+        let unknown = MuscleVolumeLandmarkTable.landmarks(for: "Antebrazo")
+        XCTAssertTrue((10.0...20.0).contains(unknown.mav))
+    }
+
+    func testLowerBodyPriorsStayAtTheLowEndOfTheBandBecauseRunningIsNotCounted() {
+        // Decisión explícita, no un olvido: `recentSets` cuenta series de
+        // resistencia (Hevy), así que el estímulo real que la carrera y la
+        // bici dan a cuádriceps/glúteos/isquios/gemelos es invisible para
+        // estos landmarks. Poner el tren inferior en el medio de la banda
+        // leería "déficit real" en una semana con tirada larga + calidad.
+        let legs = ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].map { MuscleVolumeLandmarkTable.priorMAV(for: $0) }
+        for mav in legs { XCTAssertLessThanOrEqual(mav, 12) }
+        // Y aun así, ninguno por debajo del suelo de la banda.
+        for mav in legs { XCTAssertGreaterThanOrEqual(mav, 10) }
+    }
+
+    func testMAVToleranceNudgesThePriorTowardRealVolumeButNeverMoreThan25Percent() {
+        let prior = MuscleVolumeLandmarkTable.priorMAV(for: "Pecho")   // 15
+        // Sin evidencia, el prior tal cual — misma regla que el resto de la
+        // app: sin datos no hay premio ni penalización.
+        XCTAssertEqual(MuscleVolumeLandmarkTable.adjustedMAV(prior: prior, sustained: nil), prior)
+        XCTAssertEqual(MuscleVolumeLandmarkTable.adjustedMAV(prior: prior, sustained: 0), prior)
+        // A medio camino cuando la realidad está cerca.
+        XCTAssertEqual(MuscleVolumeLandmarkTable.adjustedMAV(prior: prior, sustained: 17), 16)
+        // Y acotado a ±25% cuando está lejos, en las dos direcciones.
+        XCTAssertEqual(MuscleVolumeLandmarkTable.adjustedMAV(prior: prior, sustained: 40), (prior * 1.25).rounded())
+        XCTAssertEqual(MuscleVolumeLandmarkTable.adjustedMAV(prior: prior, sustained: 1), (prior * 0.75).rounded())
+        // El ajuste llega hasta los tres landmarks, no sólo al MAV: si sólo
+        // moviera el MAV sería decorativo, porque quien decide es
+        // volumeUrgency comparando contra MEV y MRV.
+        let nudged = MuscleVolumeLandmarkTable.landmarks(for: "Pecho", sustained: ["Pecho": 40])
+        XCTAssertEqual(nudged.mav, 19)
+        XCTAssertEqual(nudged.mev, 10)
+        XCTAssertEqual(nudged.mrv, 29)
+    }
+
+    func testLearnedMRVStillWinsOverTheNudgedPrior() {
+        // El aprendizaje real sigue mandando sobre el prior, ajustado o no —
+        // el empujón de tolerancia no puede tapar una frontera medida.
+        let learned = ["Pecho": LearnedVolumeLandmark(muscle: "Pecho", mrv: 18, weeksObserved: 12,
+                                                      stalledWeeks: 4, progressedWeeks: 5)]
+        let landmarks = MuscleVolumeLandmarkTable.landmarks(for: "Pecho", learned: learned, sustained: ["Pecho": 40])
+        XCTAssertEqual(landmarks.mrv, 18)
+        XCTAssertEqual(landmarks.mav, 19, "El MAV sí se mueve con la tolerancia; el MRV lo fija el aprendizaje.")
+    }
+
+    func testSustainedWeeklySetsIsSilentWithoutEnoughWeeksAndUsesTheMedian() {
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.firstWeekday = 2
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func session(weeksAgo: Int, sets: Int) -> ImportedWorkout {
+            let start = calendar.date(byAdding: .weekOfYear, value: -weeksAgo, to: now)!
+            return ImportedWorkout(title: "Empuje", start: start, end: start.addingTimeInterval(3_600),
+                                   exercises: [ImportedExercise(name: "Bench Press (Barbell)", sets: sets,
+                                                                volume: Double(sets) * 800, totalReps: sets * 8,
+                                                                averageWeight: 80, setDetails: nil)],
+                                   muscleSets: [:])
+        }
+        // Cinco semanas: por debajo del mínimo, así que no se afirma nada.
+        let tooFew = (1...5).map { session(weeksAgo: $0, sets: 6) }
+        XCTAssertNil(VolumeLandmarkLearning.sustainedWeeklySets(workouts: tooFew, now: now)["Pecho"])
+        // Ocho semanas, una de ellas un pico enorme: manda la mediana, no la
+        // media ni el máximo — una semana de pico no es lo que se sostiene.
+        var enough = (1...7).map { session(weeksAgo: $0, sets: 6) }
+        enough.append(session(weeksAgo: 8, sets: 40))
+        guard let sustained = VolumeLandmarkLearning.sustainedWeeklySets(workouts: enough, now: now)["Pecho"] else {
+            return XCTFail("Con ocho semanas de volumen real tiene que haber una estimación.")
+        }
+        XCTAssertLessThan(sustained, 12, "La mediana no puede arrastrarse hacia el pico de 40 series.")
     }
 
     func testBestStrengthPatternPrefersAPatternBelowMEVOverOneAlreadyPastItsMRV() {

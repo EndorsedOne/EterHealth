@@ -692,11 +692,11 @@ enum TrainingPlanEngine {
         // paralela.
         // PR6: se estima una vez por llamada y se reparte, como el
         // clasificador de calidad del PR4 — no cada consumidor por su cuenta.
-        let learnedLandmarks = VolumeLandmarkLearning.learnedMRV(workouts: imports.workouts, now: now)
+        let landmarkContext = VolumeLandmarkLearning.context(workouts: imports.workouts, now: now)
         let interference = concurrentInterference(
             aerobicRatio: loadSummary.dual.aerobicRatio,
             legStrengthLikely: legStrengthLikely(muscles: muscles, avoidLegs: avoidLegsTomorrow,
-                                                 learnedLandmarks: learnedLandmarks),
+                                                 landmarkContext: landmarkContext),
             goalFocus: goalFocus
         )
         let avoidLegsToday = avoidLegsTomorrow || interference == .protectAerobic
@@ -858,7 +858,7 @@ enum TrainingPlanEngine {
                 hoursSinceLong: hoursSinceLong, hoursSinceQuality: hoursSinceQuality,
                 trackedLiftDaysSince: trackedLiftDaysSince,
                 recentHardPercentage: recentHardPercentage,
-                avoidLegsTomorrow: avoidLegsToday, learnedLandmarks: learnedLandmarks, interference: interference,
+                avoidLegsTomorrow: avoidLegsToday, landmarkContext: landmarkContext, interference: interference,
                 pace: pace,
                 lateWeek: lateWeek, readiness: readiness, muscles: muscles,
                 block: block, goalFocus: goalFocus
@@ -903,7 +903,7 @@ enum TrainingPlanEngine {
         var strengthPattern: StrengthPattern?
         if next == .strength {
             strengthPattern = Self.strengthPattern(
-                muscles: muscles, avoidLegs: avoidLegsToday, learnedLandmarks: learnedLandmarks,
+                muscles: muscles, avoidLegs: avoidLegsToday, landmarkContext: landmarkContext,
                 urgentPattern: urgentLiftPattern(imports: imports, profile: profile, now: now),
                 allowedPatterns: allowedPatterns
             )
@@ -1239,7 +1239,7 @@ enum TrainingPlanEngine {
         )
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
         let pace = profile.effectiveProgressionPace
-        let learnedLandmarks = VolumeLandmarkLearning.learnedMRV(workouts: imports.workouts, now: now)
+        let landmarkContext = VolumeLandmarkLearning.context(workouts: imports.workouts, now: now)
         // El mismo clasificador configurado que status(), por el mismo motivo.
         let isQualityRun = SessionClassification.qualityRunPredicate(
             reviews: reviews,
@@ -1349,7 +1349,7 @@ enum TrainingPlanEngine {
         // exercises, or how many sets each, the day would actually contain.
         func applyStrengthLoad(avoidLegs: Bool = false) {
             let muscles = simulatedMuscles()
-            let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegs, learnedLandmarks: learnedLandmarks)
+            let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegs, landmarkContext: landmarkContext)
             let goals = profile.goals
             let proposed = WorkoutPlanner.gym(for: pattern, imports: imports, light: false, muscles: muscles, goals: goals)
             for exercise in proposed.exercises {
@@ -1467,7 +1467,7 @@ enum TrainingPlanEngine {
             let dayInterference = concurrentInterference(
                 aerobicRatio: state.aerobicRatio,
                 legStrengthLikely: legStrengthLikely(muscles: simulatedMuscles(), avoidLegs: avoidLegsTomorrow,
-                                                     learnedLandmarks: learnedLandmarks),
+                                                     landmarkContext: landmarkContext),
                 goalFocus: goalFocus
             )
             let avoidLegsThisDay = avoidLegsTomorrow || dayInterference == .protectAerobic
@@ -1518,7 +1518,7 @@ enum TrainingPlanEngine {
                     hoursSinceLong: state.hoursSinceLong, hoursSinceQuality: state.hoursSinceQuality,
                     trackedLiftDaysSince: state.trackedLiftDaysSince,
                     recentHardPercentage: recentHardPercentage,
-                    avoidLegsTomorrow: avoidLegsThisDay, learnedLandmarks: learnedLandmarks,
+                    avoidLegsTomorrow: avoidLegsThisDay, landmarkContext: landmarkContext,
                     interference: dayInterference, pace: pace,
                     lateWeek: lateWeek, readiness: state.readiness, muscles: simulatedMuscles(),
                     block: block, goalFocus: goalFocus
@@ -1669,10 +1669,14 @@ enum TrainingPlanEngine {
     // fresher. volumeUrgency adds that missing signal without letting it
     // override genuine fatigue — the readiness floor below still gates that.
     private static func volumeUrgency(_ muscle: String, muscles: [MuscleReadiness],
-                                      learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> Double {
+                                      landmarkContext: VolumeLandmarkContext = .none) -> Double {
         guard let recentSets = muscles.first(where: { $0.name == muscle })?.recentSets else { return 0 }
         // PR6: el MRV aprendido de este atleta cuando existe; el prior si no.
-        let landmarks = MuscleVolumeLandmarkTable.landmarks(for: muscle, learned: learnedLandmarks)
+        // PR9: y el MAV, empujado hacia el volumen que de verdad sostiene
+        // (±25% como tope) cuando hay historial suficiente. Los dos ajustes
+        // llegan en el mismo VolumeLandmarkContext.
+        let landmarks = MuscleVolumeLandmarkTable.landmarks(for: muscle, learned: landmarkContext.learnedMRV,
+                                                            sustained: landmarkContext.sustainedWeeklySets)
         let sets = Double(recentSets)
         if sets >= landmarks.mrv { return -25 } // past this week's ceiling — actively discourage more
         if sets < landmarks.mev { return 25 }   // real deficit — actively encourage
@@ -1732,8 +1736,8 @@ enum TrainingPlanEngine {
     // que ya es la única definición de qué patrón toca — no una segunda
     // heurística de "esto parece día de pierna".
     static func legStrengthLikely(muscles: [MuscleReadiness], avoidLegs: Bool,
-                                  learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> Bool {
-        bestStrengthPattern(muscles, avoidLegs: avoidLegs, learnedLandmarks: learnedLandmarks) == .legs
+                                  landmarkContext: VolumeLandmarkContext = .none) -> Bool {
+        bestStrengthPattern(muscles, avoidLegs: avoidLegs, landmarkContext: landmarkContext) == .legs
     }
 
     // Cuánto pierde la calidad de carrera cuando la hipertrofia manda. El
@@ -1792,7 +1796,7 @@ enum TrainingPlanEngine {
     // proponer son las restricciones por lesión, y esos los resuelve
     // InjurySafetyEngine.compatiblePattern, que sí devuelve Optional.
     static func bestStrengthPattern(_ muscles: [MuscleReadiness], avoidLegs: Bool = false,
-                                    learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> StrengthPattern {
+                                    landmarkContext: VolumeLandmarkContext = .none) -> StrengthPattern {
         // Removed as a candidate entirely, not merely penalized — the
         // point of protecting tomorrow's run is that today's choice
         // shouldn't load legs at all when a real alternative exists.
@@ -1802,7 +1806,7 @@ enum TrainingPlanEngine {
         // El `!` es seguro por construcción: `groups` tiene siempre 2 o 3
         // elementos. La sobrecarga de abajo es la que sí puede quedarse sin
         // candidatos, y por eso ella devuelve Optional.
-        return bestStrengthPattern(muscles, among: groups, learnedLandmarks: learnedLandmarks)!
+        return bestStrengthPattern(muscles, among: groups, landmarkContext: landmarkContext)!
     }
 
     /// La misma puntuación (frescura + urgencia de volumen), pero sobre un
@@ -1814,14 +1818,14 @@ enum TrainingPlanEngine {
     /// queda ningún patrón entrenable: quien pregunte debe proponer otra
     /// cosa, nunca elegir uno por defecto.
     static func bestStrengthPattern(_ muscles: [MuscleReadiness], among candidates: [StrengthPattern],
-                                    learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> StrengthPattern? {
+                                    landmarkContext: VolumeLandmarkContext = .none) -> StrengthPattern? {
         guard !candidates.isEmpty else { return nil }
         let ready = Dictionary(uniqueKeysWithValues: muscles.map { ($0.name, $0.readiness) })
         var scored: [(pattern: StrengthPattern, readiness: Double, urgency: Double)] = []
         for pattern in candidates {
             let members = pattern.muscles
             let readiness = average(members.map { ready[$0] ?? 50 })
-            let urgency = averageDouble(members.map { volumeUrgency($0, muscles: muscles, learnedLandmarks: learnedLandmarks) })
+            let urgency = averageDouble(members.map { volumeUrgency($0, muscles: muscles, landmarkContext: landmarkContext) })
             scored.append((pattern: pattern, readiness: readiness, urgency: urgency))
         }
         // Volume urgency can shift which of the reasonably-recovered
@@ -1857,7 +1861,7 @@ enum TrainingPlanEngine {
     ///    `TwinEngine.recommendation`) — urgencia no es ignorar la fatiga.
     /// 4. Si no, gana la puntuación frescura + urgencia de volumen.
     static func strengthPattern(muscles: [MuscleReadiness], avoidLegs: Bool,
-                                learnedLandmarks: [String: LearnedVolumeLandmark] = [:],
+                                landmarkContext: VolumeLandmarkContext = .none,
                                 urgentPattern: StrengthPattern? = nil,
                                 allowedPatterns: [StrengthPattern] = StrengthPattern.allCases) -> StrengthPattern? {
         let candidates = allowedPatterns.filter { !(avoidLegs && $0 == .legs) }
@@ -1867,7 +1871,7 @@ enum TrainingPlanEngine {
            average(urgentPattern.muscles.map { ready[$0] ?? 50 }) >= 55 {
             return urgentPattern
         }
-        return bestStrengthPattern(muscles, among: candidates, learnedLandmarks: learnedLandmarks)
+        return bestStrengthPattern(muscles, among: candidates, landmarkContext: landmarkContext)
     }
 
     /// "Mantenimiento" (the lowest goalFocus weight, by design, so it never
@@ -2093,7 +2097,7 @@ enum TrainingPlanEngine {
         avoidLegsTomorrow: Bool = false,
         // MRV aprendido por músculo (PR6) — vacío significa "todavía sin
         // evidencia suficiente", y entonces manda el prior de la tabla.
-        learnedLandmarks: [String: LearnedVolumeLandmark] = [:],
+        landmarkContext: VolumeLandmarkContext = .none,
         // .protectLegStrength resta puntos a calidad/tirada larga; el caso
         // .protectAerobic no llega aquí, actúa quitando la pierna del patrón
         // de fuerza (avoidLegs), que es el mecanismo que ya existía.
@@ -2291,7 +2295,7 @@ enum TrainingPlanEngine {
         let strengthAge = Int(daysSinceStrength.rounded(.down))
         switch winner.kind {
         case .strength:
-            let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegsTomorrow, learnedLandmarks: learnedLandmarks)
+            let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegsTomorrow, landmarkContext: landmarkContext)
             return (.strength, "Para \(goalFocus.leadingGoal), la necesidad de fuerza y sus \(strengthAge) días sin estímulo superan hoy a las alternativas. Prioriza \(pattern.inline) con margen.")
         case .longRun:
             return (.longRun, "La tirada larga es hoy el estímulo con más transferencia a \(goalFocus.leadingGoal). Las piernas y la separación desde la anterior permiten asumirla sin vulnerar los mínimos de otras capacidades.")
