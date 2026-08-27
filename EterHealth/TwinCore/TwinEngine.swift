@@ -55,7 +55,7 @@ enum TwinEngine {
     static func assess(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil,
                        context: TwinContext, now: Date = Date()) -> TwinAssessment {
         let events = context.events, reviews = context.reviews, activeInjuries = context.activeInjuries
-        let calibration = context.calibration, anchor = context.personalAnchor, profile = context.profile
+        let calibration = context.calibration, anchor = context.personalAnchor
         var score = anchor.score
         var signals: [TwinSignal] = []
         let personal = PersonalBaselineEngine.profile(health: health, imports: imports, now: now)

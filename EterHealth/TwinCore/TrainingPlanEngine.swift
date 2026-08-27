@@ -111,6 +111,45 @@ struct DisciplineDose {
     var deficitMinutes: Double { max(0, targetMinutes - completedMinutes) }
 }
 
+// PR11: el día que carga los DOS canales. status() decide una sola sesión
+// por día, y eso está bien — pero varios días tienen de verdad hueco para un
+// segundo estímulo del otro canal (la cuota de fuerza sin cubrir en un día de
+// rodaje, la de carrera sin cubrir en un día de fuerza), y hasta ahora la app
+// no decía nada sobre el ORDEN. Con concurrencia, el orden cambia la
+// adaptación sin cambiar volumen ni intensidad — ver ConcurrentOrder en
+// DualLoad.swift para el mecanismo y las fuentes.
+//
+// Es una RECOMENDACIÓN sobre la sesión que ya se ha decidido, no una segunda
+// sesión que el plan imponga: `secondChannel` es lo que sumaría al plan si el
+// atleta tiene tiempo y ganas, con su orden y su margen dichos
+// explícitamente. Por eso es Optional y por eso no aparece en ninguna cuota:
+// nada cuenta como incumplido si no se hace.
+struct ConcurrentDayGuidance: Equatable {
+    let order: ConcurrentOrder
+    /// El canal que hoy NO es la sesión principal y que aún tiene cuota
+    /// pendiente. `.strength` o un estímulo aeróbico fácil, nunca una
+    /// segunda sesión clave: dos sesiones exigentes el mismo día no es
+    /// secuenciación, es otro plan.
+    let secondChannel: PlannedSessionKind
+    /// Con avoidLegsToday activo, el segundo estímulo de fuerza no puede ser
+    /// de pierna — el mismo mecanismo de protección de interferencia que ya
+    /// recorta el patrón del día, aplicado también al opcional.
+    let excludesLegs: Bool
+    var minimumHoursBetween: Double { order.minimumHoursBetween }
+
+    var explanation: String {
+        let second: String
+        switch secondChannel {
+        case .strength: second = excludesLegs
+            ? "Hoy también queda cuota de fuerza: si la haces, que sea de tren superior — las piernas están reservadas para el trabajo aeróbico previsto."
+            : "Hoy también queda cuota de fuerza sin cubrir."
+        case .easyRun: second = "Hoy también queda volumen aeróbico fácil sin cubrir."
+        default: second = "Hoy también queda cuota del otro canal sin cubrir."
+        }
+        return "\(second) \(order.explanation)"
+    }
+}
+
 struct WeeklyPlanStatus {
     let block: TrainingBlock
     let completedRuns: Int
@@ -159,6 +198,9 @@ struct WeeklyPlanStatus {
     // fuerza de tren superior con margen", que es una situación
     // completamente distinta (ahí sí toca entrenar).
     let upperBodyOnlyToday: Bool
+    // PR11: nil cuando hoy no hay hueco real para el otro canal. Ver
+    // ConcurrentDayGuidance arriba.
+    let concurrentDay: ConcurrentDayGuidance?
     let recommendation: String
     let rationale: String
     let daysToEvent: Int?
@@ -693,11 +735,15 @@ enum TrainingPlanEngine {
         // PR6: se estima una vez por llamada y se reparte, como el
         // clasificador de calidad del PR4 — no cada consumidor por su cuenta.
         let landmarkContext = VolumeLandmarkLearning.context(workouts: imports.workouts, now: now)
+        // PR11: la modalidad dominante entra en el umbral. Se calcula aquí,
+        // una vez, y se reparte — igual que landmarkContext arriba.
+        let aerobicModality = dominantAerobicModality(health: health, imports: imports, now: now)
         let interference = concurrentInterference(
             aerobicRatio: loadSummary.dual.aerobicRatio,
             legStrengthLikely: legStrengthLikely(muscles: muscles, avoidLegs: avoidLegsTomorrow,
                                                  landmarkContext: landmarkContext),
-            goalFocus: goalFocus
+            goalFocus: goalFocus,
+            modality: aerobicModality
         )
         let avoidLegsToday = avoidLegsTomorrow || interference == .protectAerobic
         // Same ~30% reduction deloadAdjustment already applies to running/
@@ -924,6 +970,18 @@ enum TrainingPlanEngine {
             rationale = "\(riskDisclosure) \(rationale)"
         }
 
+        // PR11: el orden del día concurrente, decidido después de que `next`
+        // sea definitivo (incluido el veto por lesión) y añadido al
+        // rationale — que es donde el brief pide que se explique.
+        let concurrentDay = concurrentDayGuidance(
+            today: next, strengthDeficit: max(0, targetStrength - strength),
+            runDeficit: max(0, targetRuns - runs.count), goalFocus: goalFocus,
+            avoidLegsToday: avoidLegsToday, readiness: readiness, isDeload: isDeload
+        )
+        if let concurrentDay {
+            rationale += " \(concurrentDay.explanation)"
+        }
+
         let event = nextEvent(after: now, profile: profile)
         let recommendation = prescription(
             for: next, block: block, readiness: readiness, muscles: muscles,
@@ -944,6 +1002,7 @@ enum TrainingPlanEngine {
             swimDose: swimDose, bikeDose: bikeDose, runDose: runDose, brickDose: brickDose,
             nextSession: next, strengthPattern: strengthPattern,
             avoidLegsToday: avoidLegsToday, upperBodyOnlyToday: upperBodyOnlyToday,
+            concurrentDay: concurrentDay,
             recommendation: recommendation, rationale: rationale,
             daysToEvent: event.map { calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: $0.date).day ?? 0 },
             eventName: event?.name, isDeload: isDeload,
@@ -1240,6 +1299,7 @@ enum TrainingPlanEngine {
         let recentHardPercentage = runningSummaryForIntensity.hasZoneData ? runningSummaryForIntensity.hardPercentage : nil
         let pace = profile.effectiveProgressionPace
         let landmarkContext = VolumeLandmarkLearning.context(workouts: imports.workouts, now: now)
+        let aerobicModality = dominantAerobicModality(health: health, imports: imports, now: now)
         // El mismo clasificador configurado que status(), por el mismo motivo.
         let isQualityRun = SessionClassification.qualityRunPredicate(
             reviews: reviews,
@@ -1468,7 +1528,15 @@ enum TrainingPlanEngine {
                 aerobicRatio: state.aerobicRatio,
                 legStrengthLikely: legStrengthLikely(muscles: simulatedMuscles(), avoidLegs: avoidLegsTomorrow,
                                                      landmarkContext: landmarkContext),
-                goalFocus: goalFocus
+                goalFocus: goalFocus,
+                // La misma modalidad real de esta semana que usa status(),
+                // congelada a lo largo de la ventana simulada — la misma
+                // simplificación que esta función ya aplica a readiness y a
+                // hoursSince*, no una nueva: no hay forma de saber qué
+                // modalidad dominará una semana que aún no ha ocurrido, y
+                // recalcularla desde los kinds simulados la haría depender
+                // de su propio resultado.
+                modality: aerobicModality
             )
             let avoidLegsThisDay = avoidLegsTomorrow || dayInterference == .protectAerobic
 
@@ -1722,12 +1790,140 @@ enum TrainingPlanEngine {
         case protectLegStrength
     }
 
-    // El umbral 1.30 no es nuevo: es la misma línea de "conviene absorber"
-    // que loadGuidance ya usa. Y el ratio es el del canal aeróbico, que es
-    // precisamente lo que el modelo de carga única no podía aislar.
+    /// Cuándo un día tiene de verdad hueco para el otro canal, y en qué
+    /// orden. Puro: los mismos números siempre dan la misma respuesta.
+    ///
+    /// Las tres condiciones que se tienen que dar A LA VEZ, y por qué:
+    ///  1. Cuota pendiente REAL en el otro canal esta semana. Sin déficit no
+    ///     hay nada que sumar, y proponer un segundo estímulo "porque cabe"
+    ///     es cómo se acumula carga que nadie pidió.
+    ///  2. Ese canal pesa algo en los objetivos activos (`goalFocus`). A
+    ///     alguien sin objetivo de carrera no se le ofrece volumen aeróbico
+    ///     como si le aportara.
+    ///  3. Readiness suficiente y no descarga. Un segundo estímulo en una
+    ///     semana de descarga anula justo lo que la descarga busca, y el
+    ///     suelo de 62 es el mismo umbral "Disponible" de TwinReadout.label
+    ///     que el resto de la app ya usa para "hay margen de verdad".
+    ///
+    /// Nunca ofrece una segunda sesión CLAVE: el segundo estímulo es fuerza
+    /// o carrera fácil, jamás calidad o tirada larga. Dos sesiones exigentes
+    /// el mismo día no es secuenciación.
+    nonisolated static func concurrentDayGuidance(today: PlannedSessionKind, strengthDeficit: Int, runDeficit: Int,
+                                                  goalFocus: GoalTrainingFocus, avoidLegsToday: Bool,
+                                                  readiness: Int, isDeload: Bool) -> ConcurrentDayGuidance? {
+        guard readiness >= 62, !isDeload else { return nil }
+        switch today {
+        case .strength:
+            guard runDeficit > 0, goalFocus.running > 0.05 else { return nil }
+            // El estímulo aeróbico opcional es siempre Z2 fácil, así que el
+            // orden es el del caso por defecto: la fuerza de hoy primero.
+            return ConcurrentDayGuidance(order: DualLoad.preferredOrder(aerobic: .easyRun),
+                                         secondChannel: .easyRun, excludesLegs: false)
+        case .easyRun, .qualityRun, .longRun, .swim, .bike:
+            guard strengthDeficit > 0, goalFocus.strength > 0 else { return nil }
+            // Aquí el orden SÍ depende de qué sesión aeróbica es la de hoy:
+            // con calidad o tirada larga, la sesión clave va primero.
+            return ConcurrentDayGuidance(order: DualLoad.preferredOrder(aerobic: today),
+                                         secondChannel: .strength, excludesLegs: avoidLegsToday)
+        // Recuperación, día de competición, brick e híbrido no admiten un
+        // segundo estímulo: los dos primeros porque el día es exactamente lo
+        // contrario, y los dos últimos porque ya cargan los dos canales
+        // dentro de la misma sesión — su orden interno lo fija la propia
+        // sesión (el brick es bici→carrera por definición, el HYROX alterna
+        // carrera y estaciones como la competición real).
+        case .recovery, .raceDay, .brick, .hybrid:
+            return nil
+        }
+    }
+
+    // PR11: la modalidad aeróbica dominante de la semana. No todo el trabajo
+    // aeróbico interfiere igual con la fuerza de pierna, y hasta ahora el
+    // umbral de interferencia trataba 300 minutos de bici exactamente como
+    // 300 de carrera.
+    //
+    // Lo que dice la literatura, en una frase: el componente excéntrico y de
+    // impacto de la carrera produce daño muscular y fatiga residual en la
+    // misma musculatura que un día de pierna carga, mientras el pedaleo es
+    // concéntrico-dominante y sin impacto. El meta-análisis de Wilson et al.
+    // 2012 ya separa por modalidad y encuentra la interferencia con
+    // hipertrofia y fuerza sistemáticamente mayor en carrera que en
+    // ciclismo. Es una asimetría de mecanismo, no de dosis.
+    //
+    // Deliberadamente pequeña y en UN solo número (el umbral), no repartida
+    // por el modelo: `mixed`/`unknown` conservan exactamente el 1.30 de
+    // siempre, así que sin evidencia clara de modalidad el comportamiento no
+    // se mueve ni un decimal. Ver dominantAerobicModality abajo para qué
+    // cuenta como "clara".
+    enum AerobicModality: Equatable {
+        case runningDominant
+        case cyclingDominant
+        /// Los dos canales presentes sin que ninguno domine, o sin minutos
+        /// aeróbicos suficientes para afirmar nada. Un caso, no dos, porque
+        /// la respuesta es la misma: el umbral de siempre.
+        case mixed
+    }
+
+    // Umbral del ratio aeróbico agudo:habitual a partir del cual la
+    // interferencia concurrente es una preocupación real. 1.30 es la misma
+    // línea de "conviene absorber" que loadGuidance ya usa, y sigue siendo
+    // el número para el caso sin evidencia de modalidad. La carrera baja el
+    // umbral (salta antes) y la bici lo sube (aguanta más), ±0.15 — un
+    // ajuste del mismo orden que la diferencia de cardioFactor entre las dos
+    // modalidades (1.45 vs 1.15), no un número escogido para producir un
+    // efecto concreto.
+    nonisolated static func interferenceRatioThreshold(for modality: AerobicModality) -> Double {
+        switch modality {
+        case .runningDominant: return 1.15
+        case .cyclingDominant: return 1.45
+        case .mixed: return 1.30
+        }
+    }
+
+    /// Qué modalidad domina el canal aeróbico de esta semana, en minutos
+    /// ponderados por el mismo `cardioFactor` que el propio canal usa — no en
+    /// número de sesiones, que trataría una salida de 3 h igual que un
+    /// rodaje de 30 min.
+    ///
+    /// "Domina" significa >= 65% del volumen aeróbico ponderado. Por debajo
+    /// de eso es `mixed` y el umbral no se mueve: un atleta que reparte
+    /// carrera y bici a partes iguales no tiene una modalidad dominante, y
+    /// fingir que sí la tiene por unos minutos de diferencia sería
+    /// exactamente el tipo de falsa precisión que esta app evita. Con menos
+    /// de 60 minutos aeróbicos ponderados en la ventana tampoco se afirma
+    /// nada: no hay semana que describir.
+    static let modalityDominanceShare = 0.65
+    static let minimumWeeklyAerobicMinutes = 60.0
+
+    @MainActor static func dominantAerobicModality(health: HealthStore, imports: ImportStore,
+                                                   now: Date = Date(), days: Int = 7) -> AerobicModality {
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: now) ?? now
+        var running = 0.0, cycling = 0.0, other = 0.0
+        for workout in health.recentWorkouts where workout.date >= start && workout.date <= now &&
+            !workout.source.localizedCaseInsensitiveContains("hevy") && !imports.isHealthKitMirror(workout) &&
+            !isStrengthWorkout(workout) {
+            let load = workout.durationMinutes * PerformanceEngine.cardioFactor(workout.activity)
+            switch workout.activity {
+            case "Carrera", "Escaleras", "Intervalos de alta intensidad": running += load
+            case "Ciclismo": cycling += load
+            default: other += load
+            }
+        }
+        let total = running + cycling + other
+        guard total >= minimumWeeklyAerobicMinutes else { return .mixed }
+        if running / total >= modalityDominanceShare { return .runningDominant }
+        if cycling / total >= modalityDominanceShare { return .cyclingDominant }
+        return .mixed
+    }
+
+    // El ratio es el del canal aeróbico, que es precisamente lo que el modelo
+    // de carga única no podía aislar. El umbral ahora depende de la modalidad
+    // dominante — ver interferenceRatioThreshold. `modality` tiene default
+    // `.mixed` para que los call sites y tests que no tienen opinión sobre la
+    // modalidad obtengan el comportamiento de siempre.
     static func concurrentInterference(aerobicRatio: Double, legStrengthLikely: Bool,
-                                       goalFocus: GoalTrainingFocus) -> ConcurrentInterference {
-        guard legStrengthLikely, aerobicRatio >= 1.30 else { return .none }
+                                       goalFocus: GoalTrainingFocus,
+                                       modality: AerobicModality = .mixed) -> ConcurrentInterference {
+        guard legStrengthLikely, aerobicRatio >= interferenceRatioThreshold(for: modality) else { return .none }
         let aerobicDemand = goalFocus.running + goalFocus.hybrid + goalFocus.triathlon
         return aerobicDemand >= goalFocus.strength ? .protectAerobic : .protectLegStrength
     }

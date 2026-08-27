@@ -114,13 +114,28 @@ enum InjurySafetyEngine {
         case .easyRun, .qualityRun, .longRun, .brick, .hybrid: usesRunning = true
         case .strength, .swim, .bike, .recovery, .raceDay: usesRunning = false
         }
-        // El ejercicio suelto sigue contando: una propuesta de recuperación
-        // puede ofrecer una carrera Z2 opcional (ver WorkoutPlanner's
-        // "Después del tren superior"), y esa carrera está igual de
-        // restringida que la de una sesión de carrera entera.
-        let offersRunningExercise = workout.exercises.contains { $0.name.localizedCaseInsensitiveContains("carrera") }
-        if usesRunning || offersRunningExercise, let reason = sessionAllowsRunning(injuries).reason {
+        if usesRunning, let reason = sessionAllowsRunning(injuries).reason {
             return recoveryAlternative(reason: reason)
+        }
+        // PR11: una sesión que no ES de carrera pero OFRECE una carrera
+        // opcional (la Z2 de "Después del tren superior", el segundo estímulo
+        // de un día concurrente) pierde esa opción y conserva el resto.
+        // Antes tumbaba la sesión entera: con un Aquiles restringido, un día
+        // de fuerza cuyo único pecado era ofrecer un rodaje opcional se
+        // convertía en "Recuperación compatible" y se perdía la fuerza, que
+        // no estaba restringida por nada. Un ejercicio incompatible se
+        // retira; la sesión sólo cae cuando lo incompatible es ella misma.
+        if let reason = sessionAllowsRunning(injuries).reason {
+            let withoutRunning = workout.exercises.filter { !$0.name.localizedCaseInsensitiveContains("carrera") }
+            if withoutRunning.count != workout.exercises.count {
+                guard !withoutRunning.isEmpty else { return recoveryAlternative(reason: reason) }
+                return sanitize(ProposedWorkout(
+                    title: workout.title, duration: workout.duration, intent: workout.intent,
+                    exercises: withoutRunning,
+                    note: "\(workout.note) · \(reason)",
+                    kind: workout.kind, strengthPattern: workout.strengthPattern
+                ), injuries: injuries)
+            }
         }
         // Swimming is upper-body/shoulder dominant and cycling is a
         // sustained lower-body/hip-knee load — neither maps onto the

@@ -5337,6 +5337,212 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(InjurySafetyEngine.sanitize(swim, injuries: achilles).kind, .swim)
     }
 
+
+    // MARK: - PR11: orden concurrente y asimetría running/bici
+
+    func testConcurrentOrderDefaultsToStrengthFirstAndYieldsOnlyToAKeyAerobicSession() {
+        // El defecto es fuerza primero (el estímulo aeróbico posterior atenúa
+        // menos que el orden inverso). La única excepción es que el estímulo
+        // aeróbico del día SEA la sesión clave: entonces manda la regla de
+        // priorización y va primero, con piernas frescas.
+        for easy: PlannedSessionKind in [.easyRun, .swim, .bike, .hybrid, .strength, .recovery] {
+            XCTAssertEqual(DualLoad.preferredOrder(aerobic: easy), .strengthFirst, "\(easy.rawValue)")
+        }
+        for key: PlannedSessionKind in [.qualityRun, .longRun, .brick, .raceDay] {
+            XCTAssertEqual(DualLoad.preferredOrder(aerobic: key), .enduranceFirst, "\(key.rawValue)")
+        }
+        // El margen es el mismo >= 3 h en los dos sentidos: lo que cambia el
+        // efecto es el orden, no el hueco.
+        XCTAssertEqual(ConcurrentOrder.strengthFirst.minimumHoursBetween, 3)
+        XCTAssertEqual(ConcurrentOrder.enduranceFirst.minimumHoursBetween, 3)
+    }
+
+    func testConcurrentDayGuidanceNeedsRealDeficitGoalWeightAndMargin() {
+        let hybridFocus = GoalTrainingFocus(running: 0.4, strength: 0.4, hybrid: 0.2, triathlon: 0, leadingGoal: "HYROX")
+        func guidance(today: PlannedSessionKind, strengthDeficit: Int = 1, runDeficit: Int = 1,
+                      focus: GoalTrainingFocus? = nil, avoidLegs: Bool = false,
+                      readiness: Int = 80, isDeload: Bool = false) -> ConcurrentDayGuidance? {
+            TrainingPlanEngine.concurrentDayGuidance(today: today, strengthDeficit: strengthDeficit,
+                                                     runDeficit: runDeficit, goalFocus: focus ?? hybridFocus,
+                                                     avoidLegsToday: avoidLegs, readiness: readiness, isDeload: isDeload)
+        }
+        // Día de fuerza con cuota de carrera pendiente → carrera fácil después.
+        let strengthDay = guidance(today: .strength)
+        XCTAssertEqual(strengthDay?.order, .strengthFirst)
+        XCTAssertEqual(strengthDay?.secondChannel, .easyRun)
+        // Día de rodaje con cuota de fuerza pendiente → la fuerza va ANTES.
+        let easyDay = guidance(today: .easyRun)
+        XCTAssertEqual(easyDay?.order, .strengthFirst)
+        XCTAssertEqual(easyDay?.secondChannel, .strength)
+        // Día de calidad: la sesión clave va primero.
+        XCTAssertEqual(guidance(today: .qualityRun)?.order, .enduranceFirst)
+        XCTAssertEqual(guidance(today: .longRun)?.order, .enduranceFirst)
+        // Sin déficit real no se ofrece nada.
+        XCTAssertNil(guidance(today: .strength, runDeficit: 0))
+        XCTAssertNil(guidance(today: .easyRun, strengthDeficit: 0))
+        // Sin peso del canal en los objetivos, tampoco.
+        let pureStrength = GoalTrainingFocus(running: 0, strength: 1, hybrid: 0, triathlon: 0, leadingGoal: "Press banca")
+        XCTAssertNil(guidance(today: .strength, focus: pureStrength))
+        let pureRunning = GoalTrainingFocus(running: 1, strength: 0, hybrid: 0, triathlon: 0, leadingGoal: "Media maratón")
+        XCTAssertNil(guidance(today: .easyRun, focus: pureRunning))
+        // Descarga y readiness bajo cierran la puerta: un segundo estímulo en
+        // descarga anula justo lo que la descarga busca.
+        XCTAssertNil(guidance(today: .strength, isDeload: true))
+        XCTAssertNil(guidance(today: .easyRun, readiness: 61))
+        // Recuperación, competición, brick e híbrido nunca: los dos primeros
+        // son lo contrario de un segundo estímulo, los dos últimos ya cargan
+        // los dos canales dentro de la misma sesión.
+        for kind: PlannedSessionKind in [.recovery, .raceDay, .brick, .hybrid] {
+            XCTAssertNil(guidance(today: kind), "\(kind.rawValue) no admite segundo estímulo.")
+        }
+        // avoidLegsToday se propaga al opcional, no sólo al patrón del día.
+        XCTAssertEqual(guidance(today: .longRun, avoidLegs: true)?.excludesLegs, true)
+        XCTAssertEqual(guidance(today: .longRun, avoidLegs: false)?.excludesLegs, false)
+    }
+
+    func testConcurrentOrderEntersTheProposalStructureAndNotJustTheNote() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let base = proposal(for: .strength, pattern: .push, now: now)
+        let withSecond = WorkoutPlanner.applyingConcurrentOrder(
+            base,
+            guidance: ConcurrentDayGuidance(order: .strengthFirst, secondChannel: .easyRun, excludesLegs: false),
+            zones: nil
+        )
+        XCTAssertEqual(withSecond.exercises.count, base.exercises.count + 1)
+        XCTAssertEqual(withSecond.kind, base.kind, "Añadir el segundo estímulo no cambia qué sesión es esta.")
+        XCTAssertEqual(withSecond.strengthPattern, base.strengthPattern)
+        guard let second = withSecond.exercises.last else { return XCTFail("Falta el segundo estímulo.") }
+        XCTAssertTrue(second.cue.contains("DESPUÉS"), "En un día de fuerza, la carrera va después: \(second.cue)")
+        XCTAssertTrue(second.cue.contains("3 h"))
+        XCTAssertTrue(withSecond.note.contains("Fuerza primero"))
+
+        // Y al revés: en un día de rodaje con fuerza pendiente, la fuerza va
+        // ANTES — el defecto que el brief pide como comportamiento por defecto.
+        let run = proposal(for: .easyRun, now: now)
+        let withStrength = WorkoutPlanner.applyingConcurrentOrder(
+            run,
+            guidance: ConcurrentDayGuidance(order: .strengthFirst, secondChannel: .strength, excludesLegs: false),
+            zones: nil
+        )
+        XCTAssertTrue(withStrength.exercises.last?.cue.contains("ANTES") == true,
+                      "La fuerza tiene que ir antes del rodaje suave: \(withStrength.exercises.last?.cue ?? "")")
+
+        // Con avoidLegsToday el segundo estímulo lo dice, incluso en la rama
+        // strengthFirst (donde el sufijo se pegaba sólo al else por
+        // precedencia del operador ternario).
+        let protectedLegs = WorkoutPlanner.applyingConcurrentOrder(
+            run,
+            guidance: ConcurrentDayGuidance(order: .strengthFirst, secondChannel: .strength, excludesLegs: true),
+            zones: nil
+        )
+        XCTAssertTrue(protectedLegs.exercises.last?.name.contains("tren superior") == true)
+        XCTAssertTrue(protectedLegs.exercises.last?.cue.contains("Sin pierna") == true)
+    }
+
+    func testConcurrentDayExplanationReachesTheRationale() {
+        // El criterio explícito del brief: el rationale tiene que explicar el
+        // orden, no sólo la estructura de la sesión.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 85,
+                                              muscles: muscles(legs: 90), checkIn: nil, context: neutralContext, now: now)
+        // El fixture neutral (stores vacíos, readiness 85, piernas frescas,
+        // now fijo) da un día de fuerza con la cuota de carrera entera sin
+        // cubrir — el caso concurrente por excelencia. Se afirma non-nil a
+        // propósito: si un cambio futuro mueve el día por defecto, este test
+        // debe fallar diciéndolo en vez de pasar sin comprobar nada.
+        XCTAssertEqual(status.nextSession, .strength)
+        guard let concurrentDay = status.concurrentDay else {
+            return XCTFail("El fixture neutral debería tener día concurrente; salió \(status.nextSession.rawValue).")
+        }
+        XCTAssertEqual(concurrentDay.order, .strengthFirst)
+        XCTAssertEqual(concurrentDay.secondChannel, .easyRun)
+        XCTAssertTrue(status.rationale.contains(concurrentDay.explanation),
+                      "El rationale debe llevar la explicación del orden: \(status.rationale)")
+        XCTAssertTrue(status.rationale.contains("Fuerza primero"))
+    }
+
+    func testRunningInterferesEarlierThanCyclingAtTheSameAerobicRatio() {
+        let hyrox = GoalTrainingFocus(running: 0.35, strength: 0.35, hybrid: 0.30, triathlon: 0, leadingGoal: "HYROX")
+        // Mismo ratio, misma probabilidad de día de pierna, distinta
+        // modalidad dominante: la carrera salta y la bici no. Es la asimetría
+        // de mecanismo (excéntrico + impacto vs concéntrico sin impacto), no
+        // de dosis — la dosis ya la lleva el ratio, que es idéntico.
+        let ratio = 1.20
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: ratio, legStrengthLikely: true,
+                                                                 goalFocus: hyrox, modality: .runningDominant),
+                       .protectAerobic)
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: ratio, legStrengthLikely: true,
+                                                                 goalFocus: hyrox, modality: .cyclingDominant),
+                       .none)
+        // Y el caso sin evidencia de modalidad conserva EXACTAMENTE el umbral
+        // 1.30 de siempre: sin datos, cero cambio de comportamiento.
+        XCTAssertEqual(TrainingPlanEngine.interferenceRatioThreshold(for: .mixed), 1.30)
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.29, legStrengthLikely: true,
+                                                                 goalFocus: hyrox, modality: .mixed), .none)
+        XCTAssertEqual(TrainingPlanEngine.concurrentInterference(aerobicRatio: 1.30, legStrengthLikely: true,
+                                                                 goalFocus: hyrox, modality: .mixed), .protectAerobic)
+        // El orden de los tres umbrales es la invariante: carrera < mixto < bici.
+        XCTAssertLessThan(TrainingPlanEngine.interferenceRatioThreshold(for: .runningDominant),
+                          TrainingPlanEngine.interferenceRatioThreshold(for: .mixed))
+        XCTAssertLessThan(TrainingPlanEngine.interferenceRatioThreshold(for: .mixed),
+                          TrainingPlanEngine.interferenceRatioThreshold(for: .cyclingDominant))
+    }
+
+    func testDominantAerobicModalityStaysSilentWithoutEnoughVolumeOrAClearMajority() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let health = HealthStore()
+        let imports = ImportStore()
+        func workout(_ activity: String, minutes: Double, daysAgo: Int) -> HealthWorkout {
+            HealthWorkout(id: UUID(), date: Calendar.current.date(byAdding: .day, value: -daysAgo, to: now)!,
+                          durationMinutes: minutes, calories: nil, distanceKilometers: nil,
+                          averageHeartRate: 140, elevationMeters: nil, activity: activity,
+                          muscleGroups: [:], source: "Apple Watch")
+        }
+        // Sin volumen suficiente: no se afirma nada.
+        health.recentWorkouts = [workout("Carrera", minutes: 20, daysAgo: 1)]
+        XCTAssertEqual(TrainingPlanEngine.dominantAerobicModality(health: health, imports: imports, now: now), .mixed)
+        // Carrera dominante de verdad.
+        health.recentWorkouts = [workout("Carrera", minutes: 60, daysAgo: 1), workout("Carrera", minutes: 45, daysAgo: 3)]
+        XCTAssertEqual(TrainingPlanEngine.dominantAerobicModality(health: health, imports: imports, now: now), .runningDominant)
+        // Bici dominante.
+        health.recentWorkouts = [workout("Ciclismo", minutes: 120, daysAgo: 1), workout("Ciclismo", minutes: 90, daysAgo: 4)]
+        XCTAssertEqual(TrainingPlanEngine.dominantAerobicModality(health: health, imports: imports, now: now), .cyclingDominant)
+        // Reparto parejo: mixed, no "la que gane por unos minutos". Ponderado
+        // por cardioFactor (carrera 1.45, bici 1.15), así que 60 min de bici
+        // frente a 50 de carrera se quedan lejos del 65% cualquiera de los dos.
+        health.recentWorkouts = [workout("Carrera", minutes: 50, daysAgo: 1), workout("Ciclismo", minutes: 60, daysAgo: 2)]
+        XCTAssertEqual(TrainingPlanEngine.dominantAerobicModality(health: health, imports: imports, now: now), .mixed)
+        // La fuerza registrada en HealthKit no cuenta como modalidad aeróbica.
+        health.recentWorkouts = [workout("Fuerza", minutes: 200, daysAgo: 1), workout("Carrera", minutes: 60, daysAgo: 2)]
+        XCTAssertEqual(TrainingPlanEngine.dominantAerobicModality(health: health, imports: imports, now: now), .runningDominant)
+    }
+
+    func testRunningRestrictionRemovesAnOptionalRunWithoutKillingTheStrengthSession() {
+        // Antes: una sesión de fuerza que sólo OFRECÍA un rodaje opcional se
+        // convertía entera en "Recuperación compatible" con un Aquiles
+        // restringido — y se perdía la fuerza, que no estaba restringida por
+        // nada. Lo incompatible es el ejercicio, no la sesión.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let achilles = [InjuryRecord(id: UUID(), area: "Aquiles", startedAt: now, resolvedAt: nil,
+                                     severity: 2, restrictions: [.avoidRunning], note: "")]
+        var gymProfile = neutralProfile
+        gymProfile.gymAvailable = true
+        let strengthDay = proposal(for: .strength, pattern: .push, profile: gymProfile, now: now)
+        let withOptionalRun = WorkoutPlanner.applyingConcurrentOrder(
+            strengthDay,
+            guidance: ConcurrentDayGuidance(order: .strengthFirst, secondChannel: .easyRun, excludesLegs: false),
+            zones: nil
+        )
+        let safe = InjurySafetyEngine.sanitize(withOptionalRun, injuries: achilles)
+        XCTAssertEqual(safe.kind, .strength, "La sesión de fuerza sobrevive; sólo se cae el rodaje opcional.")
+        XCTAssertFalse(safe.exercises.contains { $0.name.localizedCaseInsensitiveContains("carrera") })
+        XCTAssertFalse(safe.exercises.isEmpty)
+        XCTAssertTrue(safe.note.contains("Carrera bloqueada"))
+        // Y una sesión que SÍ es de carrera sigue cayendo entera.
+        XCTAssertEqual(InjurySafetyEngine.sanitize(proposal(for: .longRun, now: now), injuries: achilles).title,
+                       "Recuperación compatible")
+    }
+
     private func muscles(legs readiness: Int) -> [MuscleReadiness] {
         ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].map {
             MuscleReadiness(name: $0, readiness: readiness, lastTrained: nil, recentSets: 0)

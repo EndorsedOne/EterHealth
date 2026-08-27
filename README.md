@@ -278,6 +278,28 @@ fuerza (`avoidLegs`)— no por una vía paralela.
 piernas frescas?", respondida sólo con tiempo transcurrido, día de la semana
 y `goalFocus`, sin simular mañana.
 
+El umbral de ratio depende de la **modalidad aeróbica dominante** de la
+semana (`dominantAerobicModality`: minutos ponderados por `cardioFactor`,
+≥ 65 % para considerarse dominante, ≥ 60 min para afirmar algo): carrera
+1.15, bici 1.45, mixto o sin evidencia 1.30 — el número de siempre. La
+asimetría es de mecanismo, no de dosis (la dosis ya la lleva el ratio): el
+componente excéntrico y de impacto de la carrera deja fatiga residual en la
+misma musculatura que carga un día de pierna, mientras el pedaleo es
+concéntrico-dominante y sin impacto.
+
+**Orden el mismo día** (`ConcurrentDayGuidance`): `status` marca los días con
+cuota pendiente en el otro canal —déficit real **y** peso de ese canal en los
+objetivos **y** readiness ≥ 62 sin descarga— y publica el orden preferido. Por
+defecto **fuerza → endurance** con ≥ 3 h de margen: el trabajo aeróbico
+inmediatamente posterior a la fuerza atenúa la señalización que esa sesión
+buscaba, y el orden inverso penaliza mucho menos a un estímulo aeróbico
+fácil. La excepción es la regla de priorización: si el estímulo aeróbico del
+día **es** la sesión clave (calidad, tirada larga), va primero con piernas
+frescas. El segundo estímulo entra como una entrada más en la sesión
+propuesta, con su cue de orden, y la explicación va al `rationale`. Nunca se
+ofrecen dos sesiones clave el mismo día, y `brick`/`hybrid` quedan fuera
+porque ya cargan los dos canales dentro de la misma sesión.
+
 ### 3.5 De la decisión a la sesión concreta
 
 `WorkoutPlanner.propose` construye la sesión a partir de la

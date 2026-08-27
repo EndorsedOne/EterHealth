@@ -76,6 +76,76 @@ struct DualLoad: Equatable {
     }
 }
 
+// PR11: el ORDEN dentro de un día que carga los dos canales. Hasta ahora
+// DualLoad sabía CUÁNTO va a cada canal (split) pero no en qué secuencia, y
+// la secuencia no es un detalle de presentación: es una de las poquísimas
+// variables de un programa concurrente que cambia la adaptación sin cambiar
+// ni el volumen ni la intensidad.
+//
+// La regla y su base:
+//
+//  · Wilson et al. 2012 (meta-análisis de entrenamiento concurrente) y la
+//    revisión de Fyfe/Bishop/Stepto describen el mecanismo: el trabajo
+//    aeróbico hecho poco después de la resistencia atenúa la señalización
+//    mTOR que esa sesión de fuerza buscaba. El daño va en una dirección: la
+//    fuerza previa penaliza mucho menos a una sesión aeróbica FÁCIL que la
+//    aeróbica previa a la sesión de fuerza. De ahí el defecto:
+//    FUERZA PRIMERO.
+//  · La excepción no es una excepción al mecanismo, es la regla de
+//    priorización que cualquier programa aplica por encima de él: la sesión
+//    CLAVE va primero, con las piernas frescas. Una sesión de calidad o una
+//    tirada larga corridas sobre piernas ya cargadas de sentadillas no son
+//    la misma sesión — el ritmo objetivo deja de ser alcanzable y la
+//    sesión mide fatiga en vez de entrenar el sistema que pretendía. Cuando
+//    el estímulo aeróbico del día es ESE, va primero.
+//  · El margen de horas es el mismo que la propuesta de "Después del tren
+//    superior" ya usaba y justificaba (>= 3 h para que la interferencia sea
+//    pequeña, no cero); aquí se nombra en un solo sitio en vez de quedar
+//    escrito dentro de un cue.
+//
+// Lo que esto NO hace: no toca step(), ni los EWMA, ni el reparto de split.
+// El orden es una recomendación explícita sobre una decisión que ya está
+// tomada, no un cuarto canal de carga.
+enum ConcurrentOrder: Equatable {
+    /// El caso por defecto: la fuerza primero y el estímulo aeróbico fácil
+    /// después, con margen.
+    case strengthFirst
+    /// La sesión aeróbica del día es la clave (calidad o tirada larga): va
+    /// primero, con piernas frescas.
+    case enduranceFirst
+
+    /// Margen mínimo entre las dos sesiones del día. El mismo >= 3 h en los
+    /// dos sentidos: es el orden lo que cambia el efecto, no el hueco.
+    var minimumHoursBetween: Double { 3 }
+
+    var explanation: String {
+        switch self {
+        case .strengthFirst:
+            return "Fuerza primero y el trabajo aeróbico después, con al menos 3 h de margen: el estímulo aeróbico inmediatamente posterior a la fuerza atenúa la señalización que esa sesión de fuerza busca, y el orden inverso penaliza mucho menos a una sesión aeróbica fácil."
+        case .enduranceFirst:
+            return "Hoy la sesión aeróbica es la clave, así que va primero y con piernas frescas: corrida después de la fuerza dejaría de ser alcanzable a ritmo objetivo y mediría fatiga en vez de entrenar lo que pretende. Deja al menos 3 h antes de la fuerza."
+        }
+    }
+}
+
+extension DualLoad {
+    /// El orden preferido cuando un día carga los dos canales. `aerobic` es
+    /// el estímulo aeróbico del día; devuelve `enduranceFirst` sólo cuando
+    /// ese estímulo es una sesión clave (calidad o tirada larga), que es la
+    /// única situación en la que la regla de priorización pesa más que el
+    /// mecanismo de interferencia. Pura y sin estado: el mismo par de kinds
+    /// siempre da el mismo orden.
+    static func preferredOrder(aerobic: PlannedSessionKind) -> ConcurrentOrder {
+        switch aerobic {
+        case .qualityRun, .longRun, .brick, .raceDay: return .enduranceFirst
+        // Volumen aeróbico fácil, natación y bici: la fuerza va primero.
+        // La natación además apenas comparte musculatura con un día de
+        // pierna, así que la interferencia real es todavía menor.
+        case .easyRun, .swim, .bike, .hybrid, .strength, .recovery: return .strengthFirst
+        }
+    }
+}
+
 // Un día de historial con los dos canales separados en el origen, en vez de
 // sumados al entrar. `load` combinado se conserva para DailyTraining y para
 // el ratio de siempre.

@@ -71,7 +71,71 @@ enum WorkoutPlanner {
                                              physiologicalAlert: assessment.physiologicalAlert, now: now)
         return proposal(for: plan.nextSession, pattern: plan.strengthPattern, upperBodyOnlyToday: plan.upperBodyOnlyToday,
                         block: plan.block, isDeload: plan.isDeload, readiness: assessment.score, rationale: plan.rationale,
-                        muscles: assessment.muscles, health: health, imports: imports, context: context, now: now)
+                        muscles: assessment.muscles, health: health, imports: imports, context: context,
+                        concurrentDay: plan.concurrentDay, now: now)
+    }
+
+    /// La sesión del día, con el orden concurrente ya aplicado cuando el plan
+    /// dice que hoy hay hueco para el otro canal. Dos funciones y no una
+    /// porque son dos preguntas: `session(for:...)` construye la sesión
+    /// (probable kind a kind), y esto le añade el segundo estímulo opcional
+    /// con su orden — que es una recomendación SOBRE la sesión, no parte de
+    /// cómo se construye.
+    static func proposal(for kind: PlannedSessionKind, pattern: StrengthPattern?, upperBodyOnlyToday: Bool,
+                         block: TrainingBlock, isDeload: Bool, readiness: Int, rationale: String,
+                         muscles: [MuscleReadiness], health: HealthStore, imports: ImportStore,
+                         context: TwinContext, concurrentDay: ConcurrentDayGuidance? = nil,
+                         now: Date = Date()) -> ProposedWorkout {
+        let built = session(for: kind, pattern: pattern, upperBodyOnlyToday: upperBodyOnlyToday,
+                            block: block, isDeload: isDeload, readiness: readiness, rationale: rationale,
+                            muscles: muscles, health: health, imports: imports, context: context, now: now)
+        guard let concurrentDay else { return built }
+        return applyingConcurrentOrder(built, guidance: concurrentDay,
+                                       zones: health.currentHeartRateZoneBoundaries())
+    }
+
+    /// El segundo estímulo del día entra en la ESTRUCTURA de la sesión (una
+    /// entrada más, con su prescripción y su cue de orden) y no sólo en el
+    /// texto de la nota — mismo tratamiento que la propuesta de "Después del
+    /// tren superior" ya daba a su carrera Z2 opcional, y por la misma razón:
+    /// una recomendación que sólo vive en un párrafo al final no se ejecuta.
+    ///
+    /// El orden se refleja en la POSICIÓN: `strengthFirst` añade el segundo
+    /// estímulo al final de la lista, `enduranceFirst` lo añade al final
+    /// igualmente pero diciendo explícitamente que la sesión de arriba es la
+    /// que va primero. No se reordenan los ejercicios de la sesión principal:
+    /// esa sesión es una unidad (calentamiento → bloque → vuelta a la calma)
+    /// y meterle una sesión entera por delante la rompería.
+    static func applyingConcurrentOrder(_ workout: ProposedWorkout, guidance: ConcurrentDayGuidance,
+                                        zones: HeartRateZoneBoundaries?) -> ProposedWorkout {
+        let hours = Int(guidance.minimumHoursBetween)
+        let name: String
+        let prescription: String
+        let cue: String
+        switch guidance.secondChannel {
+        case .strength:
+            name = guidance.excludesLegs
+                ? "Fuerza opcional de tren superior (2º estímulo)"
+                : "Fuerza opcional (2º estímulo)"
+            prescription = "3–4 series por ejercicio · RIR 3"
+            let ordering = guidance.order == .strengthFirst
+                ? "Hazla ANTES de la sesión de arriba, con \(hours) h de margen: el trabajo aeróbico inmediatamente posterior atenúa la señalización que la fuerza busca."
+                : "Hazla DESPUÉS de la sesión de arriba, con \(hours) h de margen: hoy la sesión aeróbica es la clave y necesita piernas frescas."
+            // El paréntesis importa: sin él el sufijo se pegaría sólo a la
+            // rama del else, y un día con avoidLegsToday y orden
+            // strengthFirst ofrecería fuerza de pierna sin decir nada.
+            cue = ordering + (guidance.excludesLegs ? " Sin pierna: está reservada para el trabajo aeróbico previsto." : "")
+        default:
+            name = "Carrera suave opcional (2º estímulo)"
+            prescription = "20–30 min · Z2\(zoneRange(zones?.z1z2, zones?.z2z3))"
+            cue = "Hazla DESPUÉS de la sesión de arriba, con \(hours) h de margen: es volumen real hacia tu objetivo de carrera y a esa distancia la interferencia con la fuerza de hoy es pequeña."
+        }
+        return ProposedWorkout(
+            title: workout.title, duration: workout.duration, intent: workout.intent,
+            exercises: workout.exercises + [ProposedExercise(name: name, prescription: prescription, cue: cue)],
+            note: workout.note + " · " + guidance.explanation,
+            kind: workout.kind, strengthPattern: workout.strengthPattern
+        )
     }
 
     /// Sólo el DESPACHO: de una decisión ya tomada (kind + patrón + los
@@ -86,10 +150,10 @@ enum WorkoutPlanner {
     /// uno de ellos — algo que, para varios kinds, sencillamente no se puede
     /// montar (un brick exige un objetivo de triatlón activo Y déficit de
     /// minutos de brick Y separación suficiente de la última sesión clave).
-    static func proposal(for kind: PlannedSessionKind, pattern: StrengthPattern?, upperBodyOnlyToday: Bool,
-                         block: TrainingBlock, isDeload: Bool, readiness: Int, rationale: String,
-                         muscles: [MuscleReadiness], health: HealthStore, imports: ImportStore,
-                         context: TwinContext, now: Date = Date()) -> ProposedWorkout {
+    static func session(for kind: PlannedSessionKind, pattern: StrengthPattern?, upperBodyOnlyToday: Bool,
+                        block: TrainingBlock, isDeload: Bool, readiness: Int, rationale: String,
+                        muscles: [MuscleReadiness], health: HealthStore, imports: ImportStore,
+                        context: TwinContext, now: Date = Date()) -> ProposedWorkout {
         let profile = context.profile
         let deload = isDeload
         let bodyweightOnly = !profile.gymAvailable
