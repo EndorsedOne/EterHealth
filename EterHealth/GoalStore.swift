@@ -308,6 +308,21 @@ struct AthletePlanProfile: Codable {
     // .angelDefault). Read via effectiveProgressionPace, never directly.
     var progressionPace: ProgressionPace? = nil
     var effectiveProgressionPace: ProgressionPace { progressionPace ?? .optimal }
+    // PR12: modo wellness/longevidad. Optional con tres estados reales, no
+    // un Bool con default:
+    //   nil   → automático: se activa si no queda ningún objetivo con fecha
+    //           futura (no hay evento al que periodizar). Es el valor de todo
+    //           perfil guardado antes de que este campo existiera, y el
+    //           comportamiento correcto para él.
+    //   true  → activado a mano, aunque haya un evento en el calendario.
+    //   false → desactivado a mano, aunque no haya ninguno.
+    // Optional también por la razón mecánica que el comentario de
+    // progressionPace arriba ya explica: el Decodable sintetizado de Swift
+    // ignora los inicializadores de propiedad, así que un Bool no opcional
+    // con default rompería la decodificación de todo lo ya guardado.
+    // Se lee por TrainingPlanEngine.isWellnessMode(profile:on:), nunca
+    // directamente — ahí vive la resolución de los tres estados.
+    var wellnessMode: Bool? = nil
 
     static var angelDefault: AthletePlanProfile {
         let calendar = Calendar(identifier: .gregorian)

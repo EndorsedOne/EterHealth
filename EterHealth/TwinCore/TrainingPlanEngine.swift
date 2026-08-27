@@ -71,7 +71,16 @@ enum StrengthPattern: String, Codable, CaseIterable {
 // needed to know the phase without also knowing the exact Spanish wording).
 // Explicit here so both volume progression and interval prescriptions below
 // can key off it directly.
-enum TrainingPhase { case base, buildSpecific, taper, race, transition }
+// PR12: `.maintenance` es la fase de un plan que NO está anclado a ningún
+// evento. No es lo mismo que `.transition` (recuperar de un reto y transferir
+// hacia el siguiente, que sigue siendo periodización con una fecha detrás) ni
+// que `.base` (construir tolerancia PARA algo). Aquí no hay nada hacia lo que
+// construir, y eso cambia dos cosas concretas: no hay rampa de volumen dentro
+// de la fase (las bandas de `.maintenance` tienen min == max a propósito) y la
+// cuota de calidad baja al mínimo (0...1 en vez de 1...2), porque un pico de
+// intensidad sólo se justifica por una demanda específica que aquí no existe.
+// Ver maintenanceBlock abajo para por qué el mínimo no es cero.
+enum TrainingPhase { case base, buildSpecific, taper, race, transition, maintenance }
 
 struct TrainingBlock: Identifiable {
     var id: String { name }
@@ -253,6 +262,90 @@ enum TrainingPlanEngine {
         let datedEvents = profile.goals.filter { $0.isActive && $0.date != nil }
         let primaryEvents = datedEvents.filter { $0.priority == .primary }
         return (primaryEvents.isEmpty ? datedEvents : primaryEvents).sorted { $0.date! < $1.date! }
+    }
+
+    /// Los objetivos activos con fecha que TODAVÍA no han pasado — lo único
+    /// que puede sostener una periodización. `primaryEvents(for:)` no filtra
+    /// por fecha (a propósito: `blocks(for:)` necesita construir la ventana
+    /// alrededor de un evento aunque ya haya ocurrido, para que `activeBlock`
+    /// sepa qué bloque estaba activo en una fecha pasada), así que este es
+    /// un filtro distinto y no un duplicado.
+    static func upcomingEvents(for profile: AthletePlanProfile, on date: Date) -> [TrainingGoal] {
+        let today = Calendar.current.startOfDay(for: date)
+        return profile.goals.filter { $0.isActive && ($0.date.map { $0 >= today } ?? false) }
+            .sorted { $0.date! < $1.date! }
+    }
+
+    /// PR12: el modo wellness/longevidad. Dos formas de entrar, y el orden
+    /// importa:
+    ///
+    ///  1. El flag explícito del perfil manda siempre, en los dos sentidos.
+    ///     `true` lo activa aunque haya una media maratón en tres semanas
+    ///     (decisión del atleta, no del motor); `false` lo desactiva aunque
+    ///     no haya ningún evento — la vía de escape para quien prefiere el
+    ///     bloque de desarrollo híbrido de siempre.
+    ///  2. Sin flag (el caso por defecto, y el de todo perfil guardado antes
+    ///     de que este campo existiera): se activa cuando no queda ningún
+    ///     objetivo activo con fecha futura. No hay evento al que periodizar,
+    ///     así que no hay periodización que hacer — y eso es una descripción
+    ///     de la realidad, no una preferencia.
+    ///
+    /// El brief pedía exactamente esas dos vías ("cuando no hay eventos
+    /// próximos, o el usuario elige explícitamente el modo") y no hace falta
+    /// UI nueva para la segunda.
+    static func isWellnessMode(profile: AthletePlanProfile, on date: Date) -> Bool {
+        if let explicit = profile.wellnessMode { return explicit }
+        return upcomingEvents(for: profile, on: date).isEmpty
+    }
+
+    /// El bloque de un plan sin evento. Reutiliza TrainingBlock tal cual —
+    /// no hay un segundo tipo de plan— y se distingue sólo por su fase.
+    ///
+    /// Tres decisiones, cada una con su motivo:
+    ///
+    ///  · `qualitySessions: 0...1`, no `1...2` como cualquier bloque con una
+    ///    fecha detrás — y tampoco `0...0`. Un pico de calidad existe para
+    ///    acercar el rendimiento a una demanda concreta y sin evento no hay
+    ///    demanda, así que la cuota baja al mínimo; pero ponerla a cero
+    ///    sería optimizar la métrica equivocada en el modo que se llama
+    ///    longevidad: la capacidad aeróbica máxima es uno de los marcadores
+    ///    que más consistentemente se asocia con mortalidad por cualquier
+    ///    causa, y no se mantiene sólo con Z2. Una sesión semanal, y sólo
+    ///    cuando la carrera es de verdad parte del plan (el gate
+    ///    `goalFocus.running >= 0.35` que status() ya aplica) — que es lo que
+    ///    el brief pide con "sin picos INNECESARIOS", no "sin calidad".
+    ///    Es la misma cuota que `.transition` ya usa, por la misma razón.
+    ///  · Suelo de DOS sesiones aeróbicas en cualquier reparto de objetivos,
+    ///    incluso con foco de fuerza dominante. Es la parte de longevidad:
+    ///    la capacidad aeróbica es el marcador que más consistentemente se
+    ///    asocia con mortalidad por cualquier causa, y un plan de salud que
+    ///    la deje a cero porque el objetivo activo es un press banca estaría
+    ///    optimizando la métrica equivocada.
+    ///  · Ventana RODANTE de ±42 días centrada en hoy, no los 365 días hacia
+    ///    delante de generalBlock. Con una ventana larga, `progress(on:)`
+    ///    daría ~0.08 durante meses y luego subiría el volumen sin que nada
+    ///    lo justificara; con la rodante sale siempre 0.5 y las bandas de
+    ///    `.maintenance` (min == max) hacen que ni siquiera importe. No hay
+    ///    rampa porque no hay nada hacia lo que rampar.
+    ///
+    /// Y lo que NO hace falta añadir: el taper. `blocks(for:)` sólo genera
+    /// fases `.taper` alrededor de una fecha de evento, así que un plan sin
+    /// eventos no puede afinar. La ausencia de taper agresivo sale gratis.
+    static func maintenanceBlock(on date: Date, profile: AthletePlanProfile) -> TrainingBlock {
+        let calendar = Calendar.current
+        let focus = goalFocus(for: profile, on: date)
+        let strengthLeaning = focus.strength >= 0.55
+        return TrainingBlock(
+            name: "Salud y longevidad",
+            phase: .maintenance,
+            start: calendar.startOfDay(for: calendar.date(byAdding: .day, value: -42, to: date) ?? date),
+            end: calendar.startOfDay(for: calendar.date(byAdding: .day, value: 42, to: date) ?? date),
+            objective: "Sostener capacidad aeróbica y fuerza sin un evento al que periodizar: volumen fácil constante, fuerza de mantenimiento, y recuperación en cuanto las señales la pidan.",
+            runningSessions: strengthLeaning ? 2...3 : 3...4,
+            strengthSessions: strengthLeaning ? 3...4 : 2...3,
+            qualitySessions: 0...1,
+            emphasis: ["Volumen fácil Z2", "Fuerza de mantenimiento", "Recuperación"]
+        )
     }
 
     static func blocks(for profile: AthletePlanProfile) -> [TrainingBlock] {
@@ -471,13 +564,20 @@ enum TrainingPlanEngine {
     // much weekly volume this discipline should carry, expressed as a
     // dose (minutes) instead of a session count. A structural estimate,
     // same treatment the session-count targets above already got.
-    private static func weeklyDoseCeiling(for phase: TrainingPhase, base: Double, build: Double, taper: Double, transition: Double, race: Double) -> Double {
+    private static func weeklyDoseCeiling(for phase: TrainingPhase, base: Double, build: Double, taper: Double,
+                                          transition: Double, race: Double, maintenance: Double? = nil) -> Double {
         switch phase {
         case .base: return base
         case .buildSpecific: return build
         case .taper: return taper
         case .transition: return transition
         case .race: return race
+        // PR12: por defecto el mismo techo que la transición — volumen
+        // sostenido y no ascendente, que es exactamente lo que las dos fases
+        // tienen en común. Sigue siendo un parámetro propio para que una
+        // dosis que necesite otro número lo diga en su call site en vez de
+        // heredarlo por descuido.
+        case .maintenance: return maintenance ?? transition
         }
     }
 
@@ -1648,6 +1748,13 @@ enum TrainingPlanEngine {
     }
 
     static func activeBlock(on date: Date, profile: AthletePlanProfile) -> TrainingBlock {
+        // PR12: antes de mirar la periodización, porque en modo wellness no
+        // hay periodización que mirar. Va aquí y no dentro de blocks(for:)
+        // para que blocks(for:) siga pudiendo reconstruir los bloques
+        // históricos de un evento ya pasado (es lo que hace que activeBlock
+        // funcione para una fecha anterior), mientras el bloque de HOY sí
+        // responde al modo.
+        if isWellnessMode(profile: profile, on: date) { return maintenanceBlock(on: date, profile: profile) }
         let blocks = blocks(for: profile)
         if let exact = blocks.first(where: { date >= $0.start && date < Calendar.current.date(byAdding: .day, value: 1, to: $0.end)! }) { return exact }
         if date < blocks[0].start { return blocks[0] }
@@ -1686,7 +1793,12 @@ enum TrainingPlanEngine {
             : "Carrera suave 35–55 min · principalmente Z2 · termina con sensación de poder continuar."
         case .qualityRun:
             if deload { return "Descarga: sustituye la calidad por 25–40 min suaves y 3–4 progresivos breves, sin acumular tiempo en Z4–Z5." }
-            return block.name.contains("Afinamiento") ? "Sesión corta de ritmo: 10–15 min suaves + 3–5 bloques controlados + vuelta a la calma." : "Calidad controlada: calentamiento + intervalos o cuestas con recuperación completa; evita convertirla en un test."
+            // PR12: `block.phase == .taper`, no `block.name.contains("Afinamiento")`.
+            // Mismo problema que PR8 arregló en la decisión de sesión, aquí en
+            // la prescripción: el nombre del bloque es texto para la UI
+            // ("Afinamiento · Media maratón") y depende de que la redacción no
+            // cambie nunca; la fase es el dato.
+            return block.phase == .taper ? "Sesión corta de ritmo: 10–15 min suaves + 3–5 bloques controlados + vuelta a la calma." : "Calidad controlada: calentamiento + intervalos o cuestas con recuperación completa; evita convertirla en un test."
         case .longRun: return deload
             ? "Tirada reducida 45–65 min · Z2 cómoda · sin ampliar distancia aunque las sensaciones sean buenas."
             : "Tirada larga cómoda · aumenta duración solo si la carga de las últimas semanas lo permite · mayoritariamente Z2."

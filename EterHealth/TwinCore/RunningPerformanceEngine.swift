@@ -99,6 +99,13 @@ enum RunningPerformanceEngine {
         case .taper: return 10...28
         case .transition: return 15...38
         case .base, .buildSpecific, .race: return 12...32
+        // PR12: sin evento, la distribución objetivo es más polarizada hacia
+        // lo fácil que en cualquier fase con fecha detrás — no hay una
+        // demanda específica que justifique tiempo en zonas altas. El techo
+        // baja al de afinamiento; el suelo no es 0 porque algo de intensidad
+        // sigue siendo parte de la salud cardiorrespiratoria, no del pico de
+        // rendimiento.
+        case .maintenance: return 8...20
         }
     }
 
@@ -194,6 +201,9 @@ enum RunningPerformanceEngine {
         case .taper: phaseFactor = 0.72
         case .transition: phaseFactor = 0.88
         case .base, .buildSpecific: phaseFactor = 1.05
+        // Volumen sostenido: ni por encima del habitual (como .base, que
+        // construye) ni recortado (como .taper, que afina).
+        case .maintenance: phaseFactor = 1.00
         }
         var midpoint = max(Double(max(1, targetRuns)) * recentAverage, baseline) * phaseFactor
         if baseline > 0 && phaseFactor >= 1 { midpoint = min(midpoint, baseline * 1.10) }

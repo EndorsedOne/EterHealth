@@ -40,6 +40,26 @@ struct GoalEditorView: View {
                 } footer: {
                     Text("También puedes cambiarlo directamente desde la tarjeta \"Tres futuros, 8 semanas\" en Rendimiento. Decide cuánto margen dejas bajo tu propio límite de sobrecarga antes de que el plan te pida descansar hoy.")
                 }
+                // PR12: los tres estados reales del modo wellness, sin UI
+                // nueva más allá de un picker. "Automático" es el valor de
+                // cualquier perfil guardado antes de que el campo existiera,
+                // y también el correcto: si no queda ningún objetivo con
+                // fecha futura, no hay evento al que periodizar, y el plan lo
+                // sabe sin que nadie tenga que decírselo.
+                Section {
+                    Picker("Modo salud y longevidad", selection: Binding(
+                        get: { WellnessModeSetting(draft.wellnessMode) },
+                        set: { draft.wellnessMode = $0.flag }
+                    )) {
+                        ForEach(WellnessModeSetting.allCases) { setting in Text(setting.label).tag(setting) }
+                    }.pickerStyle(.segmented)
+                    Text(WellnessModeSetting(draft.wellnessMode).explanation(active: TrainingPlanEngine.isWellnessMode(profile: draft, on: Date())))
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: {
+                    Text("Salud y longevidad")
+                } footer: {
+                    Text("Un plan que no está anclado a ninguna competición: volumen fácil constante, 2–3 sesiones de fuerza de mantenimiento, la calidad reducida al mínimo que sostiene la capacidad aeróbica máxima, y recuperación en cuanto las señales la pidan. Sin afinamiento, porque no hay nada para lo que afinar.")
+                }
                 Section {
                     TextField("FC máxima", value: $draft.maximumHeartRate, format: .number)
                         .keyboardType(.numberPad)
@@ -228,6 +248,52 @@ private struct GoalDetailEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancelar") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Guardar") { onSave(goal); dismiss() }.bold().disabled(goal.title.trimmingCharacters(in: .whitespaces).isEmpty) }
             }
+        }
+    }
+}
+
+// Los tres estados de AthletePlanProfile.wellnessMode como un tipo con
+// nombre, para que el picker no tenga que representar `Bool?` con dos
+// controles ni con una convención implícita. Vive junto a la vista y no en
+// el perfil porque es exactamente eso: la forma de editarlo, no el dato.
+enum WellnessModeSetting: String, CaseIterable, Identifiable {
+    case automatic, on, off
+    var id: String { rawValue }
+
+    init(_ flag: Bool?) {
+        switch flag {
+        case nil: self = .automatic
+        case .some(true): self = .on
+        case .some(false): self = .off
+        }
+    }
+
+    var flag: Bool? {
+        switch self {
+        case .automatic: return nil
+        case .on: return true
+        case .off: return false
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .automatic: return "Automático"
+        case .on: return "Activado"
+        case .off: return "Desactivado"
+        }
+    }
+
+    func explanation(active: Bool) -> String {
+        switch self {
+        case .automatic:
+            return active
+                ? "Activo ahora: no queda ningún objetivo con fecha futura, así que no hay evento al que periodizar. Añade uno y el plan volverá solo a su periodización."
+                : "Inactivo ahora: hay al menos un objetivo con fecha futura y el plan está periodizando hacia él."
+        case .on:
+            return "Forzado. El plan ignora las fechas del calendario y no afina para ninguna de ellas."
+        case .off:
+            return "Forzado. Sin eventos con fecha, el plan usa su bloque de desarrollo híbrido de siempre en vez del de mantenimiento."
         }
     }
 }

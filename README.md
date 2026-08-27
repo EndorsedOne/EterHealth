@@ -131,11 +131,16 @@ fecha). Para el primer evento:
 | `Construcción específica` | `.buildSpecific` | D-42 → D-14 |
 | `Afinamiento · <evento>` | `.taper` | D-13 → D-1 |
 | `<evento>` | `.race` | el día |
+| `Salud y longevidad` | `.maintenance` | sin evento: ventana rodante ±42 días |
 
 Cada evento posterior añade `Transición a <evento>` (`.transition`),
-afinamiento y día de carrera. **Sin ningún evento con fecha** se usa
-`generalBlock` → `Desarrollo híbrido`, fase `.base`, con los rangos de
-sesiones repartidos según `goalFocus`.
+afinamiento y día de carrera.
+
+**Sin ningún objetivo activo con fecha futura**, `activeBlock` devuelve el
+bloque de mantenimiento (`.maintenance`) — ver
+[3.6 Modo salud y longevidad](#36-modo-salud-y-longevidad). Con el modo
+desactivado a mano se usa `generalBlock` → `Desarrollo híbrido`, fase
+`.base`, con los rangos de sesiones repartidos según `goalFocus`.
 
 Cada `TrainingBlock` lleva `runningSessions`/`strengthSessions`/
 `qualitySessions` como rangos, y `progress(on:)` — 0 el primer día del
@@ -315,6 +320,46 @@ la propia sesión más larga reciente del atleta **más** la tasa de
 crecimiento semanal de su `ProgressionPace` (4 % / 9 % / 15 %). Cuando eso
 ha ocurrido, el `note` de la sesión lo dice.
 
+### 3.6 Modo salud y longevidad
+
+Un plan que no está anclado a ninguna competición. `TrainingPlanEngine`
+`.isWellnessMode(profile:on:)` resuelve tres estados de
+`AthletePlanProfile.wellnessMode`:
+
+| Valor | Comportamiento |
+|---|---|
+| `nil` (automático, y el de todo perfil guardado antes) | activo si no queda ningún objetivo activo con fecha futura |
+| `true` | activo aunque haya eventos en el calendario |
+| `false` | inactivo aunque no haya ninguno — vía de escape al `Desarrollo híbrido` de siempre |
+
+Editable desde **Objetivos → Salud y longevidad** (un picker de tres
+posiciones, nada más).
+
+`maintenanceBlock` reutiliza `TrainingBlock` tal cual; lo único que lo
+distingue es su fase. Las tres decisiones que la definen:
+
+- **Sin rampa.** Todas las bandas de duración de `.maintenance` tienen
+  `min == max` (tirada larga 50 min, rodaje 30, natación 30, bici 55), y el
+  bloque usa una ventana **rodante** de ±42 días centrada en hoy, así que
+  `progress(on:)` sale siempre 0.5. Sin evento no hay nada hacia lo que
+  rampar, y una ventana larga habría dejado `progress` ≈ 0.08 durante meses
+  para luego subir el volumen sin justificación. Las notas de las sesiones lo
+  dicen en vez de prometer una progresión que no existe.
+- **Calidad al mínimo, no a cero** (`0...1`, la misma cuota que
+  `.transition`). Un pico de intensidad existe para acercar el rendimiento a
+  una demanda concreta y aquí no hay demanda; pero ponerla a cero optimizaría
+  la métrica equivocada en el modo que se llama longevidad — la capacidad
+  aeróbica máxima no se mantiene sólo con Z2. Sigue sujeta al gate
+  `goalFocus.running >= 0.35` que `status` ya aplica.
+- **Suelo aeróbico de 2 sesiones** en cualquier reparto de objetivos, incluso
+  con foco de fuerza dominante (que sube la fuerza a 3–4 y baja la carrera a
+  2–3). Fuerza 2–3 en el reparto normal.
+
+**Sin taper, gratis**: `blocks(for:)` sólo genera fases `.taper` alrededor de
+una fecha de evento, así que un plan sin eventos no puede afinar. Y
+**recuperación prioritaria** tampoco necesita nada nuevo: los nueve gates de
+`status` siguen por encima del bloque, sea el que sea.
+
 ---
 
 ## 4. Dependencias de datos
@@ -362,7 +407,7 @@ espejada en HealthKit se cuenta una sola vez.
 `AthletePlanProfile`: objetivos y fechas, `gymAvailable`,
 `trainingDaysPerWeek`, `preferredLongRunWeekday`, `maximumHeartRate`,
 `birthDate`, `manualHeartRateZones` (test de lactato — manda sobre la
-estimación), `progressionPace`. Además: check-in diario, lesiones activas
+estimación), `progressionPace`, `wellnessMode`. Además: check-in diario, lesiones activas
 con restricciones, factores de estilo de vida, y reviews de sesión (RPE
 real), que es lo que permite clasificar calidad por evidencia en vez de por
 kcal/min.

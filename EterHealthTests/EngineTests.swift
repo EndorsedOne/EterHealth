@@ -5543,6 +5543,156 @@ final class EngineTests: XCTestCase {
                        "Recuperación compatible")
     }
 
+
+    // MARK: - PR12: modo salud y longevidad (sin evento al que periodizar)
+
+    private func wellnessProfile(wellnessMode: Bool? = nil, strengthLeaning: Bool = false) -> AthletePlanProfile {
+        var profile = AthletePlanProfile.angelDefault
+        profile.wellnessMode = wellnessMode
+        profile.goals = strengthLeaning
+            ? [TrainingGoal(id: UUID(), kind: .hypertrophy, title: "Hipertrofia", date: nil, targetValue: nil, unit: "", priority: .primary, isActive: true)]
+            : [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón", date: nil, targetValue: nil, unit: "min", priority: .primary, isActive: true),
+               TrainingGoal(id: UUID(), kind: .benchPress, title: "Banca", date: nil, targetValue: 100, unit: "kg", priority: .maintenance, isActive: true)]
+        return profile
+    }
+
+    func testWellnessModeTurnsItselfOnOnlyWhenNoDatedGoalIsStillAhead() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        // Sin ningún objetivo con fecha futura: automático → activado.
+        XCTAssertTrue(TrainingPlanEngine.isWellnessMode(profile: wellnessProfile(), on: now))
+        // Con un evento por delante: automático → desactivado.
+        var withEvent = wellnessProfile()
+        withEvent.goals.append(TrainingGoal(id: UUID(), kind: .hyrox, title: "HYROX", date: now.addingTimeInterval(40 * 86_400),
+                                            targetValue: nil, unit: "min", priority: .primary, isActive: true))
+        XCTAssertFalse(TrainingPlanEngine.isWellnessMode(profile: withEvent, on: now))
+        // Un evento YA PASADO no sostiene una periodización: sigue activo.
+        var pastEvent = wellnessProfile()
+        pastEvent.goals.append(TrainingGoal(id: UUID(), kind: .hyrox, title: "HYROX de hace un mes",
+                                            date: now.addingTimeInterval(-30 * 86_400),
+                                            targetValue: nil, unit: "min", priority: .primary, isActive: true))
+        XCTAssertTrue(TrainingPlanEngine.isWellnessMode(profile: pastEvent, on: now))
+        // Un objetivo con fecha futura pero INACTIVO tampoco.
+        var inactive = wellnessProfile()
+        inactive.goals.append(TrainingGoal(id: UUID(), kind: .hyrox, title: "HYROX archivado", date: now.addingTimeInterval(40 * 86_400),
+                                           targetValue: nil, unit: "min", priority: .primary, isActive: false))
+        XCTAssertTrue(TrainingPlanEngine.isWellnessMode(profile: inactive, on: now))
+        // El flag explícito manda en los DOS sentidos, que es lo que lo hace
+        // una vía de escape y no sólo un acelerador.
+        XCTAssertTrue(TrainingPlanEngine.isWellnessMode(profile: {
+            var p = withEvent; p.wellnessMode = true; return p
+        }(), on: now), "Activado a mano debe ganar aunque haya un evento en el calendario.")
+        XCTAssertFalse(TrainingPlanEngine.isWellnessMode(profile: wellnessProfile(wellnessMode: false), on: now),
+                       "Desactivado a mano debe ganar aunque no haya ningún evento.")
+        // El perfil real por defecto (con media maratón y HYROX con fecha) no
+        // entra en modo wellness por accidente en una fecha anterior a ellos.
+        let beforeEvents = Calendar.current.date(from: DateComponents(year: 2026, month: 8, day: 1))!
+        XCTAssertFalse(TrainingPlanEngine.isWellnessMode(profile: AthletePlanProfile.angelDefault, on: beforeEvents))
+    }
+
+    func testMaintenanceBlockHasNoRampNoTaperAndMinimumQuality() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let profile = wellnessProfile()
+        let block = TrainingPlanEngine.activeBlock(on: now, profile: profile)
+        XCTAssertEqual(block.phase, .maintenance)
+        XCTAssertEqual(block.name, "Salud y longevidad")
+        // Ventana rodante centrada en hoy: progress siempre en el medio, así
+        // que ninguna banda "avanza" con el calendario.
+        XCTAssertEqual(block.progress(on: now), 0.5, accuracy: 0.02)
+        // La calidad baja al mínimo (0...1), no a cero: la capacidad aeróbica
+        // máxima no se mantiene sólo con Z2, y este es el modo longevidad.
+        XCTAssertEqual(block.qualitySessions, 0...1)
+        // 2–3 sesiones de fuerza y volumen aeróbico consistente, que es lo
+        // que el brief pide literalmente.
+        XCTAssertEqual(block.strengthSessions, 2...3)
+        XCTAssertEqual(block.runningSessions, 3...4)
+        // Y un suelo aeróbico incluso con foco de fuerza dominante: un plan
+        // de salud no puede dejar la capacidad aeróbica a cero porque el
+        // objetivo activo sea hipertrofia.
+        let strengthBlock = TrainingPlanEngine.activeBlock(on: now, profile: wellnessProfile(strengthLeaning: true))
+        XCTAssertEqual(strengthBlock.phase, .maintenance)
+        XCTAssertGreaterThanOrEqual(strengthBlock.runningSessions.lowerBound, 2)
+        XCTAssertEqual(strengthBlock.strengthSessions, 3...4)
+        // Sin taper: blocks(for:) sólo genera .taper alrededor de una fecha,
+        // así que un plan sin eventos no puede afinar. Se comprueba sobre la
+        // semana entera, no sólo sobre hoy.
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil,
+                                                context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                                                     calibration: neutralCalibration, personalAnchor: neutralAnchor),
+                                                now: now)
+        XCTAssertFalse(week.isEmpty)
+        XCTAssertFalse(week.contains { $0.kind == .raceDay }, "Sin evento no puede haber día de competición.")
+    }
+
+    func testMaintenancePhaseBandsAreFlatSoVolumeNeverRampsWithoutAnEvent() {
+        // La invariante de la fase: min == max en todas las bandas de
+        // duración. Es lo que hace que `progress` deje de importar, y por
+        // tanto que no haya rampa que justificar sin un evento detrás.
+        for band in [WorkoutPlanner.longRunBand(phase: .maintenance),
+                     WorkoutPlanner.easyRunBand(phase: .maintenance),
+                     WorkoutPlanner.swimBand(phase: .maintenance),
+                     WorkoutPlanner.bikeBand(phase: .maintenance)] {
+            XCTAssertEqual(band.min, band.max, accuracy: 0.001)
+        }
+        // Y siguen siendo volumen real, no un mínimo simbólico.
+        XCTAssertGreaterThanOrEqual(WorkoutPlanner.longRunBand(phase: .maintenance).min, 40)
+        XCTAssertGreaterThanOrEqual(WorkoutPlanner.easyRunBand(phase: .maintenance).min, 25)
+    }
+
+    func testMaintenanceProposalsDontClaimVolumeIsRampingWhenItIsNot() {
+        // "el volumen sube progresivamente dentro de esta fase" sería
+        // literalmente falso en un bloque sin rampa, y el "% del bloque" no
+        // significa nada en una ventana rodante centrada en hoy.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let profile = wellnessProfile()
+        let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let block = TrainingPlanEngine.activeBlock(on: now, profile: profile)
+        for kind: PlannedSessionKind in [.easyRun, .longRun] {
+            let workout = WorkoutPlanner.proposal(for: kind, pattern: nil, upperBodyOnlyToday: false,
+                                                  block: block, isDeload: false, readiness: 80, rationale: "Fixture",
+                                                  muscles: muscles(legs: 85), health: HealthStore(), imports: ImportStore(),
+                                                  context: context, now: now)
+            XCTAssertFalse(workout.note.contains("sube progresivamente"),
+                           "\(kind.rawValue) no puede prometer una rampa que la fase no tiene: \(workout.note)")
+            XCTAssertFalse(workout.note.contains("% del bloque"),
+                           "\(kind.rawValue) no puede citar un % de bloque de una ventana rodante: \(workout.note)")
+            XCTAssertTrue(workout.note.contains("sostenido") || workout.note.contains("mantenimiento"),
+                          "\(kind.rawValue) debe decir que el volumen es estable a propósito: \(workout.note)")
+        }
+    }
+
+    func testWellnessModeStillPrioritisesRecoveryWhenTheSignalsSaySo() {
+        // "Recuperación prioritaria cuando las señales lo indiquen" no
+        // necesita nada nuevo: los mismos overrides duros de status() siguen
+        // por encima del bloque, sea el que sea. Este test lo fija para que
+        // un cambio futuro en el modo no los pueda saltar.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let context = TwinContext(profile: wellnessProfile(), events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let ill = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 90,
+                                           muscles: muscles(legs: 95),
+                                           checkIn: {
+                                               var checkIn = DailyCheckIn.empty(for: now)
+                                               checkIn.illness = true
+                                               return checkIn
+                                           }(),
+                                           context: context, now: now)
+        XCTAssertEqual(ill.nextSession, .recovery)
+        XCTAssertEqual(ill.block.phase, .maintenance, "Sigue siendo el bloque de mantenimiento; lo que manda es la señal.")
+        let lowReadiness = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 38,
+                                                    muscles: muscles(legs: 95), checkIn: nil, context: context, now: now)
+        XCTAssertEqual(lowReadiness.nextSession, .recovery)
+    }
+
+    func testWellnessModeSettingRoundTripsTheThreeStates() {
+        for setting in WellnessModeSetting.allCases {
+            XCTAssertEqual(WellnessModeSetting(setting.flag), setting)
+        }
+        XCTAssertNil(WellnessModeSetting.automatic.flag)
+        XCTAssertEqual(WellnessModeSetting.on.flag, true)
+        XCTAssertEqual(WellnessModeSetting.off.flag, false)
+    }
+
     private func muscles(legs readiness: Int) -> [MuscleReadiness] {
         ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].map {
             MuscleReadiness(name: $0, readiness: readiness, lastTrained: nil, recentSets: 0)

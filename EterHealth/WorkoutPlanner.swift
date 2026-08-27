@@ -229,7 +229,14 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Calentamiento", prescription: "8–10 min · Z1\(upTo(zones?.z1z2))", cue: "Empieza realmente cómodo"),
                 ProposedExercise(name: "Carrera continua", prescription: deload ? "\(minutes) min · Z1–Z2\(upTo(zones?.z2z3))" : "\(minutes) min · Z2\(zoneRange(zones?.z1z2, zones?.z2z3))", cue: "Ritmo conversacional y estable"),
                 ProposedExercise(name: "Vuelta a la calma", prescription: "5 min suave", cue: "No necesitas terminar fuerte")
-            ], note: (deload ? "Descarga activa: no prolongues la sesión aunque las sensaciones sean buenas." : "La zona cardíaca manda más que el ritmo cuando hace calor, hay desnivel o acumulas fatiga. Semana \(Int((progress * 100).rounded()))% de \(block.name.lowercased()): el volumen sube progresivamente dentro de esta fase.") + goalTimelineNote(profile: profile),
+            // PR12: en `.maintenance` la frase "el volumen sube
+            // progresivamente dentro de esta fase" sería falsa — es
+            // exactamente lo que esa fase no hace. Y el "% del bloque" no
+            // significa nada en una ventana rodante centrada en hoy.
+            ], note: (deload ? "Descarga activa: no prolongues la sesión aunque las sensaciones sean buenas."
+                : block.phase == .maintenance
+                ? "La zona cardíaca manda más que el ritmo cuando hace calor, hay desnivel o acumulas fatiga. Volumen sostenido a propósito: sin un evento en el calendario no hay nada hacia lo que progresar, y la consistencia aporta más que una rampa."
+                : "La zona cardíaca manda más que el ritmo cuando hace calor, hay desnivel o acumulas fatiga. Semana \(Int((progress * 100).rounded()))% de \(block.name.lowercased()): el volumen sube progresivamente dentro de esta fase.") + goalTimelineNote(profile: profile),
             kind: .easyRun)
 
         case .qualityRun:
@@ -270,7 +277,10 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Inicio", prescription: "10–15 min muy suaves", cue: "No persigas ritmo"),
                 ProposedExercise(name: "Bloque continuo", prescription: "\(minutes) min · Z2" + zoneRange(zones?.z1z2, zones?.z2z3), cue: "Respiración controlada y combustible si procede"),
                 ProposedExercise(name: "Final", prescription: "5–10 min cómodos", cue: "Sin progresión si las piernas se deterioran")
-            ], note: (deload ? "La reducción es deliberada: esta semana buscamos asimilar, no progresar distancia." : "Objetivo de esta fase (\(block.name.lowercased())): progresar hacia \(Int(personalizedCeiling)) min según avance el bloque — hoy toca ≈\(minutes) min (\(Int((progress * 100).rounded()))% del bloque). No aumentes bruscamente por una sola recomendación.\(progressionNote)") + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes) + 20, profile: profile),
+            ], note: (deload ? "La reducción es deliberada: esta semana buscamos asimilar, no progresar distancia."
+                : block.phase == .maintenance
+                ? "Tirada larga de mantenimiento: ≈\(minutes) min estables, sin progresión. Sin evento al que periodizar, el tiempo en pie constante es el estímulo de salud aeróbica; una rampa sólo añadiría fatiga sin nada que la justifique."
+                : "Objetivo de esta fase (\(block.name.lowercased())): progresar hacia \(Int(personalizedCeiling)) min según avance el bloque — hoy toca ≈\(minutes) min (\(Int((progress * 100).rounded()))% del bloque). No aumentes bruscamente por una sola recomendación.\(progressionNote)") + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes) + 20, profile: profile),
             kind: .longRun)
 
         case .swim:
@@ -442,6 +452,10 @@ enum WorkoutPlanner {
         case .taper: band = (25, 40)
         case .transition: band = (30, 50)
         case .race: band = (20, 20)
+        // PR12: min == max. Sin evento no hay rampa que hacer, y una tirada
+        // larga estable de ~50 min es volumen aeróbico de salud, no una
+        // progresión hacia una distancia objetivo que no existe.
+        case .maintenance: band = (50, 50)
         }
         return (band.min * scale, band.max * scale)
     }
@@ -458,6 +472,7 @@ enum WorkoutPlanner {
         case .taper: band = (15, 25)
         case .transition: band = (20, 30)
         case .race: band = (15, 15)
+        case .maintenance: band = (30, 30)
         }
         return (band.min * scale, band.max * scale)
     }
@@ -483,6 +498,7 @@ enum WorkoutPlanner {
         case .taper: band = (15, 25)
         case .transition: band = (20, 30)
         case .race: band = (15, 15)
+        case .maintenance: band = (30, 30)
         }
         return (band.min * scale, band.max * scale)
     }
@@ -496,6 +512,7 @@ enum WorkoutPlanner {
         case .taper: band = (30, 50)
         case .transition: band = (40, 60)
         case .race: band = (30, 30)
+        case .maintenance: band = (55, 55)
         }
         return (band.min * scale, band.max * scale)
     }
@@ -807,7 +824,11 @@ enum WorkoutPlanner {
             template = Template(meters: 1000, minReps: 4, maxReps: 6, paceOffsetSeconds: 12, recovery: "2 min trote suave", paceLabel: "ritmo umbral (tu referencia +12 s/km)")
         case .taper:
             template = Template(meters: 300, minReps: 3, maxReps: 4, paceOffsetSeconds: -5, recovery: "recuperación completa", paceLabel: "tu ritmo de referencia, algo más rápido")
-        case .transition, .race:
+        case .transition, .race, .maintenance:
+            // En .maintenance la cuota de calidad es 0, así que este caso no
+            // debería alcanzarse por el plan; existe porque el compilador lo
+            // exige y porque un intervalo pedido a mano en modo wellness debe
+            // ser el moderado, no el específico de un bloque de construcción.
             template = Template(meters: 600, minReps: 4, maxReps: 5, paceOffsetSeconds: 5, recovery: "2 min trote suave", paceLabel: "tu ritmo de referencia")
         }
         let reps = Int(ramp(Double(template.minReps), Double(template.maxReps), progress).rounded())
@@ -868,6 +889,9 @@ enum WorkoutPlanner {
         case .taper: return (0.5, 0.65)
         case .transition: return (0.55, 0.75)
         case .race: return (0.4, 0.4)
+        // Sin un HYROX en el calendario no hay volumen de estaciones al que
+        // acercarse: sólo el mínimo que mantiene el patrón.
+        case .maintenance: return (0.5, 0.5)
         }
     }
 
@@ -936,7 +960,7 @@ enum WorkoutPlanner {
         case .taper:
             mainSet = "4–6 × 100 m rápidos y cortos con descanso completo"
             cue = "Activación, no fatiga — llegar fresco importa más que sumar metros"
-        case .transition, .race:
+        case .transition, .race, .maintenance:
             mainSet = "6–8 × 150 m a ritmo moderado"
             cue = "Recupera el patrón sin buscar velocidad máxima"
         }
@@ -981,7 +1005,7 @@ enum WorkoutPlanner {
         case .taper:
             mainSet = "3–4 × 5 min a ritmo objetivo con recuperación completa"
             cue = "Activación, no fatiga — las piernas deben llegar frescas"
-        case .transition, .race:
+        case .transition, .race, .maintenance:
             mainSet = "\(max(10, minutes - 10)) min continuos · Z2\(zoneRange)"
             cue = "Recupera el patrón sin buscar potencia"
         }
@@ -1013,7 +1037,7 @@ enum WorkoutPlanner {
         case .base: bikeBand = (20, 30)
         case .buildSpecific: bikeBand = (30, 45)
         case .taper: bikeBand = (15, 25)
-        case .transition: bikeBand = (20, 30)
+        case .transition, .maintenance: bikeBand = (20, 30)
         case .race: bikeBand = (15, 15)
         }
         let bikeMinutes = deload ? Int((bikeBand.min * 0.7).rounded(to: 5)) : Int(ramp(bikeBand.min, bikeBand.max, progress).rounded(to: 5))
