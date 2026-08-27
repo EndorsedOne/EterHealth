@@ -84,7 +84,7 @@ struct TravelView: View {
                             // Mismo motivo que en TimeZonePickerView: dentro de
                             // un List, el área tappable se declara, no se
                             // hereda del estilo del botón.
-                            CompletedTravelRow(episode: episode)
+                            CompletedTravelRow(episode: episode, now: now, rates: profile.rates)
                                 .contentShape(Rectangle())
                                 .onTapGesture { editor = .existing(episode) }
                                 .swipeActions {
@@ -254,13 +254,13 @@ private struct CurrentTravelCard: View {
     }
 
     private var remainingDescription: String? {
-        if phase == .recovered {
-            // Con qué autoridad se cerró: medido o sólo predicho. Sin esto,
-            // "Recuperado" leía igual en los dos casos.
-            return episode.phaseBasis(at: now, rates: rates) == .measuredStability
-                ? "confirmado por tus señales"
-                : "por duración estimada, sin confirmar"
-        }
+        // Aquí NO se maneja `.recovered`, y no es un olvido: esta tarjeta sólo
+        // recibe lo que devuelve `currentEpisode`, que excluye los recuperados
+        // por diseño — un viaje terminado no es el viaje actual. Una rama para
+        // `.recovered` en este sitio es inalcanzable, y estuvo escrita un PR
+        // entero antes de que la review lo señalara. Con qué autoridad cerró un
+        // viaje se dice donde los recuperados de verdad se muestran: en la fila
+        // del historial (CompletedTravelRow).
         guard let end = episode.currentPhaseEnd(at: now, rates: rates), end > now else { return nil }
         return "hasta " + end.formatted(date: .abbreviated, time: .shortened)
     }
@@ -346,7 +346,10 @@ private struct TravelResponseSection: View {
                 ForEach([true, false], id: \.self) { isAdvance in
                     directionRow(isAdvance: isAdvance)
                 }
-                Divider()
+                // Sin `Divider()`: dentro de un List se renderiza como una FILA
+                // vacía con una rayita a la izquierda, no como un separador.
+                // El List ya separa sus propias filas; lo que hacía falta era
+                // una etiqueta que dijera qué son las de abajo.
                 ForEach(profile.measuredOutcomes) { outcome in
                     OutcomeRow(outcome: outcome)
                 }
@@ -429,6 +432,8 @@ private struct OutcomeRow: View {
 
 private struct CompletedTravelRow: View {
     let episode: TravelEpisode
+    let now: Date
+    let rates: ReentrainmentRates
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -441,7 +446,23 @@ private struct CompletedTravelRow: View {
                 }
             }
             Text(summary).font(.caption).foregroundStyle(.secondary)
+            // Con qué autoridad se cerró este viaje. Es el único sitio de la
+            // app donde un episodio recuperado se muestra, así que es el único
+            // sitio donde esta distinción puede llegar a leerse.
+            Label(closureDescription, systemImage: isConfirmed ? "checkmark.seal" : "questionmark.circle")
+                .font(.caption2)
+                .foregroundStyle(isConfirmed ? .secondary : EterTheme.danger)
         }
+    }
+
+    private var isConfirmed: Bool {
+        episode.phaseBasis(at: now, rates: rates) == .measuredStability
+    }
+
+    private var closureDescription: String {
+        isConfirmed
+            ? "Cerrado con estabilidad confirmada por tus señales."
+            : "Cerrado porque se agotó la duración estimada: nadie confirmó estabilidad, así que este viaje no aporta nada al aprendizaje."
     }
 
     private var summary: String {

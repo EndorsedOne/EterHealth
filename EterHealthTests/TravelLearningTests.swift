@@ -784,4 +784,60 @@ final class TravelLearningTests: XCTestCase {
                                          confounders: .none)),
             "Sin ancla, el horario no puede impedir la estabilidad.")
     }
+
+    // MARK: - PR19: transparencia del cierre, donde se puede leer
+
+    func testCurrentEpisodeNeverReturnsARecoveredOneSoTheCardCannotShowIt() {
+        // La invariante que hacía INALCANZABLE la rama de `.recovered` dentro de
+        // CurrentTravelCard: la tarjeta sólo recibe lo que devuelve
+        // currentEpisode, y currentEpisode excluye los recuperados por diseño.
+        // Se fija aquí para que nadie vuelva a escribir esa rama creyendo que
+        // se muestra.
+        let store = TravelEpisodeStore()
+        for episode in store.episodes { store.delete(id: episode.id) }
+        defer { for episode in store.episodes { store.delete(id: episode.id) } }
+
+        let episode = measuredTokyo(index: 0, destinationDays: 4, homeDays: 2)
+        store.save(episode)
+        let wellAfter = episode.homeArrival!.addingTimeInterval(60 * 86_400)
+        XCTAssertEqual(episode.phase(at: wellAfter), .recovered)
+        XCTAssertNil(store.currentEpisode(at: wellAfter),
+                     "Un viaje terminado no es el viaje actual, así que la tarjeta no puede verlo.")
+        // Y sí aparece en el historial, que es donde la transparencia del
+        // cierre tiene que leerse.
+        XCTAssertEqual(store.completedEpisodes(at: wellAfter).map(\.id), [episode.id])
+    }
+
+    func testEveryEpisodeInTheHistoryHasATerminalClosureBasisToShow() {
+        // La fila del historial siempre tiene algo que decir: para todo
+        // episodio que el store considera completado, phaseBasis devuelve una
+        // base TERMINAL (medida o estimada), nunca .inProgress ni
+        // .notApplicable. Sin esta invariante la fila podría quedarse sin
+        // texto justo en el caso que la review pedía hacer visible.
+        let store = TravelEpisodeStore()
+        for episode in store.episodes { store.delete(id: episode.id) }
+        defer { for episode in store.episodes { store.delete(id: episode.id) } }
+
+        let confirmed = measuredTokyo(index: 0, destinationDays: 4, homeDays: 2)
+        let unconfirmed = measuredTokyo(index: 1, destinationDays: nil, homeDays: nil)
+        store.save(confirmed)
+        store.save(unconfirmed)
+        let wellAfter = unconfirmed.homeArrival!.addingTimeInterval(60 * 86_400)
+
+        let completed = store.completedEpisodes(at: wellAfter)
+        XCTAssertEqual(completed.count, 2)
+        for episode in completed {
+            let basis = episode.phaseBasis(at: wellAfter)
+            XCTAssertTrue([.measuredStability, .estimatedDurationElapsed].contains(basis),
+                          "\(episode.title) cerró con base \(basis), que la fila no sabría explicar.")
+        }
+        // Y las dos bases son distinguibles, que es el punto: uno se confirmó y
+        // el otro sólo agotó la predicción.
+        XCTAssertEqual(confirmed.phaseBasis(at: wellAfter), .measuredStability)
+        XCTAssertEqual(unconfirmed.phaseBasis(at: wellAfter), .estimatedDurationElapsed)
+        // El no confirmado tampoco aporta nada al aprendizaje, que es lo que la
+        // fila dice ahora en voz alta.
+        XCTAssertNil(TravelLearningEngine.outcomes(from: [unconfirmed])
+                        .first { $0.leg == .homeReturn }?.actualDays)
+    }
 }
