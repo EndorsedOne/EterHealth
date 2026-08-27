@@ -1091,7 +1091,14 @@ struct ContentView: View {
         let plan = currentPlan
         let workout = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry(), context: twinContext)
         let strengthIsAllowed = !injuries.active.contains { $0.restrictions.contains(.avoidStrength) }
-        let isCompatibleStrengthProposal = !workout.title.localizedCaseInsensitiveContains("recuperación") &&
+        // PR8: la propuesta dice si es de fuerza (workout.kind), en vez de
+        // deducirse de que su título NO contenga "recuperación" — una
+        // condición que también daba `true` para una natación, un brick o un
+        // protocolo de competición, y que dependía de la redacción exacta del
+        // título. El chequeo de MuscleMap se queda: además de ser de fuerza,
+        // los ejercicios tienen que ser nombres que el mapa reconozca para
+        // poder registrarla como sesión propia.
+        let isCompatibleStrengthProposal = workout.kind == .strength &&
             workout.exercises.contains { !MuscleMap.groups(for: $0.name).isEmpty }
         return VStack(alignment: .leading, spacing: 15) {
             HStack(alignment: .top) {

@@ -332,11 +332,14 @@ enum TwinEngine {
         }
         score = clamp(score, 0, 100)
 
-        let physicalRecommendation = recommendation(score: score, muscles: muscleReadiness, urgentPattern: urgentLiftPattern(imports: imports, profile: profile, now: now))
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: score, muscles: muscleReadiness, checkIn: checkIn,
                                              context: context, physiologicalAlert: physiologicalAlert, now: now)
-        let plannedRecommendation = plan.nextSession == .strength ? physicalRecommendation : plan.nextSession.rawValue
-        let recommendation = safeRecommendation(plannedRecommendation, injuries: activeInjuries)
+        // PR8: el titular sale del plan (kind + patrón ya elegido y ya
+        // compatible con las restricciones activas), no de un segundo
+        // selector de patrón aquí ni de una reescritura por substrings del
+        // texto ya renderizado. Ver TrainingPlanEngine.headline y
+        // InjurySafetyEngine.allows/allowedPatterns.
+        let recommendation = TrainingPlanEngine.headline(for: plan.nextSession, pattern: plan.strengthPattern, readiness: score)
         let state = TwinReadout.label(for: score)
         let explanation = explanation(score: score, signals: signals, muscles: muscleReadiness) + " " + plan.rationale
 
@@ -370,16 +373,6 @@ enum TwinEngine {
         let predictedTomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: anchor, calibration: calibration)
 
         return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert, physiology: physiology, readout: readout, predictedTomorrow: predictedTomorrow)
-    }
-
-    private static func safeRecommendation(_ recommendation: String, injuries: [InjuryRecord]) -> String {
-        let restrictions = Set(injuries.flatMap(\.restrictions))
-        let lower = recommendation.lowercased()
-        if restrictions.contains(.avoidRunning) && (lower.contains("carrera") || lower.contains("tirada") || lower.contains("brick")) { return "Recuperación o trabajo sin impacto" }
-        if restrictions.contains(.avoidStrength) && (lower.contains("empuje") || lower.contains("tirón") || lower.contains("pierna") || lower.contains("fuerza")) { return "Cardio suave compatible o recuperación" }
-        if restrictions.contains(.avoidLowerBody) && (lower.contains("pierna") || lower.contains("carrera") || lower.contains("tirada") || lower.contains("ciclismo") || lower.contains("brick")) { return "Tren superior compatible" }
-        if restrictions.contains(.avoidUpperBody) && (lower.contains("empuje") || lower.contains("tirón") || lower.contains("natación")) { return "Pierna compatible o cardio suave" }
-        return recommendation
     }
 
     private static func calculateMuscles(_ workouts: [ImportedWorkout], healthWorkouts: [HealthWorkout], learnedRecovery: [String: Double], checkIn: DailyCheckIn?, now: Date) -> [MuscleReadiness] {
@@ -422,70 +415,6 @@ enum TwinEngine {
             let subjectivePenalty = [0, 7, 17, 30][max(0, min(3, subjective))]
             return MuscleReadiness(name: muscle, readiness: clamp(Int((100 - fatigue).rounded()) - subjectivePenalty, 0, 100), lastTrained: last, recentSets: recentSets)
         }.sorted { $0.readiness > $1.readiness }
-    }
-
-    // Internal (not private) so EngineTests can exercise the urgent-pattern
-    // override directly, without needing a full status()-driven .strength
-    // decision just to observe the string it produces.
-    static func recommendation(score: Int, muscles: [MuscleReadiness], urgentPattern: String? = nil) -> String {
-        if score < 45 { return "Descanso o actividad suave" }
-        let ready = Dictionary(uniqueKeysWithValues: muscles.map { ($0.name, $0.readiness) })
-        let options: [(String, [String])] = [
-            ("Pierna", ["Cuádriceps", "Glúteos", "Isquios"]),
-            ("Empuje", ["Pecho", "Hombros", "Tríceps"]),
-            ("Tirón", ["Espalda", "Bíceps"])
-        ]
-        let ranked = options.map { option in (option.0, option.1.map { ready[$0] ?? 50 }.reduce(0, +) / option.1.count) }
-        // A named lift with its own tracked goal (bench press, sentadilla)
-        // going genuinely stale (10+ days, computed from its own exercise
-        // history, not "some strength happened") overrides the pure
-        // "pick whichever pattern is currently freshest" rotation below —
-        // otherwise an unrelated pattern can quietly satisfy the generic
-        // strength quota while the actual goal never gets trained, which
-        // is no way to "mantener" (maintain) a 1RM. Still respects the
-        // same >=55 safety bar the rotation itself already requires —
-        // urgency doesn't override a genuinely fatigued muscle group.
-        if let urgentPattern, let urgentReadiness = ranked.first(where: { $0.0 == urgentPattern })?.1, urgentReadiness >= 55 {
-            return score < 62 ? "\(urgentPattern) ligero" : urgentPattern
-        }
-        guard let best = ranked.max(by: { $0.1 < $1.1 }) else { return "Sesión libre moderada" }
-        if best.1 < 55 { return "Movilidad, cardio suave o descanso" }
-        return score < 62 ? "\(best.0) ligero" : best.0
-    }
-
-    // "Mantenimiento" (the lowest goalFocus weight, by design, so it never
-    // outcompetes a Principal goal for which *category* of session gets
-    // proposed) still needs the specific tracked lift to actually get
-    // trained once a strength session happens — otherwise "mantener 100 kg
-    // de press banca" degrades into "did some upper-body pattern, whichever
-    // was freshest", which the user correctly pointed out can't actually
-    // maintain a specific 1RM. Only overrides which *pattern* gets chosen
-    // within a strength day already decided elsewhere; never invents a
-    // strength day that wasn't otherwise warranted.
-    // Internal (not private) for the same test-seam reason as recommendation above.
-    static func urgentLiftPattern(imports: ImportStore, profile: AthletePlanProfile, now: Date) -> String? {
-        let goals = profile.goals.filter(\.isActive)
-        var candidates: [(pattern: String, daysSince: Double)] = []
-        if goals.contains(where: { $0.kind == .benchPress }) {
-            // "(barbell)" matters: bare "bench press" also matches Incline/
-            // Dumbbell variations that aren't the tracked flat-barbell lift.
-            let days = StrengthProgressEngine.daysSinceLastSession(matchingTerms: ["bench press (barbell)", "press banca"], in: imports.workouts, now: now) ?? 999
-            candidates.append(("Empuje", days))
-        }
-        if goals.contains(where: { $0.kind == .squat }) {
-            let days = StrengthProgressEngine.daysSinceLastSession(matchingTerms: ["squat (barbell)", "sentadilla"], in: imports.workouts, now: now) ?? 999
-            candidates.append(("Pierna", days))
-        }
-        // Deadlift is also a leg/posterior-chain pattern for this rotation's
-        // purposes — recommendation(...)'s options array only has three
-        // buckets (Pierna/Empuje/Tirón), and a deadlift PR needs the same
-        // "Pierna" slot squat does, not a fourth category that doesn't exist.
-        if goals.contains(where: { $0.kind == .deadlift }) {
-            let days = StrengthProgressEngine.daysSinceLastSession(matchingTerms: ["deadlift (barbell)", "peso muerto"], in: imports.workouts, now: now) ?? 999
-            candidates.append(("Pierna", days))
-        }
-        guard let mostOverdue = candidates.max(by: { $0.daysSince < $1.daysSince }), mostOverdue.daysSince >= 10 else { return nil }
-        return mostOverdue.pattern
     }
 
     private static func completedSessionToday(_ workouts: [HealthWorkout], now: Date) -> HealthWorkout? {

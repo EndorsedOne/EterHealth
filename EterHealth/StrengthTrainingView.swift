@@ -477,21 +477,23 @@ struct DayWorkoutProposalView: View {
                                   muscles: assessment.muscles, checkIn: checkIns.entry(), context: context,
                                   physiologicalAlert: assessment.physiologicalAlert)
     }
+    // PR8: el patrón del día sale de plan.strengthPattern, no de buscar
+    // "pierna"/"tirón"/"empuje" dentro del titular ya renderizado. El
+    // `|| recommendation.contains("tiron")` que había aquí es la prueba de
+    // por qué: alguien ya se encontró con que la versión sin tilde no
+    // entraba, y el arreglo fue añadir la otra ortografía en vez de dejar de
+    // parsear texto. Un plan sin patrón (no es día de fuerza, o ninguno es
+    // compatible con las restricciones activas) ya no cae en la rutina de
+    // empuje por omisión: cae en lo que WorkoutPlanner proponga de verdad.
+    private static let routineName: [StrengthPattern: String] = [.legs: "Pierna", .pull: "Pull", .push: "Push"]
+
     private var proposal: StrengthRoutine {
-        let recommendation = assessment.recommendation.lowercased()
         // Imported gym templates are only reused when the athlete has declared
         // gym access. Without it, WorkoutPlanner builds the bodyweight variant
-        // appropriate to the same recommendation and readiness.
-        if goals.profile.gymAvailable {
-            if recommendation.contains("pierna"), let routine = routines.first(where: { $0.name == "Pierna" }) {
-                return StrengthRoutineBuilder.applyingVolumeFactor(InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active), factor: plan.volumeFactor)
-            }
-            if recommendation.contains("tirón") || recommendation.contains("tiron"), let routine = routines.first(where: { $0.name == "Pull" }) {
-                return StrengthRoutineBuilder.applyingVolumeFactor(InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active), factor: plan.volumeFactor)
-            }
-            if recommendation.contains("empuje"), let routine = routines.first(where: { $0.name == "Push" }) {
-                return StrengthRoutineBuilder.applyingVolumeFactor(InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active), factor: plan.volumeFactor)
-            }
+        // appropriate to the same pattern and readiness.
+        if goals.profile.gymAvailable, let pattern = plan.strengthPattern,
+           let name = Self.routineName[pattern], let routine = routines.first(where: { $0.name == name }) {
+            return StrengthRoutineBuilder.applyingVolumeFactor(InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active), factor: plan.volumeFactor)
         }
         let generated = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry(), context: context)
         let routine = StrengthRoutineBuilder.routine(

@@ -1193,7 +1193,7 @@ final class EngineTests: XCTestCase {
     func testLegStrengthLikelyReusesTheStrengthPatternDefinition() {
         let freshLegs = muscles(legs: 85)
         XCTAssertEqual(TrainingPlanEngine.legStrengthLikely(muscles: freshLegs, avoidLegs: false),
-                       TrainingPlanEngine.bestStrengthPattern(freshLegs, avoidLegs: false) == "pierna")
+                       TrainingPlanEngine.bestStrengthPattern(freshLegs, avoidLegs: false) == .legs)
         XCTAssertFalse(TrainingPlanEngine.legStrengthLikely(muscles: freshLegs, avoidLegs: true),
                        "Si la pierna ya está fuera del patrón, no hay día de pierna que proteger.")
     }
@@ -2200,7 +2200,7 @@ final class EngineTests: XCTestCase {
         imports.restore(workouts: [session], labs: [])
         defer { imports.deleteWorkout(id: session.id) }
 
-        let proposed = WorkoutPlanner.gym(for: "Empuje", imports: imports, light: false, muscles: muscles(legs: 80), goals: [])
+        let proposed = WorkoutPlanner.gym(for: .push, imports: imports, light: false, muscles: muscles(legs: 80), goals: [])
         let patterns = proposed.exercises.map { ExerciseCatalog.descriptor(for: $0.name).pattern }
 
         XCTAssertEqual(proposed.exercises.count, 5)
@@ -2491,7 +2491,7 @@ final class EngineTests: XCTestCase {
                                   severity: 2, restrictions: [.avoidRunning], note: "")
         let run = ProposedWorkout(title: "Tirada larga", duration: "75 min", intent: "Resistencia", exercises: [
             ProposedExercise(name: "Carrera continua", prescription: "60 min", cue: "Z2")
-        ], note: "")
+        ], note: "", kind: .longRun)
 
         let safe = InjurySafetyEngine.sanitize(run, injuries: [injury])
 
@@ -2912,7 +2912,7 @@ final class EngineTests: XCTestCase {
             muscle("Espalda", readiness: 85, recentSets: 2), muscle("Bíceps", readiness: 92, recentSets: 1),
             muscle("Core", readiness: 90, recentSets: 0),
         ]
-        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(realMuscles), "tirón",
+        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(realMuscles), .pull,
                        "With real volume respected, tirón (under-dosed all week) must win despite empuje's higher raw readiness.")
 
         // The exact degenerate input weekAhead's old bug used to produce:
@@ -2921,7 +2921,7 @@ final class EngineTests: XCTestCase {
         // recentSets data, not the readiness numbers, that flips the
         // answer above.
         let buggyMuscles = realMuscles.map { MuscleReadiness(name: $0.name, readiness: $0.readiness, lastTrained: nil, recentSets: 0) }
-        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(buggyMuscles), "empuje",
+        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(buggyMuscles), .push,
                        "With recentSets zeroed out (the old bug), readiness alone must win and wrongly pick empuje.")
     }
 
@@ -3393,8 +3393,8 @@ final class EngineTests: XCTestCase {
         // that weekAhead's forward simulation reads real muscle
         // involvement from these exact names for a brand-new athlete with
         // no logged history yet.
-        let pushDay = WorkoutPlanner.gym(for: "Empuje", imports: ImportStore(), light: false, muscles: [], goals: [])
-        let legDay = WorkoutPlanner.gym(for: "Pierna", imports: ImportStore(), light: false, muscles: [], goals: [])
+        let pushDay = WorkoutPlanner.gym(for: .push, imports: ImportStore(), light: false, muscles: [], goals: [])
+        let legDay = WorkoutPlanner.gym(for: .legs, imports: ImportStore(), light: false, muscles: [], goals: [])
         XCTAssertTrue(pushDay.exercises.contains { MuscleMap.groups(for: $0.name).contains("Pecho") },
                       "Expected at least one fallback push exercise to resolve to Pecho, got \(pushDay.exercises.map(\.name)).")
         XCTAssertTrue(legDay.exercises.contains { MuscleMap.groups(for: $0.name).contains("Cuádriceps") },
@@ -4332,13 +4332,18 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(decision.kind, .easyRun)
     }
 
-    func testRecommendationPrefersUrgentLiftPatternWhenItsOwnMuscleGroupIsFresh() {
+    // PR8: el override de lift trackeado vencido vivía en
+    // TwinEngine.recommendation, que era un SEGUNDO selector de patrón (el
+    // que se mostraba) corriendo en paralelo al que decidía la sesión real.
+    // Ahora hay uno solo, TrainingPlanEngine.strengthPattern, y estos dos
+    // tests fijan exactamente el mismo comportamiento sobre él.
+    func testStrengthPatternPrefersUrgentLiftPatternWhenItsOwnMuscleGroupIsFresh() {
         let muscles = ["Cuádriceps", "Glúteos", "Isquios", "Pecho", "Espalda", "Hombros", "Bíceps", "Tríceps", "Core", "Gemelos"]
             .map { MuscleReadiness(name: $0, readiness: 90, lastTrained: nil, recentSets: 0) }
-        XCTAssertEqual(TwinEngine.recommendation(score: 75, muscles: muscles, urgentPattern: "Empuje"), "Empuje")
+        XCTAssertEqual(TrainingPlanEngine.strengthPattern(muscles: muscles, avoidLegs: false, urgentPattern: .push), .push)
     }
 
-    func testRecommendationSafetyCheckDoesNotOverrideWhenUrgentPatternMuscleIsFatigued() {
+    func testStrengthPatternSafetyCheckDoesNotOverrideWhenUrgentPatternMuscleIsFatigued() {
         // The urgent tracked-lift pattern must never win over a genuinely
         // fatigued muscle group — urgency is about not letting an unrelated
         // pattern quietly satisfy the quota, not about ignoring readiness.
@@ -4347,9 +4352,7 @@ final class EngineTests: XCTestCase {
                 let readiness = ["Pecho", "Hombros", "Tríceps"].contains(name) ? 40 : 90
                 return MuscleReadiness(name: name, readiness: readiness, lastTrained: nil, recentSets: 0)
             }
-        let result = TwinEngine.recommendation(score: 75, muscles: muscles, urgentPattern: "Empuje")
-        XCTAssertNotEqual(result, "Empuje")
-        XCTAssertNotEqual(result, "Empuje ligero")
+        XCTAssertNotEqual(TrainingPlanEngine.strengthPattern(muscles: muscles, avoidLegs: false, urgentPattern: .push), .push)
     }
 
     func testTrackedLiftMinimumDoseGuaranteesBothMaintenanceLiftsTheirOwnWeeklySlot() {
@@ -4399,7 +4402,7 @@ final class EngineTests: XCTestCase {
                                     muscleSets: ["Pecho": 4])
         imports.restore(workouts: [recent, older], labs: [])
 
-        let workout = WorkoutPlanner.gym(for: "Empuje", imports: imports, light: false, muscles: [], goals: [])
+        let workout = WorkoutPlanner.gym(for: .push, imports: imports, light: false, muscles: [], goals: [])
         XCTAssertEqual(workout.exercises.first?.name, "Bench Press (Barbell)",
                        "The tracked lift must be pinned first, not displaced by a more recently trained equivalent variation.")
     }
@@ -5119,6 +5122,221 @@ final class EngineTests: XCTestCase {
                       note: "", purpose: purpose, recordedAt: workout.date)
     }
 
+
+    // MARK: - PR8: la decisión viaja como tipo, no como texto en español
+
+    /// Fixture: los diez PlannedSessionKind existen y cada uno tiene que
+    /// construir SU sesión. Antes esto era imposible de comprobar: la
+    /// cascada de `recommendation.localizedCaseInsensitiveContains(...)`
+    /// terminaba en un `return gym(...)` implícito, así que un kind sin rama
+    /// propia (o uno cuyo titular cambiara de redacción) caía en silencio en
+    /// "sesión de gimnasio genérica" — exactamente cómo un día de HYROX
+    /// acabó siendo un gimnasio cualquiera y un día de competición un brick.
+    private func planBlock(phase: TrainingPhase = .base, now: Date) -> TrainingBlock {
+        TrainingBlock(name: "Base de prueba", phase: phase,
+                      start: now.addingTimeInterval(-30 * 86_400), end: now.addingTimeInterval(30 * 86_400),
+                      objective: "Fixture", runningSessions: 3...5, strengthSessions: 2...3, qualitySessions: 1...2,
+                      emphasis: ["Volumen fácil"])
+    }
+
+    private func proposal(for kind: PlannedSessionKind, pattern: StrengthPattern? = nil,
+                          upperBodyOnly: Bool = false, readiness: Int = 75,
+                          profile: AthletePlanProfile? = nil, now: Date) -> ProposedWorkout {
+        let resolved = profile ?? neutralProfile
+        let context = TwinContext(profile: resolved, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        return WorkoutPlanner.proposal(for: kind, pattern: pattern, upperBodyOnlyToday: upperBodyOnly,
+                                       block: planBlock(now: now), isDeload: false, readiness: readiness,
+                                       rationale: "Fixture", muscles: muscles(legs: 85),
+                                       health: HealthStore(), imports: ImportStore(), context: context, now: now)
+    }
+
+    func testEveryPlannedSessionKindBuildsItsOwnProposalInsteadOfFallingThroughToTheGym() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        // .raceDay y .strength se comprueban aparte: uno necesita un evento
+        // real en el calendario de hoy, el otro un patrón.
+        let expected: [PlannedSessionKind] = [.easyRun, .qualityRun, .longRun, .swim, .bike, .brick, .hybrid, .recovery]
+        for kind in expected {
+            let workout = proposal(for: kind, now: now)
+            XCTAssertEqual(workout.kind, kind,
+                           "\(kind.rawValue) debe construir su propia sesión, no caer en otra rama. Salió: \(workout.title).")
+            XCTAssertFalse(workout.exercises.isEmpty, "\(kind.rawValue) no puede proponer una sesión vacía.")
+        }
+    }
+
+    func testStrengthProposalTrainsThePatternThePlanChoseAndSaysSo() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        // Sin gimnasio: la variante de peso corporal, que es la que el
+        // perfil por defecto (gymAvailable: false) realmente usa.
+        for pattern in StrengthPattern.allCases {
+            let workout = proposal(for: .strength, pattern: pattern, now: now)
+            XCTAssertEqual(workout.kind, .strength)
+            XCTAssertEqual(workout.strengthPattern, pattern,
+                           "La sesión debe declarar el patrón que entrena, no dejar que se deduzca de \"\(workout.title)\".")
+        }
+        // Con gimnasio: los ejercicios tienen que tocar de verdad los
+        // músculos del patrón, no los del patrón por defecto (empuje) al que
+        // caía cualquier titular que no contuviera "pierna" ni "tirón".
+        var gymProfile = neutralProfile
+        gymProfile.gymAvailable = true
+        for pattern in StrengthPattern.allCases {
+            let workout = proposal(for: .strength, pattern: pattern, profile: gymProfile, now: now)
+            XCTAssertEqual(workout.strengthPattern, pattern)
+            let trained = Set(workout.exercises.flatMap { MuscleMap.groups(for: $0.name) })
+            XCTAssertFalse(trained.isDisjoint(with: Set(pattern.muscles)),
+                           "Una sesión de \(pattern.label) debe cargar alguno de \(pattern.muscles); cargó \(trained.sorted()).")
+        }
+    }
+
+    func testStrengthWithoutAPatternFallsBackToRecoveryNotToThePushDefault() {
+        // status() nunca publica .strength sin patrón, pero si alguna vez lo
+        // hiciera, la respuesta honesta es recuperación. La cascada anterior
+        // proponía empuje: era el `else` final de gym(for:).
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let workout = proposal(for: .strength, pattern: nil, now: now)
+        XCTAssertEqual(workout.kind, .recovery)
+    }
+
+    func testUpperBodyOnlyTodayIsAFlagNotAMatchOnTheRationaleText() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let plain = proposal(for: .recovery, upperBodyOnly: false, now: now)
+        let afterPush = proposal(for: .recovery, upperBodyOnly: true, now: now)
+        XCTAssertEqual(plain.title, "Recuperación activa")
+        XCTAssertEqual(afterPush.title, "Después del tren superior")
+        XCTAssertEqual(afterPush.kind, .recovery, "Sigue siendo un día de recuperación: descansar es la opción por defecto.")
+        XCTAssertTrue(afterPush.exercises.contains { $0.name == "Descanso completo" })
+        // El rationale de la rama "la carrera de hoy ya cubre el estímulo
+        // aeróbico... solo fuerza de tren superior con margen" contiene
+        // literalmente "tren superior" y NO es este caso — el match por
+        // substring podía abrir este menú de descanso en un día de fuerza.
+        let strengthDayRationale = "La carrera de hoy ya cubre el estímulo aeróbico. Si quieres una segunda sesión, solo fuerza de tren superior con margen."
+        XCTAssertTrue(strengthDayRationale.localizedCaseInsensitiveContains("tren superior"))
+        let context = TwinContext(profile: neutralProfile, events: [], reviews: [], activeInjuries: [],
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let strengthDay = WorkoutPlanner.proposal(for: .strength, pattern: .push, upperBodyOnlyToday: false,
+                                                  block: planBlock(now: now), isDeload: false, readiness: 75,
+                                                  rationale: strengthDayRationale, muscles: muscles(legs: 85),
+                                                  health: HealthStore(), imports: ImportStore(), context: context, now: now)
+        XCTAssertEqual(strengthDay.kind, .strength,
+                       "Con ese rationale el plan pide ENTRENAR fuerza; el menú de descanso no puede abrirse por el texto.")
+    }
+
+    func testRaceDayProposalSurvivesLowReadinessInsteadOfBecomingActiveRecovery() {
+        // El gate `assessment.score < 45` iba ANTES del caso de competición,
+        // así que con readiness 42–44 (por encima del 42 que manda a status()
+        // a recuperación, por debajo del 45 de WorkoutPlanner) el día de la
+        // carrera devolvía "Recuperación activa" en lugar del protocolo.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        var profile = neutralProfile
+        profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón de prueba", date: now,
+                                      targetValue: nil, unit: "min", priority: .primary, isActive: true)]
+        let workout = proposal(for: .raceDay, readiness: 43, profile: profile, now: now)
+        XCTAssertEqual(workout.kind, .raceDay)
+        XCTAssertTrue(workout.title.localizedCaseInsensitiveContains("competición"))
+        XCTAssertTrue(workout.exercises.contains { $0.name == "Señales para parar" })
+    }
+
+    func testHeadlineComesFromThePlansOwnPatternWithoutASecondSelector() {
+        // TwinEngine.recommendation elegía su propio patrón para el titular,
+        // así que la tarjeta podía decir "Empuje" mientras la sesión
+        // propuesta era de pierna. Ahora el titular ES el patrón del plan.
+        XCTAssertEqual(TrainingPlanEngine.headline(for: .strength, pattern: .pull, readiness: 75), "Tirón")
+        XCTAssertEqual(TrainingPlanEngine.headline(for: .strength, pattern: .pull, readiness: 55), "Tirón ligero")
+        XCTAssertEqual(TrainingPlanEngine.headline(for: .longRun, pattern: nil, readiness: 55), "Tirada larga")
+        // Un kind que no es fuerza nunca se renombra por el patrón, ni
+        // aunque llegara uno por error.
+        XCTAssertEqual(TrainingPlanEngine.headline(for: .recovery, pattern: .legs, readiness: 40), "Recuperación")
+    }
+
+    func testTrainingRestrictionsVetoSessionKindsAsTypesNotAsRewrittenText() {
+        func injury(_ restriction: TrainingRestriction, severity: Int = 2) -> [InjuryRecord] {
+            [InjuryRecord(id: UUID(), area: "Rodilla", startedAt: Date(), resolvedAt: nil,
+                          severity: severity, restrictions: [restriction], note: "")]
+        }
+        let running = injury(.avoidRunning)
+        for kind: PlannedSessionKind in [.easyRun, .qualityRun, .longRun, .brick] {
+            XCTAssertFalse(InjurySafetyEngine.allows(kind, injuries: running), "\(kind.rawValue) con impacto prohibido.")
+        }
+        for kind: PlannedSessionKind in [.strength, .swim, .bike, .recovery, .raceDay] {
+            XCTAssertTrue(InjurySafetyEngine.allows(kind, injuries: running), "\(kind.rawValue) no es carrera.")
+        }
+        // Natación es tren superior dominante; bici es tren inferior.
+        XCTAssertFalse(InjurySafetyEngine.allows(.swim, injuries: injury(.avoidUpperBody)))
+        XCTAssertTrue(InjurySafetyEngine.allows(.bike, injuries: injury(.avoidUpperBody)))
+        XCTAssertFalse(InjurySafetyEngine.allows(.bike, injuries: injury(.avoidLowerBody)))
+        XCTAssertTrue(InjurySafetyEngine.allows(.swim, injuries: injury(.avoidLowerBody)))
+        XCTAssertFalse(InjurySafetyEngine.allows(.strength, injuries: injury(.avoidStrength)))
+        // Recuperación nunca se bloquea: es la alternativa a la que van los
+        // demás, y bloquearla dejaría el día sin ninguna propuesta.
+        for restriction in [TrainingRestriction.avoidRunning, .avoidStrength, .avoidLowerBody, .avoidUpperBody] {
+            XCTAssertTrue(InjurySafetyEngine.allows(.recovery, injuries: injury(restriction)))
+        }
+    }
+
+    func testTrainingRestrictionsVetoStrengthPatternsAndLeaveTheCompatibleOnes() {
+        func injury(_ restriction: TrainingRestriction) -> [InjuryRecord] {
+            [InjuryRecord(id: UUID(), area: "Hombro", startedAt: Date(), resolvedAt: nil,
+                          severity: 2, restrictions: [restriction], note: "")]
+        }
+        XCTAssertEqual(InjurySafetyEngine.allowedPatterns(injuries: []), StrengthPattern.allCases)
+        XCTAssertEqual(InjurySafetyEngine.allowedPatterns(injuries: injury(.avoidLowerBody)), [.push, .pull])
+        XCTAssertEqual(InjurySafetyEngine.allowedPatterns(injuries: injury(.avoidUpperBody)), [.legs])
+        XCTAssertTrue(InjurySafetyEngine.allowedPatterns(injuries: injury(.avoidStrength)).isEmpty)
+        // Y el selector único respeta ese recorte en vez de elegir el patrón
+        // más fresco y dejar que alguien lo corrija después.
+        let fresh = ["Cuádriceps", "Glúteos", "Isquios", "Pecho", "Espalda", "Hombros", "Bíceps", "Tríceps"]
+            .map { MuscleReadiness(name: $0, readiness: 90, lastTrained: nil, recentSets: 0) }
+        XCTAssertEqual(TrainingPlanEngine.strengthPattern(muscles: fresh, avoidLegs: false, allowedPatterns: [.legs]), .legs)
+        XCTAssertNil(TrainingPlanEngine.strengthPattern(muscles: fresh, avoidLegs: false, allowedPatterns: []))
+        // Ni siquiera un lift trackeado vencido salta un veto por lesión.
+        XCTAssertEqual(TrainingPlanEngine.strengthPattern(muscles: fresh, avoidLegs: false,
+                                                          urgentPattern: .push, allowedPatterns: [.legs]), .legs)
+        // Ni avoidLegs: el patrón que se protege no se propone igualmente.
+        XCTAssertNil(TrainingPlanEngine.strengthPattern(muscles: fresh, avoidLegs: true, allowedPatterns: [.legs]))
+    }
+
+    func testStatusNeverPublishesASessionKindBlockedByAnActiveRestriction() {
+        // La comprobación integrada: antes status() seguía devolviendo
+        // .longRun mientras TwinEngine reescribía el TEXTO a "Recuperación o
+        // trabajo sin impacto" — motor y UI discrepando por diseño, y
+        // cualquier consumidor nuevo del kind (reloj, widget, historial)
+        // heredando el kind equivocado.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let injuries = [InjuryRecord(id: UUID(), area: "Aquiles", startedAt: now.addingTimeInterval(-5 * 86_400),
+                                     resolvedAt: nil, severity: 2, restrictions: [.avoidRunning], note: "")]
+        let context = TwinContext(profile: neutralProfile, events: [], reviews: [], activeInjuries: injuries,
+                                  calibration: neutralCalibration, personalAnchor: neutralAnchor)
+        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 85,
+                                              muscles: muscles(legs: 90), checkIn: nil, context: context, now: now)
+        XCTAssertTrue(InjurySafetyEngine.allows(status.nextSession, injuries: injuries),
+                      "El plan publicó \(status.nextSession.rawValue), que la restricción activa prohíbe.")
+        if let pattern = status.strengthPattern {
+            XCTAssertTrue(InjurySafetyEngine.allowedPatterns(injuries: injuries).contains(pattern))
+        }
+        XCTAssertEqual(status.nextSession == .strength, status.strengthPattern != nil,
+                       "strengthPattern existe exactamente cuando el día es de fuerza, ni antes ni después.")
+    }
+
+    func testSanitizeClassifiesABrickByItsKindNotByItsTitleContainingCarrera() {
+        // "Brick bici-carrera" contiene "carrera", así que el match por
+        // título lo clasificaba como carrera Y como brick a la vez; y un
+        // "Trabajo híbrido" con carrera de enlace real dentro no se
+        // clasificaba como carrera en absoluto.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let achilles = [InjuryRecord(id: UUID(), area: "Aquiles", startedAt: now, resolvedAt: nil,
+                                     severity: 2, restrictions: [.avoidRunning], note: "")]
+        let brick = proposal(for: .brick, now: now)
+        XCTAssertEqual(brick.kind, .brick)
+        XCTAssertEqual(InjurySafetyEngine.sanitize(brick, injuries: achilles).title, "Recuperación compatible")
+        let hybrid = proposal(for: .hybrid, now: now)
+        XCTAssertEqual(hybrid.kind, .hybrid)
+        XCTAssertEqual(InjurySafetyEngine.sanitize(hybrid, injuries: achilles).title, "Recuperación compatible",
+                       "Un HYROX lleva carrera de enlace real: la restricción de impacto también le aplica.")
+        // Y una sesión sin impacto no se bloquea de rebote por el título.
+        let swim = proposal(for: .swim, now: now)
+        XCTAssertEqual(InjurySafetyEngine.sanitize(swim, injuries: achilles).kind, .swim)
+    }
+
     private func muscles(legs readiness: Int) -> [MuscleReadiness] {
         ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].map {
             MuscleReadiness(name: $0, readiness: readiness, lastTrained: nil, recentSets: 0)
@@ -5160,8 +5378,8 @@ final class EngineTests: XCTestCase {
             MuscleReadiness(name: "Espalda", readiness: 52, lastTrained: nil, recentSets: 8),
             MuscleReadiness(name: "Bíceps", readiness: 52, lastTrained: nil, recentSets: 4)
         ]
-        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(muscles), "pierna", "Sanity check: without avoidLegs, pierna must win as before.")
-        XCTAssertNotEqual(TrainingPlanEngine.bestStrengthPattern(muscles, avoidLegs: true), "pierna")
+        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(muscles), .legs, "Sanity check: without avoidLegs, pierna must win as before.")
+        XCTAssertNotEqual(TrainingPlanEngine.bestStrengthPattern(muscles, avoidLegs: true), .legs)
     }
 
     func testMuscleVolumeLandmarksDeriveMEVAndMRVFromMAV() {
@@ -5202,7 +5420,7 @@ final class EngineTests: XCTestCase {
             MuscleReadiness(name: "Hombros", readiness: 60, lastTrained: nil, recentSets: 10),
             MuscleReadiness(name: "Tríceps", readiness: 60, lastTrained: nil, recentSets: 6)
         ]
-        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(muscles), "pierna")
+        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(muscles), .legs)
     }
 
     func testBestStrengthPatternNeverLetsVolumeDeficitOverrideGenuineFatigue() {
@@ -5219,7 +5437,7 @@ final class EngineTests: XCTestCase {
             MuscleReadiness(name: "Espalda", readiness: 60, lastTrained: nil, recentSets: 24),
             MuscleReadiness(name: "Bíceps", readiness: 60, lastTrained: nil, recentSets: 11)
         ]
-        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(muscles), "empuje")
+        XCTAssertEqual(TrainingPlanEngine.bestStrengthPattern(muscles), .push)
     }
 
     // PR2: TwinPhysiology.muscleFatigue drives weekAhead's simulated

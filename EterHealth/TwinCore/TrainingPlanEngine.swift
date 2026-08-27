@@ -20,6 +20,51 @@ enum PlannedSessionKind: String, Codable {
     case recovery = "Recuperación"
 }
 
+// El patrón de fuerza del día, como tipo y no como el texto en español que
+// hasta ahora había que volver a parsear para saberlo. Era la última pieza
+// de la decisión que seguía viajando como string: bestStrengthPattern
+// devolvía "pierna"/"empuje"/"tirón" en minúsculas, TwinEngine.recommendation
+// devolvía "Pierna"/"Empuje ligero"/… en mayúscula inicial, y
+// WorkoutPlanner.gym/bodyweight y StrengthTrainingView.proposal decidían qué
+// músculos entrenar buscando substrings dentro de ESE texto — tres
+// convenciones distintas de escribir la misma decisión, con las tildes de
+// "tirón" como único separador entre elegir bien y caer al patrón de empuje
+// por defecto (StrengthTrainingView ya llevaba un `|| contains("tiron")`
+// justo por eso).
+//
+// `muscles` vive aquí y no en cada consumidor porque los tres sitios que
+// necesitaban esta lista (bestStrengthPattern, WorkoutPlanner.gym y
+// WorkoutPlanner.bodyweight) la tenían escrita por separado, y ya diferían:
+// gym excluía "Gemelos" de pierna y bodyweight lo incluía. Una sola
+// definición, y las diferencias que sí son reales (bodyweight añade core a
+// los patrones de tren superior) se expresan explícitamente en su sitio en
+// vez de por omisión.
+enum StrengthPattern: String, Codable, CaseIterable {
+    case legs = "Pierna"
+    case push = "Empuje"
+    case pull = "Tirón"
+
+    // Los mismos nombres que MuscleReadiness.name usa. "Gemelos" queda
+    // fuera de `legs` a propósito: es el conjunto que puntúa el patrón
+    // (bestStrengthPattern) y el que filtra ejercicios de gimnasio, y el
+    // gemelo no discrimina entre patrones — se entrena en cualquier día de
+    // pierna sin cambiar cuál gana. WorkoutPlanner.bodyweight sí lo añade
+    // para prescribirlo, que es otra pregunta.
+    var muscles: [String] {
+        switch self {
+        case .legs: return ["Cuádriceps", "Glúteos", "Isquios"]
+        case .push: return ["Pecho", "Hombros", "Tríceps"]
+        case .pull: return ["Espalda", "Bíceps"]
+        }
+    }
+
+    // El texto en español sigue existiendo — para la UI y el rationale, que
+    // es donde debe estar. `label` es el nombre propio ("Pierna"), `inline`
+    // el que va dentro de una frase ("Fuerza de pierna · …").
+    var label: String { rawValue }
+    var inline: String { rawValue.lowercased() }
+}
+
 // Was previously implicit in each block's display name (WorkoutPlanner and
 // RunningPerformanceEngine.coverage both string-matched block.name.lowercased()
 // for "base"/"afinamiento"/etc — fragile, and unavailable to anything that
@@ -89,6 +134,31 @@ struct WeeklyPlanStatus {
     let runDose: DisciplineDose
     let brickDose: DisciplineDose
     let nextSession: PlannedSessionKind
+    // PR8: el patrón concreto del día cuando `nextSession == .strength`, y
+    // nil en cualquier otro caso. Es LA pieza que hacía que
+    // WorkoutPlanner.gym/bodyweight y StrengthTrainingView.proposal
+    // tuvieran que buscar "pierna"/"tirón"/"empuje" dentro del texto de la
+    // recomendación: la decisión existía, pero sólo viajaba renderizada a
+    // español. Ya viene con el veto por lesión aplicado y con el override de
+    // lift trackeado vencido resuelto — ver strengthPattern(...) más abajo.
+    let strengthPattern: StrengthPattern?
+    // Por qué es un campo y no algo que el consumidor recalcule: la
+    // interferencia concurrente y legSensitiveRunLikelyTomorrow se resuelven
+    // dentro de status() con datos que no salen de aquí (el ratio aeróbico,
+    // el día preferido de tirada larga), así que un consumidor no podía
+    // saber si hoy se han quitado las piernas a propósito. El rationale lo
+    // decía en prosa; esto lo dice como dato.
+    let avoidLegsToday: Bool
+    // El caso "ya has entrenado tren superior hoy con volumen real y las
+    // piernas siguen frescas", que es distinto de `alreadyTrainedToday` a
+    // secas: es el único que abre la propuesta de "Después del tren
+    // superior" (descanso por defecto + carrera Z2 opcional si de verdad
+    // aporta al plan). WorkoutPlanner lo detectaba buscando "tren superior"
+    // dentro de plan.rationale — y ese mismo texto aparece TAMBIÉN en la
+    // rama de "la carrera de hoy ya cubre el estímulo aeróbico... solo
+    // fuerza de tren superior con margen", que es una situación
+    // completamente distinta (ahí sí toca entrenar).
+    let upperBodyOnlyToday: Bool
     let recommendation: String
     let rationale: String
     let daysToEvent: Int?
@@ -686,6 +756,12 @@ enum TrainingPlanEngine {
         )
         var next: PlannedSessionKind
         var rationale: String
+        // Ver el comentario del campo homónimo en WeeklyPlanStatus: sólo la
+        // rama de "ya has entrenado tren superior hoy y las piernas siguen
+        // frescas" lo pone a true. Se declara aquí, junto a `next`, para que
+        // se vea que es parte de la misma decisión y no una lectura que
+        // alguien reconstruya después del texto del rationale.
+        var upperBodyOnlyToday = false
 
         // PhysiologicalAlertEngine looks for concordant HRV/pulso/sueño
         // deviation against this person's own baseline — a genuinely
@@ -728,6 +804,7 @@ enum TrainingPlanEngine {
                 // since this session) — this rationale doesn't repeat that
                 // enumeration, so the same fixed list can't show up here
                 // AND there, independent of what those checks actually say.
+                upperBodyOnlyToday = legsFresh
                 rationale = legsFresh
                     ? "Ya has entrenado tren superior hoy (empuje/tirón) con volumen real — las piernas siguen frescas. Descansar es la opción por defecto, pero no la única razonable."
                     : "Ya has entrenado hoy. La recomendación se centra ahora en asimilar esa carga."
@@ -801,6 +878,43 @@ enum TrainingPlanEngine {
             rationale = "\(alert.summary) \(alert.action) Se sustituye \(next.rawValue.lowercased()) por un estímulo más suave mientras se confirma."
             next = .easyRun
         }
+
+        // PR8: el veto por lesión, aplicado aquí y no reescribiendo el texto
+        // de la recomendación. Lo hacía TwinEngine.safeRecommendation, que
+        // convertía "Tirada larga" en "Recuperación o trabajo sin impacto" y
+        // dejaba que WorkoutPlanner volviera a deducir de ESE string que
+        // tocaba recuperación. Con eso, `plan.nextSession` seguía diciendo
+        // `.longRun` mientras la tarjeta decía recuperación: el motor y la UI
+        // discrepaban por diseño, y cualquier consumidor nuevo del kind
+        // (el reloj, el widget, el historial de planes) heredaba el kind
+        // equivocado. Ahora el kind que sale de status() ya es compatible.
+        //
+        // Va DESPUÉS de la sustitución por alerta .caution de arriba a
+        // propósito: esa puede convertir una sesión de calidad en carrera
+        // suave, y una carrera suave también puede estar restringida.
+        let allowedPatterns = InjurySafetyEngine.allowedPatterns(injuries: context.activeInjuries)
+        if !InjurySafetyEngine.allows(next, injuries: context.activeInjuries) {
+            rationale = "\(next.rawValue) no es compatible hoy con tus restricciones activas por lesión. \(rationale)"
+            next = .recovery
+        }
+        // Un único patrón para el día — el que se muestra Y el que se
+        // entrena. Ver strengthPattern(...) para los dos selectores
+        // independientes que esto sustituye.
+        var strengthPattern: StrengthPattern?
+        if next == .strength {
+            strengthPattern = Self.strengthPattern(
+                muscles: muscles, avoidLegs: avoidLegsToday, learnedLandmarks: learnedLandmarks,
+                urgentPattern: urgentLiftPattern(imports: imports, profile: profile, now: now),
+                allowedPatterns: allowedPatterns
+            )
+            if strengthPattern == nil {
+                // Ni pierna ni empuje ni tirón: no queda fuerza que
+                // proponer, y proponer una "por defecto" sería exactamente
+                // lo que el patrón por omisión hacía antes.
+                rationale = "Ninguno de los tres patrones de fuerza es compatible hoy con tus restricciones activas. \(rationale)"
+                next = .recovery
+            }
+        }
         // Informed, not hidden: today only reaches this point instead of
         // .recovery because Agresivo's own ceiling (1.80) tolerated a
         // ratio that Óptimo/Conservador would already have stopped at
@@ -813,7 +927,8 @@ enum TrainingPlanEngine {
         let event = nextEvent(after: now, profile: profile)
         let recommendation = prescription(
             for: next, block: block, readiness: readiness, muscles: muscles,
-            volumeFactor: adjustedTargets.volumeFactor, avoidLegsTomorrow: avoidLegsToday
+            volumeFactor: adjustedTargets.volumeFactor, avoidLegsTomorrow: avoidLegsToday,
+            pattern: strengthPattern
         )
         if isDeload {
             rationale += next == .recovery
@@ -827,7 +942,9 @@ enum TrainingPlanEngine {
             targetRuns: targetRuns, targetStrength: targetStrength, targetQuality: targetQuality,
             targetSwim: targetSwim, targetBike: targetBike,
             swimDose: swimDose, bikeDose: bikeDose, runDose: runDose, brickDose: brickDose,
-            nextSession: next, recommendation: recommendation, rationale: rationale,
+            nextSession: next, strengthPattern: strengthPattern,
+            avoidLegsToday: avoidLegsToday, upperBodyOnlyToday: upperBodyOnlyToday,
+            recommendation: recommendation, rationale: rationale,
             daysToEvent: event.map { calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: $0.date).day ?? 0 },
             eventName: event?.name, isDeload: isDeload,
             volumeFactor: adjustedTargets.volumeFactor,
@@ -859,6 +976,28 @@ enum TrainingPlanEngine {
         // guessing one from an assumed pace.
         let targetMinutes: Int?
         let intensityLabel: String
+    }
+
+    /// El titular corto de hoy — "Empuje ligero", "Tirada larga",
+    /// "Recuperación": lo que la tarjeta de Hoy, el reloj y el widget
+    /// muestran como una línea. Derivado del kind y del patrón que el plan
+    /// ya decidió, no de un segundo selector propio.
+    ///
+    /// TwinEngine.assess construía este texto con su propia
+    /// `recommendation(score:muscles:urgentPattern:)`, que elegía patrón por
+    /// su cuenta: el titular podía decir "Empuje" mientras la sesión
+    /// propuesta era de pierna. Además metía dos textos que contradecían al
+    /// plan directamente — "Descanso o actividad suave" con score < 45 y
+    /// "Movilidad, cardio suave o descanso" cuando ningún grupo pasaba de
+    /// 55— en situaciones en las que status() sí había decidido entrenar
+    /// fuerza. Si el plan dice fuerza, el titular dice fuerza; si el plan
+    /// dice recuperación, lo dice status() y no un segundo criterio.
+    ///
+    /// El "ligero" se conserva con el mismo umbral de siempre (< 62, la
+    /// frontera "Disponible" de TwinReadout.label).
+    nonisolated static func headline(for kind: PlannedSessionKind, pattern: StrengthPattern?, readiness: Int) -> String {
+        guard kind == .strength, let pattern else { return kind.rawValue }
+        return readiness < 62 ? "\(pattern.label) ligero" : pattern.label
     }
 
     // Same duration/zone shape "Propuesta de hoy" already shows per
@@ -1470,7 +1609,8 @@ enum TrainingPlanEngine {
     }
 
     private static func prescription(for kind: PlannedSessionKind, block: TrainingBlock, readiness: Int,
-                                     muscles: [MuscleReadiness], volumeFactor: Double = 1, avoidLegsTomorrow: Bool = false) -> String {
+                                     muscles: [MuscleReadiness], volumeFactor: Double = 1, avoidLegsTomorrow: Bool = false,
+                                     pattern: StrengthPattern? = nil) -> String {
         let deload = volumeFactor < 0.95
         switch kind {
         case .easyRun: return deload
@@ -1490,13 +1630,19 @@ enum TrainingPlanEngine {
             // (legSensitiveRunLikelyTomorrow), and the pattern itself
             // changes when it fires: pierna is removed from the running
             // for today, not just mentioned as a concern.
-            let ready = bestStrengthPattern(muscles, avoidLegs: avoidLegsTomorrow)
+            // El patrón lo decide status() una vez y lo pasa aquí (y lo
+            // publica en WeeklyPlanStatus.strengthPattern), en vez de que
+            // este texto lo recalculara por su cuenta: el prescription y el
+            // patrón que WorkoutPlanner acababa entrenando podían diferir,
+            // porque este llamaba a bestStrengthPattern sin los landmarks
+            // aprendidos y sin la veto por lesión que sí se aplican fuera.
+            let ready = (pattern ?? bestStrengthPattern(muscles, avoidLegs: avoidLegsTomorrow)).inline
             if deload {
-                return "Fuerza de \(ready.lowercased()) · 2–3 series por ejercicio, RIR 3–4 y sin llegar al fallo."
+                return "Fuerza de \(ready) · 2–3 series por ejercicio, RIR 3–4 y sin llegar al fallo."
             }
             return avoidLegsTomorrow
-                ? "Fuerza de \(ready.lowercased()) · deja 2–3 repeticiones en reserva; piernas fuera de hoy a propósito para llegar frescas a la sesión de carrera prevista."
-                : "Fuerza de \(ready.lowercased()) · deja 2–3 repeticiones en reserva."
+                ? "Fuerza de \(ready) · deja 2–3 repeticiones en reserva; piernas fuera de hoy a propósito para llegar frescas a la sesión de carrera prevista."
+                : "Fuerza de \(ready) · deja 2–3 repeticiones en reserva."
         case .hybrid: return deload
             ? "Técnica híbrida al 70% del volumen habitual · transiciones limpias y ninguna estación al límite."
             : "Sesión híbrida específica y controlada · alterna carrera y estaciones sin buscar fatiga máxima."
@@ -1587,7 +1733,7 @@ enum TrainingPlanEngine {
     // heurística de "esto parece día de pierna".
     static func legStrengthLikely(muscles: [MuscleReadiness], avoidLegs: Bool,
                                   learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> Bool {
-        bestStrengthPattern(muscles, avoidLegs: avoidLegs, learnedLandmarks: learnedLandmarks) == "pierna"
+        bestStrengthPattern(muscles, avoidLegs: avoidLegs, learnedLandmarks: learnedLandmarks) == .legs
     }
 
     // Cuánto pierde la calidad de carrera cuando la hipertrofia manda. El
@@ -1633,19 +1779,50 @@ enum TrainingPlanEngine {
         return "⚠️ Propuesto con disponibilidad \(readiness), por debajo del \(ProgressionPace.disclosureReadinessFloor) donde Óptimo te mandaría descansar. Es lo que pediste con Agresivo: entrenar al límite asumiendo más riesgo de lesión."
     }
 
+    // Devuelve StrengthPattern, no el string "pierna"/"empuje"/"tirón" que
+    // devolvía antes: los tres consumidores (prescription, legStrengthLikely
+    // y la simulación de weekAhead) comparaban o reenviaban ese texto, y uno
+    // de ellos lo hacía con `== "pierna"` — una tilde o una mayúscula de
+    // diferencia y la protección de interferencia se apagaba en silencio.
+    // No opcional, y por construcción: el `?? "cuerpo completo"` que había
+    // al final era inalcanzable (la lista de candidatos nunca está vacía) y
+    // ningún consumidor comparaba contra ese string, así que si alguna vez
+    // hubiera salido habría caído al patrón de empuje por defecto sin que
+    // nada avisara. Los casos en los que de verdad NO hay patrón que
+    // proponer son las restricciones por lesión, y esos los resuelve
+    // InjurySafetyEngine.compatiblePattern, que sí devuelve Optional.
     static func bestStrengthPattern(_ muscles: [MuscleReadiness], avoidLegs: Bool = false,
-                                    learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> String {
-        let ready = Dictionary(uniqueKeysWithValues: muscles.map { ($0.name, $0.readiness) })
-        var groups: [(String, [String])] = [("pierna", ["Cuádriceps", "Glúteos", "Isquios"]), ("empuje", ["Pecho", "Hombros", "Tríceps"]), ("tirón", ["Espalda", "Bíceps"])]
+                                    learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> StrengthPattern {
         // Removed as a candidate entirely, not merely penalized — the
         // point of protecting tomorrow's run is that today's choice
         // shouldn't load legs at all when a real alternative exists.
-        if avoidLegs { groups.removeAll { $0.0 == "pierna" } }
-        var scored: [(name: String, readiness: Double, urgency: Double)] = []
-        for (name, members) in groups {
+        // Lista literal, no un filter sobre allCases: así se ve que nunca
+        // queda vacía y esta sobrecarga puede devolver un valor no opcional.
+        let groups: [StrengthPattern] = avoidLegs ? [.push, .pull] : [.legs, .push, .pull]
+        // El `!` es seguro por construcción: `groups` tiene siempre 2 o 3
+        // elementos. La sobrecarga de abajo es la que sí puede quedarse sin
+        // candidatos, y por eso ella devuelve Optional.
+        return bestStrengthPattern(muscles, among: groups, learnedLandmarks: learnedLandmarks)!
+    }
+
+    /// La misma puntuación (frescura + urgencia de volumen), pero sobre un
+    /// conjunto de candidatos arbitrario en vez de sólo "todos" o "todos
+    /// menos pierna". Existe porque las restricciones por lesión también
+    /// recortan candidatos (`InjurySafetyEngine.allowedPatterns`), y antes
+    /// eso se expresaba reescribiendo el texto de la recomendación en
+    /// español y volviéndolo a parsear en WorkoutPlanner. `nil` cuando no
+    /// queda ningún patrón entrenable: quien pregunte debe proponer otra
+    /// cosa, nunca elegir uno por defecto.
+    static func bestStrengthPattern(_ muscles: [MuscleReadiness], among candidates: [StrengthPattern],
+                                    learnedLandmarks: [String: LearnedVolumeLandmark] = [:]) -> StrengthPattern? {
+        guard !candidates.isEmpty else { return nil }
+        let ready = Dictionary(uniqueKeysWithValues: muscles.map { ($0.name, $0.readiness) })
+        var scored: [(pattern: StrengthPattern, readiness: Double, urgency: Double)] = []
+        for pattern in candidates {
+            let members = pattern.muscles
             let readiness = average(members.map { ready[$0] ?? 50 })
             let urgency = averageDouble(members.map { volumeUrgency($0, muscles: muscles, learnedLandmarks: learnedLandmarks) })
-            scored.append((name: name, readiness: readiness, urgency: urgency))
+            scored.append((pattern: pattern, readiness: readiness, urgency: urgency))
         }
         // Volume urgency can shift which of the reasonably-recovered
         // patterns wins, but never rescues one that's genuinely fatigued —
@@ -1653,13 +1830,85 @@ enum TrainingPlanEngine {
         // pick a truly tired muscle group."
         let eligible = scored.filter { $0.readiness >= 50 }
         let pool = eligible.isEmpty ? scored : eligible
-        var best = pool.first
-        for candidate in pool.dropFirst() {
-            let candidateTotal = candidate.readiness + candidate.urgency
-            let bestTotal = (best?.readiness ?? 0) + (best?.urgency ?? 0)
-            if candidateTotal > bestTotal { best = candidate }
+        var best = pool[0]
+        for candidate in pool.dropFirst() where candidate.readiness + candidate.urgency > best.readiness + best.urgency {
+            best = candidate
         }
-        return best?.name ?? "cuerpo completo"
+        return best.pattern
+    }
+
+    /// La ÚNICA elección de patrón de fuerza del día, y la razón por la que
+    /// existe esta función en vez de dejar dos: antes había literalmente dos
+    /// selectores distintos corriendo a la vez sobre los mismos músculos.
+    /// `TwinEngine.recommendation` elegía el patrón que se MOSTRABA
+    /// (frescura media + override de lift trackeado vencido), y
+    /// `bestStrengthPattern` elegía el que se ENTRENABA (frescura +
+    /// urgencia de volumen MEV/MAV/MRV + avoidLegs). Nada garantizaba que
+    /// coincidieran: la tarjeta podía decir "Empuje" y la sesión propuesta
+    /// ser de pierna, porque el primero no sabía nada de landmarks ni de
+    /// proteger la carrera de mañana y el segundo no sabía nada del press
+    /// banca que llevaba doce días sin tocarse.
+    ///
+    /// Aquí se resuelven los tres criterios en un orden explícito:
+    /// 1. Las restricciones por lesión recortan candidatos (duro).
+    /// 2. `avoidLegs` recorta pierna (interferencia concurrente).
+    /// 3. Un lift trackeado vencido manda, si su propio grupo está
+    ///    razonablemente recuperado (>= 55, el mismo suelo que aplicaba
+    ///    `TwinEngine.recommendation`) — urgencia no es ignorar la fatiga.
+    /// 4. Si no, gana la puntuación frescura + urgencia de volumen.
+    static func strengthPattern(muscles: [MuscleReadiness], avoidLegs: Bool,
+                                learnedLandmarks: [String: LearnedVolumeLandmark] = [:],
+                                urgentPattern: StrengthPattern? = nil,
+                                allowedPatterns: [StrengthPattern] = StrengthPattern.allCases) -> StrengthPattern? {
+        let candidates = allowedPatterns.filter { !(avoidLegs && $0 == .legs) }
+        guard !candidates.isEmpty else { return nil }
+        let ready = Dictionary(uniqueKeysWithValues: muscles.map { ($0.name, $0.readiness) })
+        if let urgentPattern, candidates.contains(urgentPattern),
+           average(urgentPattern.muscles.map { ready[$0] ?? 50 }) >= 55 {
+            return urgentPattern
+        }
+        return bestStrengthPattern(muscles, among: candidates, learnedLandmarks: learnedLandmarks)
+    }
+
+    /// "Mantenimiento" (the lowest goalFocus weight, by design, so it never
+    /// outcompetes a Principal goal for which *category* of session gets
+    /// proposed) still needs the specific tracked lift to actually get
+    /// trained once a strength session happens — otherwise "mantener 100 kg
+    /// de press banca" degrades into "did some upper-body pattern, whichever
+    /// was freshest", which can't actually maintain a specific 1RM. Only
+    /// overrides which *pattern* gets chosen within a strength day already
+    /// decided elsewhere; never invents a strength day that wasn't otherwise
+    /// warranted.
+    ///
+    /// Vivía en TwinEngine, que es donde se elegía el patrón que se mostraba.
+    /// Ahora que el patrón se elige una sola vez y aquí (strengthPattern
+    /// arriba), esto es una entrada de la decisión del plan, no de la
+    /// lectura de hoy. Devuelve StrengthPattern y no un string: el peso
+    /// muerto comparte el bucket de pierna con la sentadilla porque son los
+    /// tres patrones que existen, no cuatro.
+    static func urgentLiftPattern(imports: ImportStore, profile: AthletePlanProfile, now: Date) -> StrengthPattern? {
+        let goals = profile.goals.filter(\.isActive)
+        var candidates: [(pattern: StrengthPattern, daysSince: Double)] = []
+        if goals.contains(where: { $0.kind == .benchPress }) {
+            // "(barbell)" matters: bare "bench press" also matches Incline/
+            // Dumbbell variations that aren't the tracked flat-barbell lift.
+            let days = StrengthProgressEngine.daysSinceLastSession(matchingTerms: ["bench press (barbell)", "press banca"], in: imports.workouts, now: now) ?? 999
+            candidates.append((.push, days))
+        }
+        if goals.contains(where: { $0.kind == .squat }) {
+            let days = StrengthProgressEngine.daysSinceLastSession(matchingTerms: ["squat (barbell)", "sentadilla"], in: imports.workouts, now: now) ?? 999
+            candidates.append((.legs, days))
+        }
+        // Deadlift is also a leg/posterior-chain pattern for this rotation's
+        // purposes — there are only three patterns (pierna/empuje/tirón), and
+        // a deadlift PR needs the same leg slot squat does, not a fourth
+        // category that doesn't exist.
+        if goals.contains(where: { $0.kind == .deadlift }) {
+            let days = StrengthProgressEngine.daysSinceLastSession(matchingTerms: ["deadlift (barbell)", "peso muerto"], in: imports.workouts, now: now) ?? 999
+            candidates.append((.legs, days))
+        }
+        guard let mostOverdue = candidates.max(by: { $0.daysSince < $1.daysSince }), mostOverdue.daysSince >= 10 else { return nil }
+        return mostOverdue.pattern
     }
 
     // Cardio's own, lighter local-muscle load for weekAhead's forward
@@ -2043,7 +2292,7 @@ enum TrainingPlanEngine {
         switch winner.kind {
         case .strength:
             let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegsTomorrow, learnedLandmarks: learnedLandmarks)
-            return (.strength, "Para \(goalFocus.leadingGoal), la necesidad de fuerza y sus \(strengthAge) días sin estímulo superan hoy a las alternativas. Prioriza \(pattern) con margen.")
+            return (.strength, "Para \(goalFocus.leadingGoal), la necesidad de fuerza y sus \(strengthAge) días sin estímulo superan hoy a las alternativas. Prioriza \(pattern.inline) con margen.")
         case .longRun:
             return (.longRun, "La tirada larga es hoy el estímulo con más transferencia a \(goalFocus.leadingGoal). Las piernas y la separación desde la anterior permiten asumirla sin vulnerar los mínimos de otras capacidades.")
         case .qualityRun:

@@ -6,6 +6,67 @@ struct InjurySafetyResult {
 }
 
 enum InjurySafetyEngine {
+    // PR8: la versión estructurada de lo que TwinEngine.safeRecommendation
+    // hacía reescribiendo el texto en español. Ese método miraba
+    // `recommendation.lowercased().contains("carrera")`, `"tirada"`,
+    // `"brick"`, `"empuje"`, `"tirón"`, `"pierna"`, `"natación"`,
+    // `"ciclismo"`, `"fuerza"` y devolvía OTRO string —
+    // "Recuperación o trabajo sin impacto", "Tren superior compatible"— que
+    // WorkoutPlanner volvía a parsear para elegir la sesión. Tres capas de
+    // texto para expresar un veto que es, literalmente, un Set de enums.
+    //
+    // Aquí vive el conocimiento de qué bloquea cada restricción, en el mismo
+    // archivo que ya era la única definición de eso para ejercicios
+    // concretos (exerciseSafety) y para la sesión ya construida (sanitize).
+    // TrainingPlanEngine.status lo aplica ANTES de publicar
+    // WeeklyPlanStatus.nextSession, así que el plan que sale del motor ya es
+    // compatible con las restricciones activas — no un plan que la UI
+    // tuviera que corregir después.
+    //
+    // Fidelidad deliberada al comportamiento anterior en dos puntos:
+    // - `.hybrid` no lo bloquea `.avoidRunning`. El texto que se
+    //   comparaba antes era "Trabajo híbrido", que no contiene "carrera",
+    //   así que nunca se bloqueó; sanitize sigue filtrando sus ejercicios
+    //   uno a uno, que es donde la carrera de enlace sí se retira.
+    // - `.raceDay` no lo bloquea nada. Una restricción activa no cancela
+    //   una competición del calendario; el protocolo de competición
+    //   incluye sus propios criterios de parada.
+    nonisolated static func allows(_ kind: PlannedSessionKind, injuries: [InjuryRecord]) -> Bool {
+        let restrictions = Set(injuries.flatMap(\.restrictions))
+        switch kind {
+        case .easyRun, .qualityRun, .longRun:
+            return !restrictions.contains(.avoidRunning) && !restrictions.contains(.avoidLowerBody)
+        case .brick:
+            // Bici + carrera: le aplican las dos restricciones.
+            return !restrictions.contains(.avoidRunning) && !restrictions.contains(.avoidLowerBody)
+        case .bike:
+            return !restrictions.contains(.avoidLowerBody)
+        case .swim:
+            return !restrictions.contains(.avoidUpperBody)
+        case .strength:
+            // `.avoidStrength` mata la sesión entera; las restricciones de
+            // tren superior/inferior sólo vetan patrones, y eso lo resuelve
+            // allowedPatterns abajo — puede quedar uno compatible.
+            return !restrictions.contains(.avoidStrength)
+        case .hybrid, .raceDay, .recovery:
+            return true
+        }
+    }
+
+    // Qué patrones de fuerza siguen siendo entrenables. Vacío significa que
+    // no queda ninguno: quien pregunte debe proponer otra cosa, no elegir
+    // uno "por defecto".
+    nonisolated static func allowedPatterns(injuries: [InjuryRecord]) -> [StrengthPattern] {
+        let restrictions = Set(injuries.flatMap(\.restrictions))
+        guard !restrictions.contains(.avoidStrength) else { return [] }
+        return StrengthPattern.allCases.filter { pattern in
+            switch pattern {
+            case .legs: return !restrictions.contains(.avoidLowerBody)
+            case .push, .pull: return !restrictions.contains(.avoidUpperBody)
+            }
+        }
+    }
+
     static func sessionAllowsRunning(_ injuries: [InjuryRecord]) -> InjurySafetyResult {
         if let injury = injuries.first(where: { $0.restrictions.contains(.avoidRunning) }) {
             return InjurySafetyResult(allowed: false, reason: "Carrera bloqueada por la restricción activa en \(injury.area).")
@@ -40,11 +101,25 @@ enum InjurySafetyEngine {
     }
 
     static func sanitize(_ workout: ProposedWorkout, injuries: [InjuryRecord]) -> ProposedWorkout {
-        let isRunning = workout.title.localizedCaseInsensitiveContains("carrera") ||
-            workout.title.localizedCaseInsensitiveContains("tirada") ||
-            workout.title.localizedCaseInsensitiveContains("brick") ||
-            workout.exercises.contains { $0.name.localizedCaseInsensitiveContains("carrera") }
-        if isRunning, let reason = sessionAllowsRunning(injuries).reason {
+        // PR8: la sesión dice de qué tipo es (ProposedWorkout.kind), no se
+        // deduce de su título. Antes esto buscaba "carrera"/"tirada"/"brick"
+        // en el título, con dos errores que el propio dato ya sabía evitar:
+        // "Brick bici-carrera" contiene "carrera", así que un brick se
+        // clasificaba como carrera Y como brick a la vez; y una sesión de
+        // HYROX ("Trabajo híbrido"), que sí lleva carrera de enlace real
+        // dentro, no se clasificaba como carrera en absoluto — sólo la
+        // salvaba el `exercises.contains("carrera")` de rebote.
+        let usesRunning: Bool
+        switch workout.kind {
+        case .easyRun, .qualityRun, .longRun, .brick, .hybrid: usesRunning = true
+        case .strength, .swim, .bike, .recovery, .raceDay: usesRunning = false
+        }
+        // El ejercicio suelto sigue contando: una propuesta de recuperación
+        // puede ofrecer una carrera Z2 opcional (ver WorkoutPlanner's
+        // "Después del tren superior"), y esa carrera está igual de
+        // restringida que la de una sesión de carrera entera.
+        let offersRunningExercise = workout.exercises.contains { $0.name.localizedCaseInsensitiveContains("carrera") }
+        if usesRunning || offersRunningExercise, let reason = sessionAllowsRunning(injuries).reason {
             return recoveryAlternative(reason: reason)
         }
         // Swimming is upper-body/shoulder dominant and cycling is a
@@ -52,12 +127,12 @@ enum InjurySafetyEngine {
         // exercise-by-exercise strength filter below (their "exercises" are
         // set descriptions, not named lifts MuscleMap recognizes), so each
         // gets the same restriction-based block sessionAllowsRunning gives
-        // running, checked directly against the workout's own title.
-        if workout.title.localizedCaseInsensitiveContains("natación"),
+        // running — now keyed off the session's own kind.
+        if workout.kind == .swim,
            let injury = injuries.first(where: { $0.restrictions.contains(.avoidUpperBody) }) {
             return recoveryAlternative(reason: "Natación bloqueada por la restricción activa en \(injury.area).")
         }
-        if (workout.title.localizedCaseInsensitiveContains("ciclismo") || workout.title.localizedCaseInsensitiveContains("brick")),
+        if workout.kind == .bike || workout.kind == .brick,
            let injury = injuries.first(where: { $0.restrictions.contains(.avoidLowerBody) && $0.severity >= 4 }) {
             return recoveryAlternative(reason: "Ciclismo bloqueado por la lesión activa de intensidad \(injury.severity)/5 en \(injury.area).")
         }
@@ -73,7 +148,9 @@ enum InjurySafetyEngine {
             duration: workout.duration,
             intent: workout.intent,
             exercises: retained,
-            note: "\(workout.note) · Éter ha retirado \(removed) ejercicio\(removed == 1 ? "" : "s") incompatible\(removed == 1 ? "" : "s") con tus restricciones activas."
+            note: "\(workout.note) · Éter ha retirado \(removed) ejercicio\(removed == 1 ? "" : "s") incompatible\(removed == 1 ? "" : "s") con tus restricciones activas.",
+            kind: workout.kind,
+            strengthPattern: workout.strengthPattern
         )
     }
 
@@ -94,7 +171,12 @@ enum InjurySafetyEngine {
             duration: "15–30 min",
             intent: "No agravar la restricción activa",
             exercises: [ProposedExercise(name: "Movilidad sin dolor", prescription: "10–15 min · rango cómodo", cue: "Detente si aparece dolor o aumenta la molestia")],
-            note: reason + " La alternativa no sustituye la valoración de un profesional sanitario."
+            note: reason + " La alternativa no sustituye la valoración de un profesional sanitario.",
+            // Recuperación de verdad, no la sesión que se ha bloqueado: la UI
+            // pregunta por `kind` para decidir si ofrecer iniciarla como
+            // sesión de fuerza, y conservar el kind original haría que
+            // ofreciera empezar una sesión que acabamos de retirar.
+            kind: .recovery
         )
     }
 

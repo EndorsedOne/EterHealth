@@ -13,6 +13,23 @@ struct ProposedWorkout {
     let intent: String
     let exercises: [ProposedExercise]
     let note: String
+    // PR8: qué ES esta sesión, como dato y no como algo que haya que
+    // reconstruir leyendo el título en español. Lo necesitaban ya tres
+    // consumidores por separado, y los tres lo hacían con substrings:
+    // InjurySafetyEngine.sanitize buscaba "carrera"/"tirada"/"brick" para
+    // saber si bloquear por restricción de impacto (y clasificaba
+    // "Brick bici-carrera" como las dos cosas), ContentView buscaba
+    // "recuperación" para decidir si ofrecer iniciarla como sesión de
+    // fuerza, y StrengthTrainingView buscaba "pierna"/"tirón"/"empuje" para
+    // elegir la rutina de gimnasio equivalente.
+    //
+    // Va al final y no al principio para no reordenar los ~15 call sites de
+    // este init memberwise; cada uno declara su kind explícitamente.
+    let kind: PlannedSessionKind
+    // Sólo para `kind == .strength`. El patrón que el plan eligió una vez
+    // (frescura + urgencia de volumen + avoidLegs + lift trackeado vencido
+    // + veto por lesión), no uno redecidido aquí.
+    var strengthPattern: StrengthPattern?
 }
 
 struct ProposedExercise: Identifiable {
@@ -34,28 +51,55 @@ enum WorkoutPlanner {
         return InjurySafetyEngine.sanitize(proposal, injuries: context.activeInjuries)
     }
 
+    // Real bpm targets instead of a bare "Z1"/"Z2" label wherever this is
+    // knowable (lactate-test boundaries, a configured max, or at least an
+    // age-based Tanaka estimate) — the same numbers the app's own zone
+    // tracking uses, not a second, disconnected guess. Funciones del tipo y
+    // no closures locales de rawProposal: las propuestas de recuperación y
+    // de "después del tren superior" viven ahora en sus propias funciones y
+    // necesitan exactamente el mismo formato.
+    private static func upTo(_ bpm: Int?) -> String { bpm.map { " · <\($0) ppm" } ?? "" }
+    private static func zoneRange(_ low: Int?, _ high: Int?) -> String { (low != nil && high != nil) ? " · \(low!)–\(high!) ppm" : "" }
+    // `above`, no `floor`: como método del tipo, un `floor(...)` aquí
+    // sombrearía la función global de Swift para todo el archivo.
+    private static func above(_ bpm: Int?) -> String { bpm.map { " · >\($0) ppm" } ?? "" }
+
     private static func rawProposal(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn? = nil, context: TwinContext, now: Date = Date()) -> ProposedWorkout {
-        let profile = context.profile
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context, now: now)
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: assessment.score,
                                              muscles: assessment.muscles, checkIn: checkIn, context: context,
                                              physiologicalAlert: assessment.physiologicalAlert, now: now)
-        let deload = plan.isDeload
+        return proposal(for: plan.nextSession, pattern: plan.strengthPattern, upperBodyOnlyToday: plan.upperBodyOnlyToday,
+                        block: plan.block, isDeload: plan.isDeload, readiness: assessment.score, rationale: plan.rationale,
+                        muscles: assessment.muscles, health: health, imports: imports, context: context, now: now)
+    }
+
+    /// Sólo el DESPACHO: de una decisión ya tomada (kind + patrón + los
+    /// datos del bloque) a la sesión concreta. No decide nada — ni readiness,
+    /// ni fatiga, ni calendario: eso es TrainingPlanEngine.status, y
+    /// separarlos es lo que hace que esta parte se pueda probar kind a kind.
+    ///
+    /// Internal (not private) por la misma razón que
+    /// TrainingPlanEngine.bestStrengthPattern y WorkoutPlanner.gym ya lo son:
+    /// para que EngineTests pueda recorrer los diez PlannedSessionKind sin
+    /// tener que construir un HealthStore que empuje a status() hasta cada
+    /// uno de ellos — algo que, para varios kinds, sencillamente no se puede
+    /// montar (un brick exige un objetivo de triatlón activo Y déficit de
+    /// minutos de brick Y separación suficiente de la última sesión clave).
+    static func proposal(for kind: PlannedSessionKind, pattern: StrengthPattern?, upperBodyOnlyToday: Bool,
+                         block: TrainingBlock, isDeload: Bool, readiness: Int, rationale: String,
+                         muscles: [MuscleReadiness], health: HealthStore, imports: ImportStore,
+                         context: TwinContext, now: Date = Date()) -> ProposedWorkout {
+        let profile = context.profile
+        let deload = isDeload
         let bodyweightOnly = !profile.gymAvailable
-        // Real bpm targets instead of a bare "Z1"/"Z2" label wherever this
-        // is knowable (lactate-test boundaries, a configured max, or at
-        // least an age-based Tanaka estimate) — the same numbers the app's
-        // own zone tracking uses, not a second, disconnected guess.
         let zones = health.currentHeartRateZoneBoundaries()
-        func upTo(_ bpm: Int?) -> String { bpm.map { " · <\($0) ppm" } ?? "" }
-        func range(_ low: Int?, _ high: Int?) -> String { (low != nil && high != nil) ? " · \(low!)–\(high!) ppm" : "" }
-        func floor(_ bpm: Int?) -> String { bpm.map { " · >\($0) ppm" } ?? "" }
         // How far into the current phase we are — 0 at its first day, 1 at
         // its last. Lets a 6-week block ramp volume week to week instead of
         // handing the same session on week 1 as week 6, the gap flagged
         // earlier: the periodization skeleton existed, but nothing inside a
         // phase actually progressed.
-        let progress = plan.block.progress(on: now)
+        let progress = block.progress(on: now)
         let primaryEvent = TrainingPlanEngine.primaryEvents(for: profile).first
         let triDistance = primaryEvent?.resolvedTriathlonDistance
         // The distance this periodization is actually built around — nil
@@ -68,116 +112,80 @@ enum WorkoutPlanner {
         let targetKilometers = primaryEvent?.kind.targetKilometers ?? triDistance?.runKilometers
         let swimTargetKilometers = triDistance?.swimKilometers
         let bikeTargetKilometers = triDistance?.bikeKilometers
-        if assessment.score < 45 || assessment.recommendation.localizedCaseInsensitiveContains("recuperación") || assessment.recommendation.localizedCaseInsensitiveContains("descanso") {
-            // A coach doesn't put rest, a run, a walk and a sauna on one
-            // undifferentiated menu — there's a real hierarchy. Rest is
-            // always the default, no justification needed. A second
-            // stimulus only belongs in "the plan" if it actually serves a
-            // goal this athlete has (a run means nothing to prescribe if
-            // running isn't part of their training at all) AND is spaced
-            // out enough that concurrent-training interference isn't a
-            // real concern — Wilson et al. 2012's meta-analysis and Fyfe/
-            // Bishop/Stepto's review both point to aerobic work too soon
-            // after resistance training blunting the mTOR signaling that
-            // session was for; low-intensity Z2 within a few hours is a
-            // small, acceptable risk, not zero hours later. Sauna and a
-            // walk are neither of those things — no periodized program
-            // actually prescribes them, they're personal comfort choices
-            // with a small, debated recovery effect at best — so they're
-            // presented separately, as "your call", not folded into the
-            // same list as if a coach endorsed them as training.
-            if plan.rationale.localizedCaseInsensitiveContains("tren superior") {
-                // hoursSinceLastCompleted only looks at HealthKit data (by
-                // design, elsewhere) — a session logged only in Hevy, with
-                // no HealthKit mirror, would be invisible to it, making
-                // "hours since your strength session" silently wrong for
-                // exactly the kind of session this branch exists for.
-                // Checking imports directly too and taking whichever
-                // source saw the more recent completion covers both.
-                let hoursSinceHealthPush = TrainingPlanEngine.hoursSinceLastCompleted(
-                    matching: { $0.activity == "Fuerza" || $0.activity == "Fuerza funcional" },
-                    health: health, imports: imports, now: now
-                )
-                let hoursSinceImportedPush = imports.workouts.filter { $0.end <= now }.map(\.end).max()
-                    .map { now.timeIntervalSince($0) / 3_600 }
-                let hoursSincePush = [hoursSinceHealthPush, hoursSinceImportedPush].compactMap { $0 }.min()
-                let calendar = Calendar.current
-                let saunaAlreadyToday = context.events.contains {
-                    $0.saunaMinutes > 0 && calendar.isDate($0.date, inSameDayAs: now)
-                }
-                let walkAlreadyToday = health.recentWorkouts.contains {
-                    $0.activity == "Caminata" && calendar.isDate($0.date, inSameDayAs: now)
-                }
-                let hasRunningGoal = TrainingPlanEngine.goalFocus(for: profile, on: now).running > 0.05
-                var exercises = [ProposedExercise(name: "Descanso completo", prescription: "El resto del día", cue: "Es la opción por defecto — no hace falta justificar nada más")]
-                // The only genuine second-training-stimulus option, and
-                // only when it actually serves a real goal in this plan.
-                if hasRunningGoal, let hoursSincePush, hoursSincePush >= 3 {
-                    exercises.append(ProposedExercise(
-                        name: "Carrera suave (aporta a tu plan)", prescription: "20–30 min · Z2\(range(zones?.z1z2, zones?.z2z3))",
-                        cue: "Han pasado \(Int(hoursSincePush.rounded())) h desde la sesión de fuerza — margen suficiente para que la interferencia sea mínima, y es volumen real hacia tu objetivo de carrera"
-                    ))
-                }
-                var extras: [ProposedExercise] = []
-                if !walkAlreadyToday {
-                    extras.append(ProposedExercise(name: "Paseo suave", prescription: "20–30 min", cue: "Sin efecto demostrado sobre tu progreso — hazlo solo si te apetece"))
-                }
-                if !saunaAlreadyToday {
-                    extras.append(ProposedExercise(name: "Calor (sauna)", prescription: "15–20 min", cue: "Evidencia mixta y pequeña sobre recuperación — no forma parte del plan, hidrátate después si lo haces"))
-                }
-                exercises.append(contentsOf: extras)
-                return ProposedWorkout(title: "Después del tren superior", duration: "Opcional",
-                                       intent: hasRunningGoal ? "Descanso es la opción por defecto; la carrera es la única que realmente suma al plan" : "Ya hay estímulo real hoy — descansar es lo que corresponde",
-                                       exercises: exercises,
-                                       note: "Ya has entrenado tren superior con volumen real hoy.\(extras.isEmpty ? "" : " Paseo y sauna no son parte del entrenamiento — son elección personal, sin impacto real en tu progreso.")")
+        let light = readiness < 62 || deload
+
+        // PR8: un switch EXHAUSTIVO sobre el tipo de sesión que el plan ya
+        // decidió, en lugar de la cascada de nueve
+        // `assessment.recommendation.localizedCaseInsensitiveContains(...)`
+        // que había aquí. Lo que se gana no es sólo estilo:
+        //
+        // - El compilador obliga a cubrir cada PlannedSessionKind. La
+        //   cascada anterior terminaba en un `return gym(...)` implícito, así
+        //   que un kind nuevo (o uno cuyo texto cambiara de redacción) caía
+        //   silenciosamente en "sesión de gimnasio genérica" — que es
+        //   exactamente cómo un día de HYROX acabó siendo un gimnasio
+        //   cualquiera antes del PR5, y un día de competición un brick.
+        // - Desaparece el gate `readiness < 45` que iba ANTES del
+        //   caso de competición: con readiness 42–44 (por encima del 42 que
+        //   manda a status() a recuperación, por debajo del 45 de aquí) un
+        //   día de carrera devolvía "Recuperación activa" en vez del
+        //   protocolo de competición. Ahora la decisión de descansar es de
+        //   status(), que es quien tiene los nueve gates reales, y aquí sólo
+        //   se construye la sesión que corresponda.
+        // - Desaparece la dependencia de que `recommendation` esté en
+        //   español y con las tildes puestas: "tirón" vs "tiron",
+        //   "competición" vs "competicion", y un "Brick bici-carrera" que
+        //   contiene "carrera" y encajaba en dos ramas a la vez.
+        switch kind {
+        case .recovery:
+            if upperBodyOnlyToday {
+                return afterUpperBodyOptions(health: health, imports: imports, context: context, zones: zones, now: now)
             }
-            return ProposedWorkout(title: "Recuperación activa", duration: "25–35 min", intent: "Bajar carga y favorecer recuperación", exercises: [
-                ProposedExercise(name: "Caminata suave", prescription: "20–30 min · Z1\(upTo(zones?.z1z2))", cue: "Ritmo cómodo y respiración nasal"),
-                ProposedExercise(name: "Movilidad global", prescription: "2 vueltas · 6–8 min", cue: "Cadera, tobillo, dorsal y hombros")
-            // TrainingPlanEngine routes several different situations to .recovery
-            // (a completed session today, accumulated load, still recovering from a
-            // long/quality run, 3+ training days in 72h, or moderate-low readiness)
-            // — plan.rationale already says which one applies. A hardcoded "you
-            // already did today's session" here was wrong for every branch except
-            // the first, and showed up exactly like that after a backup restore
-            // shifted readiness with zero workouts actually done that day.
-            ], note: assessment.score < 45 ? "Si la fatiga se siente peor de lo que indican los datos, descansa." : "\(plan.rationale) Esta propuesta es opcional; descansar también es una buena ejecución del plan.")
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("competición"), let event = TrainingPlanEngine.eventToday(now, profile: profile) {
+            return activeRecovery(readiness: readiness, rationale: rationale, zones: zones)
+
+        case .raceDay:
             // A real event today used to fall through to an ordinary
             // workout (a HYROX race day generated a training "brick",
             // a triathlon race day too, a running race a tempo session) —
             // exactly backwards: today needs a pacing/nutrition/transition/
             // stop-criteria protocol, never something to train.
+            guard let event = TrainingPlanEngine.eventToday(now, profile: profile) else {
+                // status() sólo produce .raceDay desde eventToday, así que
+                // esto es inalcanzable hoy; si alguna vez deja de serlo,
+                // recuperación es la respuesta honesta y no una sesión
+                // inventada para un evento que no existe.
+                return activeRecovery(readiness: readiness, rationale: rationale, zones: zones)
+            }
             return raceDayProtocol(event: event, health: health, imports: imports, reviews: context.reviews, now: now)
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("carrera suave") {
-            let band = easyRunBand(phase: plan.block.phase, targetKilometers: targetKilometers)
+
+        case .easyRun:
+            let band = easyRunBand(phase: block.phase, targetKilometers: targetKilometers)
             let minutes = deload ? Int((band.min * 0.6).rounded(to: 5)) : Int(ramp(band.min, band.max, progress).rounded(to: 5))
             return ProposedWorkout(title: "Carrera suave", duration: "\(minutes + 13)–\(minutes + 18) min", intent: deload ? "Conservar frecuencia mientras disipamos fatiga" : "Construir base aeróbica sin añadir fatiga innecesaria", exercises: [
                 ProposedExercise(name: "Calentamiento", prescription: "8–10 min · Z1\(upTo(zones?.z1z2))", cue: "Empieza realmente cómodo"),
-                ProposedExercise(name: "Carrera continua", prescription: deload ? "\(minutes) min · Z1–Z2\(upTo(zones?.z2z3))" : "\(minutes) min · Z2\(range(zones?.z1z2, zones?.z2z3))", cue: "Ritmo conversacional y estable"),
+                ProposedExercise(name: "Carrera continua", prescription: deload ? "\(minutes) min · Z1–Z2\(upTo(zones?.z2z3))" : "\(minutes) min · Z2\(zoneRange(zones?.z1z2, zones?.z2z3))", cue: "Ritmo conversacional y estable"),
                 ProposedExercise(name: "Vuelta a la calma", prescription: "5 min suave", cue: "No necesitas terminar fuerte")
-            ], note: (deload ? "Descarga activa: no prolongues la sesión aunque las sensaciones sean buenas." : "La zona cardíaca manda más que el ritmo cuando hace calor, hay desnivel o acumulas fatiga. Semana \(Int((progress * 100).rounded()))% de \(plan.block.name.lowercased()): el volumen sube progresivamente dentro de esta fase.") + goalTimelineNote(profile: profile))
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("calidad") {
-            let modality = qualitySessionModality(phase: plan.block.phase, block: plan.block, now: now)
-            let interval = intervalPrescription(phase: plan.block.phase, progress: progress, health: health, hrFloor: floor(zones?.z3z4),
+            ], note: (deload ? "Descarga activa: no prolongues la sesión aunque las sensaciones sean buenas." : "La zona cardíaca manda más que el ritmo cuando hace calor, hay desnivel o acumulas fatiga. Semana \(Int((progress * 100).rounded()))% de \(block.name.lowercased()): el volumen sube progresivamente dentro de esta fase.") + goalTimelineNote(profile: profile),
+            kind: .easyRun)
+
+        case .qualityRun:
+            let modality = qualitySessionModality(phase: block.phase, block: block, now: now)
+            let interval = intervalPrescription(phase: block.phase, progress: progress, health: health, hrFloor: above(zones?.z3z4),
                                                 modality: modality, reviews: context.reviews)
             return ProposedWorkout(title: "Calidad de carrera", duration: "40–55 min", intent: "Estimular velocidad o umbral con volumen controlado", exercises: [
                 ProposedExercise(name: "Calentamiento", prescription: "12–15 min suave", cue: "Añade movilidad y 3 progresivos"),
                 ProposedExercise(name: "Bloque principal", prescription: interval.prescription, cue: interval.cue),
                 ProposedExercise(name: "Vuelta a la calma", prescription: "8–10 min suave", cue: "Termina progresivamente")
-            ], note: interval.basisNote + goalTimelineNote(profile: profile))
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("tirada larga") {
+            ], note: interval.basisNote + goalTimelineNote(profile: profile), kind: .qualityRun)
+
+        case .longRun:
             // Base builds general aerobic tolerance; the build-specific phase
             // pushes toward what a half marathon actually demands (a peak
             // long run well past an easy-run duration); taper deliberately
             // pulls back. This is the concrete answer to "entiende el reto,
             // la ambición, y cuánto tiempo tengo para prepararlo": the ceiling
             // itself changes by phase, not just by today's deload flag.
-            let band = longRunBand(phase: plan.block.phase, targetKilometers: targetKilometers)
+            let band = longRunBand(phase: block.phase, targetKilometers: targetKilometers)
             // The phase table sets the ambition; this never lets it override
             // reality — the actual ceiling this week is also capped by this
             // person's own recent longest run plus their chosen
@@ -196,32 +204,33 @@ enum WorkoutPlanner {
                 : ""
             return ProposedWorkout(title: deload ? "Tirada reducida" : "Tirada larga", duration: "\(minutes + 15)–\(minutes + 25) min", intent: deload ? "Mantener resistencia sin ampliar fatiga" : "Aumentar resistencia específica", exercises: [
                 ProposedExercise(name: "Inicio", prescription: "10–15 min muy suaves", cue: "No persigas ritmo"),
-                ProposedExercise(name: "Bloque continuo", prescription: "\(minutes) min · Z2" + range(zones?.z1z2, zones?.z2z3), cue: "Respiración controlada y combustible si procede"),
+                ProposedExercise(name: "Bloque continuo", prescription: "\(minutes) min · Z2" + zoneRange(zones?.z1z2, zones?.z2z3), cue: "Respiración controlada y combustible si procede"),
                 ProposedExercise(name: "Final", prescription: "5–10 min cómodos", cue: "Sin progresión si las piernas se deterioran")
-            ], note: (deload ? "La reducción es deliberada: esta semana buscamos asimilar, no progresar distancia." : "Objetivo de esta fase (\(plan.block.name.lowercased())): progresar hacia \(Int(personalizedCeiling)) min según avance el bloque — hoy toca ≈\(minutes) min (\(Int((progress * 100).rounded()))% del bloque). No aumentes bruscamente por una sola recomendación.\(progressionNote)") + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes) + 20, profile: profile))
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("natación") {
+            ], note: (deload ? "La reducción es deliberada: esta semana buscamos asimilar, no progresar distancia." : "Objetivo de esta fase (\(block.name.lowercased())): progresar hacia \(Int(personalizedCeiling)) min según avance el bloque — hoy toca ≈\(minutes) min (\(Int((progress * 100).rounded()))% del bloque). No aumentes bruscamente por una sola recomendación.\(progressionNote)") + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes) + 20, profile: profile),
+            kind: .longRun)
+
+        case .swim:
             // A triathlon/Ironman goal's swim leg had no dedicated session at
             // all before this — it either fell through to strength/bodyweight
             // or, worse, never got proposed since nothing in the decision
             // engine asked for it. Same phase/progress treatment as running.
-            return swimWorkout(phase: plan.block.phase, progress: progress, deload: deload,
-                               targetKilometers: swimTargetKilometers, health: health, muscles: assessment.muscles, profile: profile, now: now)
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("ciclismo") {
-            return bikeWorkout(phase: plan.block.phase, progress: progress, deload: deload,
-                               targetKilometers: bikeTargetKilometers, health: health, muscles: assessment.muscles, profile: profile,
-                               zoneRange: range(zones?.z1z2, zones?.z2z3), zoneFloor: floor(zones?.z3z4), now: now)
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("brick") {
+            return swimWorkout(phase: block.phase, progress: progress, deload: deload,
+                               targetKilometers: swimTargetKilometers, health: health, muscles: muscles, profile: profile, now: now)
+
+        case .bike:
+            return bikeWorkout(phase: block.phase, progress: progress, deload: deload,
+                               targetKilometers: bikeTargetKilometers, health: health, muscles: muscles, profile: profile,
+                               zoneRange: zoneRange(zones?.z1z2, zones?.z2z3), zoneFloor: above(zones?.z3z4), now: now)
+
+        case .brick:
             // The specific stimulus a triathlon needs that swimming, biking
             // and running separately never provide: running on legs a bike
             // has already fatigued.
-            return brickWorkout(phase: plan.block.phase, progress: progress, deload: deload,
-                                distance: triDistance, muscles: assessment.muscles, profile: profile,
-                                zoneRange: range(zones?.z1z2, zones?.z2z3))
-        }
-        if assessment.recommendation.localizedCaseInsensitiveContains("híbrido") {
+            return brickWorkout(phase: block.phase, progress: progress, deload: deload,
+                                distance: triDistance, muscles: muscles, profile: profile,
+                                zoneRange: zoneRange(zones?.z1z2, zones?.z2z3))
+
+        case .hybrid:
             // "No pretendo que tenga entrenamiento para todos los retos del
             // mundo, pero sí para los básicos... HYROX" — hasta ahora un día
             // de "Trabajo híbrido" caía en el gimnasio genérico de abajo, sin
@@ -229,11 +238,112 @@ enum WorkoutPlanner {
             // las conecta. Esto le da al HYROX el mismo trato de periodización
             // real que ya tiene la carrera (fase, progreso dentro del bloque,
             // descarga), en vez de desentenderse del reto.
-            return hyroxWorkout(phase: plan.block.phase, progress: progress, deload: deload, muscles: assessment.muscles, profile: profile, now: now)
+            return hyroxWorkout(phase: block.phase, progress: progress, deload: deload, muscles: muscles, profile: profile, now: now)
+
+        case .strength:
+            // El patrón lo decidió status() (una sola vez, con los landmarks
+            // aprendidos, con avoidLegs y con el veto por lesión aplicados) y
+            // llega como dato. Antes se volvía a deducir aquí buscando
+            // "pierna"/"tirón" dentro del titular, que lo había elegido un
+            // segundo selector distinto en TwinEngine: la tarjeta podía decir
+            // "Empuje" y esta sesión ser de pierna.
+            guard let pattern = pattern else {
+                // status() no publica .strength sin patrón; si alguna vez lo
+                // hiciera, recuperación es la respuesta honesta y no el
+                // patrón de empuje por defecto al que caía la cascada.
+                return activeRecovery(readiness: readiness, rationale: rationale, zones: zones)
+            }
+            return bodyweightOnly
+                ? bodyweight(for: pattern, light: light, muscles: muscles)
+                : gym(for: pattern, imports: imports, light: light, muscles: muscles, goals: profile.goals)
         }
-        if bodyweightOnly { return bodyweight(for: assessment.recommendation, light: assessment.score < 62 || deload, muscles: assessment.muscles) }
-        return gym(for: assessment.recommendation, imports: imports, light: assessment.score < 62 || deload, muscles: assessment.muscles,
-                   goals: profile.goals)
+    }
+
+    // TrainingPlanEngine routes several different situations to .recovery
+    // (a completed session today, accumulated load, still recovering from a
+    // long/quality run, 3+ training days in 72h, or moderate-low readiness)
+    // — plan.rationale already says which one applies. A hardcoded "you
+    // already did today's session" here was wrong for every branch except
+    // the first, and showed up exactly like that after a backup restore
+    // shifted readiness with zero workouts actually done that day.
+    private static func activeRecovery(readiness: Int, rationale: String, zones: HeartRateZoneBoundaries?) -> ProposedWorkout {
+        ProposedWorkout(title: "Recuperación activa", duration: "25–35 min", intent: "Bajar carga y favorecer recuperación", exercises: [
+            ProposedExercise(name: "Caminata suave", prescription: "20–30 min · Z1\(upTo(zones?.z1z2))", cue: "Ritmo cómodo y respiración nasal"),
+            ProposedExercise(name: "Movilidad global", prescription: "2 vueltas · 6–8 min", cue: "Cadera, tobillo, dorsal y hombros")
+        ], note: readiness < 45 ? "Si la fatiga se siente peor de lo que indican los datos, descansa." : "\(rationale) Esta propuesta es opcional; descansar también es una buena ejecución del plan.",
+        kind: .recovery)
+    }
+
+    // A coach doesn't put rest, a run, a walk and a sauna on one
+    // undifferentiated menu — there's a real hierarchy. Rest is
+    // always the default, no justification needed. A second
+    // stimulus only belongs in "the plan" if it actually serves a
+    // goal this athlete has (a run means nothing to prescribe if
+    // running isn't part of their training at all) AND is spaced
+    // out enough that concurrent-training interference isn't a
+    // real concern — Wilson et al. 2012's meta-analysis and Fyfe/
+    // Bishop/Stepto's review both point to aerobic work too soon
+    // after resistance training blunting the mTOR signaling that
+    // session was for; low-intensity Z2 within a few hours is a
+    // small, acceptable risk, not zero hours later. Sauna and a
+    // walk are neither of those things — no periodized program
+    // actually prescribes them, they're personal comfort choices
+    // with a small, debated recovery effect at best — so they're
+    // presented separately, as "your call", not folded into the
+    // same list as if a coach endorsed them as training.
+    //
+    // PR8: se entra aquí por `plan.upperBodyOnlyToday`, no por buscar
+    // "tren superior" dentro de `plan.rationale`. Ese texto aparece también
+    // en la rama "la carrera de hoy ya cubre el estímulo aeróbico... solo
+    // fuerza de tren superior con margen", que es la situación OPUESTA (ahí
+    // el plan sí pide entrenar), así que el match podía abrir este menú de
+    // descanso en un día en el que tocaba fuerza.
+    private static func afterUpperBodyOptions(health: HealthStore, imports: ImportStore, context: TwinContext,
+                                              zones: HeartRateZoneBoundaries?, now: Date) -> ProposedWorkout {
+        // hoursSinceLastCompleted only looks at HealthKit data (by
+        // design, elsewhere) — a session logged only in Hevy, with
+        // no HealthKit mirror, would be invisible to it, making
+        // "hours since your strength session" silently wrong for
+        // exactly the kind of session this branch exists for.
+        // Checking imports directly too and taking whichever
+        // source saw the more recent completion covers both.
+        let hoursSinceHealthPush = TrainingPlanEngine.hoursSinceLastCompleted(
+            matching: { $0.activity == "Fuerza" || $0.activity == "Fuerza funcional" },
+            health: health, imports: imports, now: now
+        )
+        let hoursSinceImportedPush = imports.workouts.filter { $0.end <= now }.map(\.end).max()
+            .map { now.timeIntervalSince($0) / 3_600 }
+        let hoursSincePush = [hoursSinceHealthPush, hoursSinceImportedPush].compactMap { $0 }.min()
+        let calendar = Calendar.current
+        let saunaAlreadyToday = context.events.contains {
+            $0.saunaMinutes > 0 && calendar.isDate($0.date, inSameDayAs: now)
+        }
+        let walkAlreadyToday = health.recentWorkouts.contains {
+            $0.activity == "Caminata" && calendar.isDate($0.date, inSameDayAs: now)
+        }
+        let hasRunningGoal = TrainingPlanEngine.goalFocus(for: context.profile, on: now).running > 0.05
+        var exercises = [ProposedExercise(name: "Descanso completo", prescription: "El resto del día", cue: "Es la opción por defecto — no hace falta justificar nada más")]
+        // The only genuine second-training-stimulus option, and
+        // only when it actually serves a real goal in this plan.
+        if hasRunningGoal, let hoursSincePush, hoursSincePush >= 3 {
+            exercises.append(ProposedExercise(
+                name: "Carrera suave (aporta a tu plan)", prescription: "20–30 min · Z2\(zoneRange(zones?.z1z2, zones?.z2z3))",
+                cue: "Han pasado \(Int(hoursSincePush.rounded())) h desde la sesión de fuerza — margen suficiente para que la interferencia sea mínima, y es volumen real hacia tu objetivo de carrera"
+            ))
+        }
+        var extras: [ProposedExercise] = []
+        if !walkAlreadyToday {
+            extras.append(ProposedExercise(name: "Paseo suave", prescription: "20–30 min", cue: "Sin efecto demostrado sobre tu progreso — hazlo solo si te apetece"))
+        }
+        if !saunaAlreadyToday {
+            extras.append(ProposedExercise(name: "Calor (sauna)", prescription: "15–20 min", cue: "Evidencia mixta y pequeña sobre recuperación — no forma parte del plan, hidrátate después si lo haces"))
+        }
+        exercises.append(contentsOf: extras)
+        return ProposedWorkout(title: "Después del tren superior", duration: "Opcional",
+                               intent: hasRunningGoal ? "Descanso es la opción por defecto; la carrera es la única que realmente suma al plan" : "Ya hay estímulo real hoy — descansar es lo que corresponde",
+                               exercises: exercises,
+                               note: "Ya has entrenado tren superior con volumen real hoy.\(extras.isEmpty ? "" : " Paseo y sauna no son parte del entrenamiento — son elección personal, sin impacto real en tu progreso.")",
+                               kind: .recovery)
     }
 
     static func ramp(_ low: Double, _ high: Double, _ progress: Double) -> Double { low + (high - low) * min(1, max(0, progress)) }
@@ -364,10 +474,15 @@ enum WorkoutPlanner {
         return " \(worst.name) sigue en ventana de recuperación (\(worst.readiness)/100) — prioriza técnica, no busques el fallo."
     }
 
-    private static func bodyweight(for recommendation: String, light: Bool, muscles: [MuscleReadiness]) -> ProposedWorkout {
+    private static func bodyweight(for pattern: StrengthPattern, light: Bool, muscles: [MuscleReadiness]) -> ProposedWorkout {
         let rounds = light ? 3 : 4
-        if recommendation.localizedCaseInsensitiveContains("pierna") {
-            let legMuscles = ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"]
+        switch pattern {
+        case .legs:
+            // Gemelos entra aquí y no en StrengthPattern.muscles: ese
+            // conjunto es el que PUNTÚA el patrón (el gemelo no discrimina
+            // entre patrones, se entrena en cualquier día de pierna), y este
+            // es el que se PRESCRIBE. Ver el comentario del enum.
+            let legMuscles = StrengthPattern.legs.muscles + ["Gemelos"]
             return ProposedWorkout(title: "Pierna sin gimnasio", duration: "35–45 min", intent: light ? "Mantenimiento técnico" : "Fuerza unilateral y estabilidad", exercises: [
                 ProposedExercise(name: "Sentadilla búlgara", prescription: "\(rounds) × 8–12 por pierna", cue: "Deja 2 repeticiones en reserva"),
                 ProposedExercise(name: "Zancada inversa", prescription: "3 × 10 por pierna", cue: "Controla 3 s la bajada"),
@@ -375,26 +490,29 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Curl femoral deslizante", prescription: "3 × 8–12", cue: "Usa una toalla sobre suelo liso"),
                 ProposedExercise(name: "Gemelo unilateral", prescription: "3 × 15–25", cue: "Recorrido completo"),
                 ProposedExercise(name: "Plancha lateral", prescription: "3 × 30–45 s por lado", cue: "Pelvis estable")
-            ], note: "Evita colocarla junto a otra sesión dura de carrera si las piernas siguen cargadas." + (recoveryCue(for: legMuscles, in: muscles) ?? ""))
-        }
-        if recommendation.localizedCaseInsensitiveContains("tirón") {
-            let pullMuscles = ["Espalda", "Bíceps", "Core"]
+            ], note: "Evita colocarla junto a otra sesión dura de carrera si las piernas siguen cargadas." + (recoveryCue(for: legMuscles, in: muscles) ?? ""),
+            kind: .strength, strengthPattern: .legs)
+        case .pull:
+            let pullMuscles = StrengthPattern.pull.muscles + ["Core"]
             return ProposedWorkout(title: "Tirón y core sin gimnasio", duration: "30–40 min", intent: "Mantener espalda y bíceps", exercises: [
                 ProposedExercise(name: "Remo con mochila", prescription: "\(rounds) × 10–15", cue: "Carga la mochila y deja 2 repeticiones en reserva"),
                 ProposedExercise(name: "Remo invertido bajo mesa segura", prescription: "3 × 6–12", cue: "Solo si la mesa es completamente estable"),
                 ProposedExercise(name: "Pájaros con botellas", prescription: "3 × 15–20", cue: "Sin impulso"),
                 ProposedExercise(name: "Curl con mochila", prescription: "3 × 10–15", cue: "Codos quietos"),
                 ProposedExercise(name: "Dead bug", prescription: "3 × 8–12 por lado", cue: "Lumbar apoyada")
-            ], note: "Si no hay un apoyo seguro para remar, sustituye el remo invertido por otra serie de remo con mochila." + (recoveryCue(for: pullMuscles, in: muscles) ?? ""))
+            ], note: "Si no hay un apoyo seguro para remar, sustituye el remo invertido por otra serie de remo con mochila." + (recoveryCue(for: pullMuscles, in: muscles) ?? ""),
+            kind: .strength, strengthPattern: .pull)
+        case .push:
+            let pushMuscles = StrengthPattern.push.muscles
+            return ProposedWorkout(title: "Empuje sin gimnasio", duration: "30–40 min", intent: light ? "Mantenimiento con margen" : "Pecho, hombro y tríceps", exercises: [
+                ProposedExercise(name: "Flexiones", prescription: "\(rounds) × 8–20", cue: "Termina con 2 repeticiones en reserva"),
+                ProposedExercise(name: "Flexiones pike", prescription: "3 × 6–12", cue: "Cabeza hacia delante de las manos"),
+                ProposedExercise(name: "Fondos en banco estable", prescription: "3 × 8–15", cue: "Sin dolor anterior de hombro"),
+                ProposedExercise(name: "Flexiones cerradas", prescription: "3 × 6–12", cue: "Prioriza tríceps"),
+                ProposedExercise(name: "Hollow hold", prescription: "3 × 20–40 s", cue: "Reduce palanca si arqueas la zona lumbar")
+            ], note: "Aumenta dificultad con tempo lento o mochila antes de añadir muchas repeticiones." + (recoveryCue(for: pushMuscles, in: muscles) ?? ""),
+            kind: .strength, strengthPattern: .push)
         }
-        let pushMuscles = ["Pecho", "Hombros", "Tríceps"]
-        return ProposedWorkout(title: "Empuje sin gimnasio", duration: "30–40 min", intent: light ? "Mantenimiento con margen" : "Pecho, hombro y tríceps", exercises: [
-            ProposedExercise(name: "Flexiones", prescription: "\(rounds) × 8–20", cue: "Termina con 2 repeticiones en reserva"),
-            ProposedExercise(name: "Flexiones pike", prescription: "3 × 6–12", cue: "Cabeza hacia delante de las manos"),
-            ProposedExercise(name: "Fondos en banco estable", prescription: "3 × 8–15", cue: "Sin dolor anterior de hombro"),
-            ProposedExercise(name: "Flexiones cerradas", prescription: "3 × 6–12", cue: "Prioriza tríceps"),
-            ProposedExercise(name: "Hollow hold", prescription: "3 × 20–40 s", cue: "Reduce palanca si arqueas la zona lumbar")
-        ], note: "Aumenta dificultad con tempo lento o mochila antes de añadir muchas repeticiones." + (recoveryCue(for: pushMuscles, in: muscles) ?? ""))
     }
 
     // Internal (not private) so EngineTests can exercise the tracked-lift
@@ -405,12 +523,15 @@ enum WorkoutPlanner {
     // leyendo el singleton global — así que un perfil inyectado (un test, o
     // una simulación con otro perfil) elegía ejercicios según los objetivos
     // reales de la app, no según los que se le pasaron.
-    static func gym(for recommendation: String, imports: ImportStore, light: Bool, muscles: [MuscleReadiness],
+    static func gym(for pattern: StrengthPattern, imports: ImportStore, light: Bool, muscles: [MuscleReadiness],
                     goals: [TrainingGoal]) -> ProposedWorkout {
-        let target: [String]
-        if recommendation.localizedCaseInsensitiveContains("pierna") { target = ["Cuádriceps", "Glúteos", "Isquios"] }
-        else if recommendation.localizedCaseInsensitiveContains("tirón") { target = ["Espalda", "Bíceps"] }
-        else { target = ["Pecho", "Hombros", "Tríceps"] }
+        // PR8: el patrón llega como StrengthPattern, no como el titular en
+        // español del que había que deducirlo. El `else` de aquí era el
+        // problema real: cualquier texto que no contuviera "pierna" ni
+        // "tirón" —incluido "tiron" sin tilde, o un titular que status()
+        // cambiara de redacción— caía en el patrón de empuje sin que nada
+        // avisara de que se había fallado la clasificación.
+        let target = pattern.muscles
         let readinessByMuscle = Dictionary(uniqueKeysWithValues: muscles.map { ($0.name, $0.readiness) })
         // Default a muscle éter has no learned data for yet to "fresh" (100)
         // rather than penalizing it for being unmeasured.
@@ -437,11 +558,12 @@ enum WorkoutPlanner {
         // and "Curl femoral" was misread as a biceps curl via the bare
         // "curl" check). Also exact matches for ExerciseCatalog, so a
         // cold-start proposal gets the right equipment/pattern icon too.
-        let fallback = target.first == "Cuádriceps"
-            ? ["Squat (Barbell)", "Romanian Deadlift (Barbell)", "Leg Press (Machine)", "Leg Curl (Machine)"]
-            : target.first == "Espalda"
-            ? ["Pull Up", "Bent Over Row (Barbell)", "Lat Pulldown (Cable)", "Biceps Curl (Dumbbell)"]
-            : ["Bench Press (Barbell)", "Standing Military Press (Barbell)", "Incline Bench Press (Dumbbell)", "Triceps Extension (Cable)"]
+        let fallback: [String]
+        switch pattern {
+        case .legs: fallback = ["Squat (Barbell)", "Romanian Deadlift (Barbell)", "Leg Press (Machine)", "Leg Curl (Machine)"]
+        case .pull: fallback = ["Pull Up", "Bent Over Row (Barbell)", "Lat Pulldown (Cable)", "Biceps Curl (Dumbbell)"]
+        case .push: fallback = ["Bench Press (Barbell)", "Standing Military Press (Barbell)", "Incline Bench Press (Dumbbell)", "Triceps Extension (Cable)"]
+        }
         var pool = names.isEmpty ? fallback : names.sorted { exerciseReadiness($0) > exerciseReadiness($1) }
         // A specifically tracked lift (bench press, sentadilla) must be
         // the actual exercise trained on its own day, not just whichever
@@ -456,9 +578,9 @@ enum WorkoutPlanner {
         // "(barbell)" matters for bench press: bare "bench press" also
         // matches Incline/Dumbbell variations that aren't the tracked
         // flat-barbell lift a "100 kg de press banca" goal actually means.
-        if target.first == "Pecho", goals.contains(where: { $0.isActive && $0.kind == .benchPress }) {
+        if pattern == .push, goals.contains(where: { $0.isActive && $0.kind == .benchPress }) {
             trackedLiftTerms = ["bench press (barbell)", "press banca"]
-        } else if target.first == "Cuádriceps", goals.contains(where: { $0.isActive && $0.kind == .squat }) {
+        } else if pattern == .legs, goals.contains(where: { $0.isActive && $0.kind == .squat }) {
             trackedLiftTerms = ["squat (barbell)", "sentadilla"]
         } else {
             trackedLiftTerms = nil
@@ -486,7 +608,13 @@ enum WorkoutPlanner {
         }
         let leastFresh = target.compactMap { muscle in muscles.first { $0.name == muscle } }.min { $0.readiness < $1.readiness }
         let recoveryNote = (leastFresh?.readiness ?? 100) < 55 ? " \(leastFresh!.name) sigue recuperándose (\(leastFresh!.readiness)/100); los ejercicios de arriba ya priorizan el grupo más fresco disponible." : ""
-        return ProposedWorkout(title: recommendation, duration: "45–60 min", intent: "Sesión basada en tus ejercicios habituales de Hevy", exercises: Array(exercises), note: "Las cargas se estiman desde tu historial de Hevy y deben ajustarse por técnica y repeticiones en reserva." + recoveryNote)
+        // El título reproduce exactamente el titular que TwinEngine
+        // construía ("Empuje", "Empuje ligero"), pero desde el patrón y el
+        // flag `light` que esta función YA recibe — no desde un string que
+        // otro selector había elegido por su cuenta.
+        let title = light ? "\(pattern.label) ligero" : pattern.label
+        return ProposedWorkout(title: title, duration: "45–60 min", intent: "Sesión basada en tus ejercicios habituales de Hevy", exercises: Array(exercises), note: "Las cargas se estiman desde tu historial de Hevy y deben ajustarse por técnica y repeticiones en reserva." + recoveryNote,
+                               kind: .strength, strengthPattern: pattern)
     }
 
     /// Picks up to `count` names from `ranked` (already sorted best-first),
@@ -712,7 +840,7 @@ enum WorkoutPlanner {
             ? "La reducción es deliberada: esta semana buscamos asimilar el patrón, no sumar más volumen a las estaciones."
             : "Fase \(phase == .buildSpecific ? "de construcción específica" : phase == .taper ? "de afinamiento" : phase == .race ? "de competición" : phase == .transition ? "de transición" : "de base"): hoy toca ≈\(Int((intensity * 100).rounded()))% del volumen de referencia por estación (\(Int((progress * 100).rounded()))% del bloque). Rotan 5 de las 8 estaciones reales del HYROX cada semana — esta semana: \(stations.map(\.name).joined(separator: ", ")).")
             + goalTimelineNote(profile: profile)
-        return ProposedWorkout(title: title, duration: "60–80 min", intent: intent, exercises: exercises, note: note)
+        return ProposedWorkout(title: title, duration: "60–80 min", intent: intent, exercises: exercises, note: note, kind: .hybrid)
     }
 
     // Swim leg of a triathlon/Ironman goal. Reuses
@@ -760,7 +888,8 @@ enum WorkoutPlanner {
                 ProposedExercise(name: "Vuelta a la calma", prescription: "150–200 m muy suave", cue: "Piernas relajadas, respiración larga")
             ],
             note: (pace == nil ? "Sin sesiones de natación registradas todavía: el ritmo de la serie es genérico, no el tuyo. " : "")
-                + "Semana \(Int((progress * 100).rounded()))% del bloque · \(minutes) min de referencia.\(progressionNote)" + goalTimelineNote(profile: profile)
+                + "Semana \(Int((progress * 100).rounded()))% del bloque · \(minutes) min de referencia.\(progressionNote)" + goalTimelineNote(profile: profile),
+            kind: .swim
         )
     }
 
@@ -803,7 +932,8 @@ enum WorkoutPlanner {
             note: (speed == nil ? "Sin salidas de bici registradas todavía: la velocidad de referencia es genérica, no la tuya. " : "")
                 + "Semana \(Int((progress * 100).rounded()))% del bloque · \(minutes) min de referencia."
                 + (isPersonalized && personalizedCeiling < band.max ? " Techo ajustado a tu salida más larga reciente (progresión máxima ~\(Int((profile.effectiveProgressionPace.weeklyGrowthRate * 100).rounded()))%/semana, tu ritmo \(profile.effectiveProgressionPace.rawValue.lowercased()))." : "")
-                + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes), profile: profile)
+                + goalTimelineNote(profile: profile) + nutritionNote(minutes: Double(minutes), profile: profile),
+            kind: .bike
         )
     }
 
@@ -842,7 +972,8 @@ enum WorkoutPlanner {
                                 cue: "Las primeras piernas pesan; no es una señal de mal día" + (recoveryCue(for: ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"], in: muscles) ?? ""))
             ],
             note: "Objetivo de esta fase: acostumbrar al cuerpo a correr con fatiga de bici — la transferencia real que ninguna sesión por separado entrena." + goalTimelineNote(profile: profile)
-                + nutritionNote(minutes: Double(bikeMinutes + runMinutes), profile: profile)
+                + nutritionNote(minutes: Double(bikeMinutes + runMinutes), profile: profile),
+            kind: .brick
         )
     }
 
@@ -886,7 +1017,8 @@ enum WorkoutPlanner {
         return ProposedWorkout(
             title: "Día de competición: \(event.title)", duration: forecast.map { durationText($0.seconds) } ?? "—",
             intent: "Ejecutar el plan, no entrenar", exercises: exercises,
-            note: raceDayDisclaimer + (event.courseDetails?.courseElevationMeters.map { " El recorrido tiene \(Int($0)) m de desnivel — ajusta el ritmo en las subidas." } ?? "")
+            note: raceDayDisclaimer + (event.courseDetails?.courseElevationMeters.map { " El recorrido tiene \(Int($0)) m de desnivel — ajusta el ritmo en las subidas." } ?? ""),
+            kind: .raceDay
         )
     }
 
@@ -916,7 +1048,8 @@ enum WorkoutPlanner {
         return ProposedWorkout(
             title: "Día de competición: \(event.title)", duration: forecast.map { durationText($0.seconds) } ?? "—",
             intent: "Ejecutar el plan, no entrenar", exercises: exercises,
-            note: raceDayDisclaimer + wetsuitNote + (forecast?.courseCaveat.map { " " + $0 } ?? "")
+            note: raceDayDisclaimer + wetsuitNote + (forecast?.courseCaveat.map { " " + $0 } ?? ""),
+            kind: .raceDay
         )
     }
 
@@ -936,7 +1069,8 @@ enum WorkoutPlanner {
         exercises.append(stopCriteriaExercise())
         return ProposedWorkout(
             title: "Día de competición: \(event.title)", duration: forecast.map { durationText($0.seconds) } ?? "—",
-            intent: "Ejecutar el plan, no entrenar", exercises: exercises, note: raceDayDisclaimer
+            intent: "Ejecutar el plan, no entrenar", exercises: exercises, note: raceDayDisclaimer,
+            kind: .raceDay
         )
     }
 
