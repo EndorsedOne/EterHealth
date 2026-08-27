@@ -1740,7 +1740,10 @@ enum TrainingPlanEngine {
             // que la semana muestre cómo se va soltando el techo. Con señales
             // `.none` a propósito — un día que no ha ocurrido no tiene HRV ni
             // sueño medidos, y el prior es la respuesta honesta.
-            let dayTravel = TravelImpactEngine.impact(episode: context.travel, at: date, signals: .none)
+            let dayTravel = TravelImpactEngine.impact(episode: context.travel, at: date, signals: .none,
+                                                      // PR16: las mismas tasas que assess() ha usado para
+                                                      // hoy, no el prior — ver TwinAssessment.travelRates.
+                                                      rates: assessment.travelRates)
             if let dayCeiling = SessionIntensityCeiling.resolve(alert: nil, travel: dayTravel),
                dayCeiling.excludes(kind) {
                 rationale = "\(dayCeiling.explanation) Se sustituye \(kind.rawValue.lowercased()) por un estímulo más suave."

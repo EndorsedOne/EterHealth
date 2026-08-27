@@ -52,13 +52,19 @@ struct TravelView: View {
     /// al abrir la pantalla es correcto, no una aproximación.
     @State private var now = Date()
 
+    /// PR16: lo aprendido de los episodios ya medidos. Función pura de
+    /// `travel.episodes`, así que llamarla aquí y en TwinEngine.assess no crea
+    /// dos estimaciones — es la misma función sobre la misma entrada.
+    private var profile: TravelResponseProfile { TravelLearningEngine.profile(episodes: travel.episodes) }
+
     var body: some View {
         NavigationStack {
             List {
                 if let current = travel.currentEpisode(at: now) {
                     Section("Viaje actual") {
-                        CurrentTravelCard(episode: current, now: now)
-                        TravelTimelineStrip(episode: current, now: now)
+                        CurrentTravelCard(episode: current, now: now, rates: profile.rates,
+                                          ratesAreLearned: profile.hasLearnedAnything)
+                        TravelTimelineStrip(episode: current, now: now, rates: profile.rates)
                         Button("Editar") { editor = .existing(current) }
                         Button("Cancelar este viaje", role: .destructive) { travel.cancel(id: current.id) }
                     }
@@ -68,6 +74,8 @@ struct TravelView: View {
                             .font(.callout).foregroundStyle(.secondary)
                     }
                 }
+
+                TravelResponseSection(profile: profile)
 
                 let history = travel.completedEpisodes(at: now)
                 if !history.isEmpty {
@@ -138,8 +146,14 @@ struct TravelView: View {
 private struct CurrentTravelCard: View {
     let episode: TravelEpisode
     let now: Date
+    /// PR16: las tasas con las que se calculan las duraciones que se muestran.
+    /// Las aprendidas cuando existen, el prior mientras no — y la nota al pie
+    /// de la tarjeta dice cuál de las dos está usando, porque un número
+    /// medido y un número de la literatura no son la misma afirmación.
+    let rates: ReentrainmentRates
+    let ratesAreLearned: Bool
 
-    private var phase: TravelPhase { episode.phase(at: now) }
+    private var phase: TravelPhase { episode.phase(at: now, rates: rates) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -176,7 +190,10 @@ private struct CurrentTravelCard: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption.bold()).foregroundStyle(EterTheme.danger)
             }
-            Text("Fase y duraciones estimadas con las tasas de re-sincronización de la literatura (≈1 h/día hacia el este, ≈1.5 h/día hacia el oeste). Es un punto de partida, no una medición tuya.")
+            Text(ratesAreLearned
+                 ? String(format: "Fase y duraciones con TUS tasas medidas (%.1f h/día hacia el este, %.1f hacia el oeste), no con el prior de la literatura.",
+                          rates.advanceHoursPerDay, rates.delayHoursPerDay)
+                 : "Fase y duraciones estimadas con las tasas de re-sincronización de la literatura (≈1 h/día hacia el este, ≈1.5 h/día hacia el oeste). Es un punto de partida, no una medición tuya.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }
@@ -237,7 +254,7 @@ private struct CurrentTravelCard: View {
     }
 
     private var remainingDescription: String? {
-        guard let end = episode.currentPhaseEnd(at: now), end > now else { return nil }
+        guard let end = episode.currentPhaseEnd(at: now, rates: rates), end > now else { return nil }
         return "hasta " + end.formatted(date: .abbreviated, time: .shortened)
     }
 }
@@ -247,9 +264,10 @@ private struct CurrentTravelCard: View {
 private struct TravelTimelineStrip: View {
     let episode: TravelEpisode
     let now: Date
+    let rates: ReentrainmentRates
 
     var body: some View {
-        let current = episode.phase(at: now)
+        let current = episode.phase(at: now, rates: rates)
         VStack(alignment: .leading, spacing: 8) {
             Text("LÍNEA TEMPORAL").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
             if current == .cancelled {
@@ -280,9 +298,9 @@ private struct TravelTimelineStrip: View {
     private func phaseDetail(_ phase: TravelPhase) -> String? {
         switch phase {
         case .destinationAdaptation:
-            return "Adaptación estimada: \(TravelFormat.days(episode.destinationAdaptationDays)) desde la llegada."
+            return "Adaptación estimada: \(TravelFormat.days(episode.destinationAdaptationDays(rates: rates))) desde la llegada."
         case .homeReadaptation:
-            return "Readaptación estimada: \(TravelFormat.days(episode.homeReadaptationDays)) desde la vuelta — su propia fase, con la tasa de la dirección contraria a la ida."
+            return "Readaptación estimada: \(TravelFormat.days(episode.homeReadaptationDays(rates: rates))) desde la vuelta — su propia fase, con la tasa de la dirección contraria a la ida."
         case .destinationStable:
             return episode.resolvedStayPolicy == .keepHomeSchedule
                 ? "Sin adaptación en destino: se mantiene el horario de origen."
@@ -290,6 +308,101 @@ private struct TravelTimelineStrip: View {
         default:
             return nil
         }
+    }
+}
+
+// MARK: - Tu respuesta a los viajes
+
+/// La pantalla que el brief pide: prior frente a medido, por dirección y por
+/// tramo. Deliberadamente NO promedia ida y vuelta en un solo "tu jet lag":
+/// adelantar y retrasar fase son fisiologías distintas, y un número único
+/// escondería justo lo que hace útil el modelo.
+private struct TravelResponseSection: View {
+    let profile: TravelResponseProfile
+
+    var body: some View {
+        Section {
+            if profile.measuredOutcomes.isEmpty {
+                Text("Todavía no hay ningún tramo medido. Cuando un viaje llegue a estabilizarse —tres días seguidos con sueño y HRV dentro de tus bandas— éter guarda cuántos días tardó, y con dos tramos en la misma dirección empieza a usar TU tasa en lugar del prior de la literatura.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach([true, false], id: \.self) { isAdvance in
+                    directionRow(isAdvance: isAdvance)
+                }
+                Divider()
+                ForEach(profile.measuredOutcomes) { outcome in
+                    OutcomeRow(outcome: outcome)
+                }
+            }
+        } header: {
+            Text("Tu respuesta a los viajes")
+        } footer: {
+            Text("Se mide por tramo y por dirección, nunca promediando los dos: hacia el este hay que adelantar el reloj y hacia el oeste retrasarlo, y el cuerpo no hace lo mismo en los dos casos. Un episodio con enfermedad, lesión, competición, alcohol o carga extraordinaria queda fuera de la estimación.")
+        }
+    }
+
+    @ViewBuilder
+    private func directionRow(isAdvance: Bool) -> some View {
+        let learned = isAdvance ? profile.advance : profile.delay
+        let prior = isAdvance ? ReentrainmentRates.prior.advanceHoursPerDay : ReentrainmentRates.prior.delayHoursPerDay
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(isAdvance ? "Hacia el este" : "Hacia el oeste").font(.subheadline.bold())
+                Spacer()
+                if let learned {
+                    Text(String(format: "%.1f h/día", learned.hoursPerDay)).font(.headline)
+                } else {
+                    Text(String(format: "%.1f h/día", prior)).font(.headline).foregroundStyle(.secondary)
+                }
+            }
+            if let learned {
+                Text(detail(for: learned)).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Prior de la literatura — aún sin tramos suficientes en esta dirección.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func detail(for learned: LearnedReentrainmentRate) -> String {
+        var parts = ["tuyo, de \(learned.episodesUsed) tramo\(learned.episodesUsed == 1 ? "" : "s")"]
+        parts.append(String(format: "prior %.1f", learned.priorHoursPerDay))
+        if learned.isBounded {
+            parts.append(String(format: "tu mediana es %.1f, acotada al tope de ×%.1f del prior",
+                                learned.medianHoursPerDay,
+                                learned.hoursPerDay > learned.priorHoursPerDay
+                                    ? TravelLearningEngine.maximumPriorMultiple
+                                    : TravelLearningEngine.minimumPriorMultiple))
+        }
+        parts.append("confianza \(learned.confidence.level.rawValue.lowercased())")
+        return parts.joined(separator: " · ")
+    }
+}
+
+private struct OutcomeRow: View {
+    let outcome: TravelLegOutcome
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("\(outcome.title) · \(outcome.leg.rawValue)").font(.caption.bold())
+                Spacer()
+                Text(outcome.arrival.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Text(summary).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private var summary: String {
+        var parts = [String(format: "%+.0f h", outcome.shiftHours)]
+        if let actual = outcome.actualDays {
+            parts.append(String(format: "%.1f días reales frente a %.1f del prior", actual, outcome.priorDays))
+        }
+        if !outcome.confounders.isEmpty {
+            parts.append("fuera de la estimación: " + outcome.confounders.descriptions.joined(separator: ", "))
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

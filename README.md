@@ -481,7 +481,47 @@ días consecutivos dentro de bandas personales cierran el desajuste antes de lo
 previsto, y un hueco sin dato rompe la racha. Nunca lo alargan — atribuir a un
 viaje unas señales malas a los diez días sería una afirmación insostenible, así
 que lo que baja es la confianza. Y aparecen en la explicación sin volver a
-cobrar: ya cuentan una vez en las señales propias de `assess`. Además: check-in diario, lesiones activas
+cobrar: ya cuentan una vez en las señales propias de `assess`.
+
+### 4.1 Tu respuesta a los viajes (aprendizaje)
+
+Cuando un tramo se estabiliza, los días reales se **guardan** en el episodio
+(`TravelEpisode.measuredOutcome`). No es una excepción a "la fase se deriva": es
+una medición, y tiene que persistirse porque las series de HRV y sueño de
+HealthKit sólo llegan **90 días** atrás — con tres o cuatro viajes al año, un
+aprendiz que sólo leyera esa ventana casi nunca tendría dos tramos comparables a
+la vez. Se captura mientras el dato existe y se conserva para siempre, igual que
+`TwinStateStore` persiste el estado diario del gemelo.
+
+`TravelLearningEngine` aprende una **tasa** (h/día), no una duración. Es la
+misma magnitud que el prior, así que la sustitución se propaga sola a la
+duración de las fases, al decaimiento del desajuste y al paso de `step()`. Y
+aprender una tasa **normaliza la magnitud**: un Madrid–Nueva York de 6 h y un
+Madrid–Tokio de 8 h no son comparables en días, pero sí en h/día, así que los
+dos entran en la misma estimación — lo único que tiene que coincidir es la
+dirección.
+
+| | Valor |
+|---|---|
+| Mínimo para afirmar algo | **2** tramos medidos en esa dirección |
+| Confianza alta | 3 tramos |
+| Topes contra el prior | ×0.5 … ×2 |
+| Estadístico | mediana, no media |
+| Fuera de la estimación | episodios cancelados, con `keepHomeSchedule`, o con cualquier confusor (enfermedad, lesión, competición, alcohol, carga extraordinaria) |
+
+Dos tramos son poca evidencia, y por eso el resultado va acotado y la confianza
+es media hasta el tercero. El umbral no es 8 como en `VolumeLandmarkLearning`
+porque las unidades no son comparables: allí una semana de volumen llega cada
+siete días, aquí un viaje intercontinental llega tres o cuatro veces al año.
+Exigir ocho sería no aprender nunca, y un aprendiz que nunca aprende es peor
+que no tenerlo — da la impresión de que el sistema se adapta cuando no.
+
+**Este y oeste se aprenden por separado y nunca se promedian**, y cada dirección
+cae al prior de forma independiente: se puede haber aprendido el oeste y no el
+este. La pantalla **Viajes → Tu respuesta a los viajes** muestra las dos tasas
+con su prior al lado, cuántos tramos las sostienen, y tramo a tramo los días
+reales frente a los que el prior predijo (siempre el prior de literatura, no lo
+aprendido — si no, la comparación sería un espejo de sí misma). Además: check-in diario, lesiones activas
 con restricciones, factores de estilo de vida, y reviews de sesión (RPE
 real), que es lo que permite clasificar calidad por evidencia en vez de por
 kcal/min.
@@ -510,40 +550,44 @@ Están documentadas en el código, en el sitio donde ocurren. Resumen:
    coste real que este modelo no representa: sólo cuenta la fatiga de
    tránsito. La alternativa era inventarse una fracción del desplazamiento, y
    no hay evidencia para elegirla.
-4. **Las tasas de re-sincronización son un prior, y lineal.** Para
-   desplazamientos de 12 h o más la re-sincronización deja de ser monotónica
-   (puede ocurrir por el lado contrario), algo que este modelo no captura — de
-   ahí el tope de 14 días. Y no se aprenden todavía de este atleta: las
-   señales sólo pueden acortar el prior, nunca sustituirlo.
-5. **El aprendizaje de viajes de `HabitAssociationEngine` está inerte.**
-   Sigue leyendo `LifestyleEvent.timeZoneDifference`, que ya no se escribe
-   desde ninguna UI. Migrarlo a episodios (y aprender por dirección, que son
-   fisiologías distintas) es el PR siguiente.
-6. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
+4. **El decaimiento del desajuste es lineal, y eso deja de valer en el
+   extremo.** Para desplazamientos de 12 h o más la re-sincronización deja de
+   ser monotónica (puede ocurrir por el lado contrario), algo que este modelo
+   no captura — de ahí el tope de 14 días.
+5. **La política de estancia usa el prior a propósito, no las tasas
+   aprendidas.** Si `resolvedStayPolicy` cambiara con lo aprendido, el mismo
+   viaje podría pasar de "adaptarse" a "mantener horario" entre dos aperturas
+   de la app sin que nadie tocara nada. Es una decisión de planificación que
+   el atleta ve y puede sobrescribir, así que se queda estable.
+6. **`LifestyleEvent.timeZoneDifference` sigue en el modelo, ya sin ningún
+   consumidor.** Se conserva sólo para que las copias de seguridad y los
+   eventos ya guardados sigan decodificando. Ni la UI lo escribe ni ningún
+   motor lo lee.
+7. **τ fijas.** 42/7 (aeróbico) y 28/5 (fuerza) días son la misma heurística
    Banister-style que ya usaba `TrainingScenarioEngine`, partida en dos
    canales. No se ajustan por atleta.
-7. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
+8. **El reparto aeróbico/fuerza de una sesión mixta es heurístico**:
    `DualLoad.split` da 0.6/0.4 a híbrido y brick. No sale de medición.
-8. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
+9. **`forecastSessionLoad` es estructural, no personal.** No hay forma de
    partir el historial de alguien por tipo de sesión *planificada*, así que
    la carga estimada por `PlannedSessionKind` es una tabla, no un ajuste.
-9. **La dosis de carrera no se escala por distancia objetivo** en
+10. **La dosis de carrera no se escala por distancia objetivo** en
    `status` (sí en `WorkoutPlanner`, que es donde sale la prescripción real).
    Es una señal secundaria de ponderación, y duplicar ahí la resolución de
    `targetKilometers` no compensa.
-10. **La dosis de brick no tiene techo personal**: no existe una actividad
+11. **La dosis de brick no tiene techo personal**: no existe una actividad
    HealthKit única "brick" contra la que medir "el brick más largo
    reciente".
-11. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
+12. **`weekAhead` congela varias entradas** a su valor de hoy durante toda la
    ventana simulada (readiness, `hoursSince*`, y la semilla de `recentSets`
    no rueda fuera de su ventana de 7 días). Es una simplificación asumida y
    comentada, no un descuido.
-12. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
+13. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
    de un solo canal combinado dentro de `ForwardState`, no en los dos
    canales de `DualLoad`.
-13. **`MuscleMap` hace matching de substrings en inglés** (la convención de
+14. **`MuscleMap` hace matching de substrings en inglés** (la convención de
    los exports de Hevy). Nombres en español caen al bucket genérico.
-14. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
+15. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
     (macOS purga `/tmp`). No es un fallo: es un skip explícito.
 
 ---

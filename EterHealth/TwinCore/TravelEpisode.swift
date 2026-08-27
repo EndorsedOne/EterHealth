@@ -46,6 +46,30 @@ import Foundation
 /// decir ~5.5 días para 9 husos al este frente a los ~9 días del prior de
 /// literatura. Se sustituye, no se conserva — el usuario lo ha aprobado
 /// explícitamente y ese número no estaba respaldado por nada.
+/// Las dos tasas que gobiernan la re-sincronización, como VALOR — para que
+/// lo aprendido de este atleta pueda sustituir al prior sin que ningún
+/// consumidor tenga que saber de dónde vino.
+///
+/// Exactamente el mismo patrón que MuscleVolumeLandmarkTable: el prior es el
+/// default, el aprendizaje lo sustituye cuando hay evidencia, y el tipo no
+/// distingue entre los dos casos porque los consumidores no deben distinguirlos
+/// — sólo la UI dice si el número es prior o medido.
+struct ReentrainmentRates: Equatable {
+    /// Viaje al este: hay que adelantar fase. La dirección difícil.
+    var advanceHoursPerDay: Double
+    /// Viaje al oeste: hay que retrasarla. La fácil.
+    var delayHoursPerDay: Double
+
+    static let prior = ReentrainmentRates(
+        advanceHoursPerDay: CircadianReentrainment.advanceHoursPerDay,
+        delayHoursPerDay: CircadianReentrainment.delayHoursPerDay
+    )
+
+    func hoursPerDay(forOffsetHours offset: Double) -> Double {
+        offset > 0 ? advanceHoursPerDay : delayHoursPerDay
+    }
+}
+
 enum CircadianReentrainment {
     /// Viaje al ESTE: el reloj tiene que adelantarse. La dirección difícil.
     static let advanceHoursPerDay = 1.0
@@ -67,16 +91,23 @@ enum CircadianReentrainment {
     /// episodio: un escalar con signo lleva dentro la dirección, mientras que
     /// un `Int` de husos más un `enum` de dirección obligan a arrastrar el
     /// episodio hasta dentro de la fisiología.
-    nonisolated static func hoursPerDay(forOffsetHours offset: Double) -> Double {
-        offset > 0 ? advanceHoursPerDay : delayHoursPerDay
+    nonisolated static func hoursPerDay(forOffsetHours offset: Double,
+                                        rates: ReentrainmentRates = .prior) -> Double {
+        rates.hoursPerDay(forOffsetHours: offset)
     }
 
-    /// Días de re-sincronización espontánea para un desplazamiento con signo.
-    /// 0 cuando no hay desplazamiento — no hay nada que re-sincronizar, que es
-    /// distinto de "se re-sincroniza instantáneamente".
-    nonisolated static func daysToRealign(offsetHours offset: Double) -> Double {
+    /// Días de re-sincronización para un desplazamiento con signo. 0 cuando no
+    /// hay desplazamiento — no hay nada que re-sincronizar, que es distinto de
+    /// "se re-sincroniza instantáneamente".
+    ///
+    /// `rates` con default `.prior`: PR16 pasa aquí las tasas aprendidas de
+    /// este atleta cuando existen, y todo lo que depende de esta función
+    /// (duración de las fases, decaimiento del desajuste, el paso de step())
+    /// las hereda sin cambiar nada más.
+    nonisolated static func daysToRealign(offsetHours offset: Double,
+                                          rates: ReentrainmentRates = .prior) -> Double {
         guard offset != 0 else { return 0 }
-        return min(maximumAdaptationDays, abs(offset) / hoursPerDay(forOffsetHours: offset))
+        return min(maximumAdaptationDays, abs(offset) / rates.hoursPerDay(forOffsetHours: offset))
     }
 }
 
@@ -277,12 +308,23 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// estado real y no derivable es la cancelación, porque es una decisión
     /// del atleta que ninguna fecha puede expresar.
     var isCancelled: Bool
+    /// PR16: los días REALES hasta estabilidad, medidos y guardados.
+    ///
+    /// Esto sí se almacena, y no es una excepción a "la fase se deriva": es
+    /// una MEDICIÓN, no un estado derivable. Y tiene que guardarse porque las
+    /// series de HRV y sueño de HealthKit sólo llegan 90 días atrás: con tres
+    /// o cuatro viajes intercontinentales al año, un aprendiz que sólo leyera
+    /// esa ventana casi nunca tendría dos episodios comparables a la vez. Se
+    /// captura mientras el dato todavía está en la ventana y se conserva para
+    /// siempre — el mismo motivo por el que TwinStateStore persiste el estado
+    /// diario del gemelo en vez de recalcularlo del historial.
+    var measuredOutcome: TravelMeasuredOutcome?
     var note: String
 
     init(id: UUID = UUID(), title: String, homeTimeZoneID: String, destinationTimeZoneID: String,
          outboundFlights: [FlightSegment] = [], returnFlights: [FlightSegment] = [],
          expectedStayEndDate: Date? = nil, declaredStayPolicy: TravelStayPolicy? = nil,
-         isCancelled: Bool = false, note: String = "") {
+         isCancelled: Bool = false, measuredOutcome: TravelMeasuredOutcome? = nil, note: String = "") {
         self.id = id
         self.title = title
         self.homeTimeZoneID = homeTimeZoneID
@@ -292,6 +334,7 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         self.expectedStayEndDate = expectedStayEndDate
         self.declaredStayPolicy = declaredStayPolicy
         self.isCancelled = isCancelled
+        self.measuredOutcome = measuredOutcome
         self.note = note
     }
 
@@ -383,6 +426,12 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         return max(Self.minimumStayForAdaptation, halfRealignment)
     }
 
+    /// PR16: esta se queda deliberadamente con el PRIOR y no con las tasas
+    /// aprendidas. La política de estancia es una decisión de planificación que
+    /// el atleta ve y puede sobrescribir; si cambiara sola a medida que el
+    /// modelo aprende, el mismo viaje podría pasar de "adaptarse" a "mantener
+    /// horario" entre dos aperturas de la app sin que nadie tocara nada. El
+    /// prior es el default estable y explicable que corresponde aquí.
     var resolvedStayPolicy: TravelStayPolicy {
         if let declaredStayPolicy { return declaredStayPolicy }
         // Sin estancia conocida todavía (no hay vuelta ni fecha esperada), lo
@@ -399,9 +448,9 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// Días de adaptación en destino, según el prior. Cero con
     /// `keepHomeSchedule`: si el reloj no se mueve, no hay nada que adaptar,
     /// y decir "0 días de adaptación" es distinto de decir "ya está adaptado".
-    var destinationAdaptationDays: Double {
+    func destinationAdaptationDays(rates: ReentrainmentRates = .prior) -> Double {
         guard resolvedStayPolicy == .adaptToDestination else { return 0 }
-        return CircadianReentrainment.daysToRealign(offsetHours: outboundShiftHours)
+        return CircadianReentrainment.daysToRealign(offsetHours: outboundShiftHours, rates: rates)
     }
 
     /// Días de readaptación en casa. LA FASE PROPIA DE LA VUELTA, que era un
@@ -411,12 +460,12 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// ~8 días de adaptación (8 h al este, 1 h/día); Tokio→Madrid son ~5.3 de
     /// readaptación (8 h al oeste, 1.5 h/día). Reutilizar el resultado de la
     /// ida daría 8 y sería falso.
-    var homeReadaptationDays: Double {
+    func homeReadaptationDays(rates: ReentrainmentRates = .prior) -> Double {
         guard resolvedStayPolicy == .adaptToDestination else { return 0 }
         let shift = returnFlights.isEmpty
             ? projectedReturnShiftHours(at: stayEnd ?? Date(timeIntervalSince1970: 0))
             : returnShiftHours
-        return CircadianReentrainment.daysToRealign(offsetHours: shift)
+        return CircadianReentrainment.daysToRealign(offsetHours: shift, rates: rates)
     }
 
     // MARK: Fase
@@ -425,7 +474,7 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// guardado con su fase dentro reportaría una fase falsa en cuanto la app
     /// pasara tres días sin abrirse, y ese es justo el fallo que el check
     /// diario ya tenía.
-    func phase(at date: Date) -> TravelPhase {
+    func phase(at date: Date, rates: ReentrainmentRates = .prior) -> TravelPhase {
         if isCancelled { return .cancelled }
         guard let outboundDeparture, let destinationArrival else { return .preDeparture }
         if date < outboundDeparture { return .preDeparture }
@@ -434,28 +483,51 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         if let returnDeparture, date >= returnDeparture {
             guard let homeArrival else { return .returnTransit }
             if date < homeArrival { return .returnTransit }
-            let readaptationEnd = homeArrival.addingTimeInterval(homeReadaptationDays * 86_400)
+            let readaptationEnd = homeArrival.addingTimeInterval(homeReadaptationDays(rates: rates) * 86_400)
             return date < readaptationEnd ? .homeReadaptation : .recovered
         }
 
-        let adaptationEnd = destinationArrival.addingTimeInterval(destinationAdaptationDays * 86_400)
+        let adaptationEnd = destinationArrival.addingTimeInterval(destinationAdaptationDays(rates: rates) * 86_400)
         return date < adaptationEnd ? .destinationAdaptation : .destinationStable
     }
 
     /// Cuándo termina la fase actual, para que la línea temporal pueda decir
     /// "quedan 2 días" en vez de sólo nombrar la fase. nil cuando no se puede
     /// saber (una estancia sin vuelta ni fecha esperada, o ya recuperado).
-    func currentPhaseEnd(at date: Date) -> Date? {
-        switch phase(at: date) {
+    func currentPhaseEnd(at date: Date, rates: ReentrainmentRates = .prior) -> Date? {
+        switch phase(at: date, rates: rates) {
         case .preDeparture: return outboundDeparture
         case .outboundTransit: return destinationArrival
         case .destinationAdaptation:
-            return destinationArrival?.addingTimeInterval(destinationAdaptationDays * 86_400)
+            return destinationArrival?.addingTimeInterval(destinationAdaptationDays(rates: rates) * 86_400)
         case .destinationStable: return stayEnd
         case .returnTransit: return homeArrival
         case .homeReadaptation:
-            return homeArrival?.addingTimeInterval(homeReadaptationDays * 86_400)
+            return homeArrival?.addingTimeInterval(homeReadaptationDays(rates: rates) * 86_400)
         case .recovered, .cancelled: return nil
         }
     }
+}
+
+/// Los días reales hasta estabilidad, por tramo, tal y como se midieron.
+///
+/// Los confusores se congelan en el momento de medir y no se recalculan
+/// después: si el atleta estuvo enfermo durante la adaptación en destino, ese
+/// episodio no sirve para aprender con el mismo peso — y eso sigue siendo
+/// verdad seis meses más tarde, cuando el check-in de aquel día ya no está en
+/// ninguna ventana que nadie consulte.
+struct TravelMeasuredOutcome: Codable, Equatable {
+    /// Días desde la llegada al destino hasta que las señales confirmaron
+    /// estabilidad sostenida. nil = nunca se confirmó dentro del episodio, que
+    /// es información distinta de "tardó mucho".
+    var destinationStabilityDays: Double?
+    var homeStabilityDays: Double?
+    /// `TravelConfounders.rawValue` congelado. Int y no el OptionSet porque
+    /// este tipo es Codable y persistido: un rawValue estable sobrevive a que
+    /// alguien añada un caso nuevo al OptionSet.
+    var confoundersRawValue: Int
+    var lastMeasuredAt: Date
+
+    var confounders: TravelConfounders { TravelConfounders(rawValue: confoundersRawValue) }
+    var hasAnything: Bool { destinationStabilityDays != nil || homeStabilityDays != nil }
 }

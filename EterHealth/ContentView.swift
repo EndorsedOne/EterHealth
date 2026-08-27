@@ -276,7 +276,7 @@ struct ContentView: View {
                    // (TravelEpisodeStore.currentEpisode) para que la tarjeta de
                    // Viajes, el gemelo y el plan no puedan elegir episodios
                    // distintos.
-                   travel: travel.currentEpisode())
+                   travel: travel.currentEpisode(), travelHistory: travel.episodes)
     }
 
     private func refreshDashboard() {
@@ -284,7 +284,8 @@ struct ContentView: View {
         dashboard.refresh(health: health, imports: imports, checkIn: checkIns.entry(),
                          profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
                          activeInjuries: injuries.active, calibration: twinStates.calibration,
-                         personalAnchor: twinStates.personalAnchor(), travel: travel.currentEpisode())
+                         personalAnchor: twinStates.personalAnchor(),
+                         travel: travel.currentEpisode(), travelHistory: travel.episodes)
     }
 
     private var currentAssessment: TwinAssessment {
@@ -1390,12 +1391,33 @@ struct ContentView: View {
         }.cardStyle()
     }
 
+    /// PR16: guarda los días reales hasta estabilidad EN CUANTO se confirman,
+    /// mientras las series de sueño y HRV que los demuestran siguen dentro de
+    /// su ventana de 90 días. Sin esto, el aprendizaje sólo podría mirar los
+    /// últimos tres meses — y con tres o cuatro viajes al año nunca habría dos
+    /// tramos comparables a la vez en la misma dirección.
+    ///
+    /// Va junto a las otras dos capturas diarias (el plan y el estado del
+    /// gemelo) porque es lo mismo: convertir algo que hoy se puede medir en
+    /// algo que mañana se podrá recordar.
+    private func captureTravelStabilityIfNeeded(_ assessment: TwinAssessment) {
+        guard let episode = travel.currentEpisode(),
+              let stabilizedAt = assessment.travel.stabilizedAt else { return }
+        let leg: TravelLeg = assessment.travel.phase == .homeReadaptation ? .homeReturn : .outbound
+        guard let anchor = leg == .homeReturn ? episode.homeArrival : episode.destinationArrival,
+              stabilizedAt >= anchor else { return }
+        travel.recordStability(episodeID: episode.id, leg: leg,
+                               days: stabilizedAt.timeIntervalSince(anchor) / 86_400,
+                               confounders: assessment.travel.confounders)
+    }
+
     private func captureCurrentPlanIfNeeded() {
         guard health.authorizationRequested else { return }
         let assessment = currentAssessment
         let plan = currentPlan
         planHistory.captureIfNeeded(plan, health: health)
         twinStates.capture(assessment: assessment, health: health)
+        captureTravelStabilityIfNeeded(assessment)
     }
 
     private func syncWatchSummary() {

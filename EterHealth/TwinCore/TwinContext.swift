@@ -29,4 +29,13 @@ struct TwinContext {
     // tenido que recibirlo explícitamente o el simulador diría que un HIIT
     // sale gratis mientras el plan lo limita.
     var travel: TravelEpisode? = nil
+    // PR16: TODOS los episodios, para aprender. Es un campo distinto de
+    // `travel` a propósito y no una lista de la que derivar el activo: cuál es
+    // "el viaje actual" lo decide TravelEpisodeStore.currentEpisode, en un
+    // solo sitio, y duplicar esa resolución dentro de TwinCore es exactamente
+    // cómo la tarjeta y el plan acabarían eligiendo episodios distintos.
+    //
+    // Vacío por default: sin historial, TravelLearningEngine devuelve el prior
+    // y el comportamiento es el de PR15 sin cambiar nada.
+    var travelHistory: [TravelEpisode] = []
 }

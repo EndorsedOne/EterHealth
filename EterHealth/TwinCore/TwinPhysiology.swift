@@ -164,7 +164,8 @@ struct RecoverySignals {
 //    MuscleMap.involvement) siempre que hay uno disponible — la decaída
 //    genérica de aquí abajo es solo el resultado honesto para cuando no
 //    hay ese detalle (la predicción de mañana de TwinStateStore).
-func step(_ state: TwinPhysiology, session: SessionLoad?, recoverySignals: RecoverySignals, dtDays: Double) -> TwinPhysiology {
+func step(_ state: TwinPhysiology, session: SessionLoad?, recoverySignals: RecoverySignals, dtDays: Double,
+          rates: ReentrainmentRates = .prior) -> TwinPhysiology {
     let load = session ?? .none
 
     // Misma forma que PerformanceEngine.stepWeeklyEquivalent (el "current"
@@ -245,7 +246,12 @@ func step(_ state: TwinPhysiology, session: SessionLoad?, recoverySignals: Recov
         circadianOffsetHours = travel.circadianOffsetHours
         travelFatigue = travel.travelFatigue
     } else {
-        let rate = CircadianReentrainment.hoursPerDay(forOffsetHours: state.circadianOffsetHours)
+        // PR16: las tasas aprendidas de este atleta cuando existen. Si el
+        // decaimiento de aquí usara el prior mientras TravelImpactEngine
+        // calcula el desajuste con la tasa aprendida, hoy y mañana
+        // discreparían — el mismo fallo que este PR viene a cerrar, sólo que
+        // desplazado un día.
+        let rate = rates.hoursPerDay(forOffsetHours: state.circadianOffsetHours)
         let resolved = rate * dtDays
         let magnitude = max(0, abs(state.circadianOffsetHours) - resolved)
         circadianOffsetHours = state.circadianOffsetHours > 0 ? magnitude : -magnitude

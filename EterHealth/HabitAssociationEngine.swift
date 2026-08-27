@@ -129,10 +129,20 @@ enum HabitAssociationEngine {
         // existing caller keeps behaving exactly as before.
         deepShare: [TrendPoint] = [], remShare: [TrendPoint] = [],
         sleepSchedule: [NightlySleepSchedule] = [],
+        // PR16: los episodios de viaje. `.travel` se etiquetaba leyendo
+        // LifestyleEvent.timeZoneDifference, el campo del cuestionario diario
+        // que PR14 dejó de escribir — así que esta asociación estaba INERTE:
+        // seguía calculándose, y siempre sobre cero ocurrencias. Ahora un día
+        // cuenta como día de viaje si cae dentro de una fase del episodio que
+        // de verdad afecta (tránsito, adaptación o readaptación), que es la
+        // misma definición que usa el resto del modelo.
+        travelEpisodes: [TravelEpisode] = [],
         now: Date = Date()
     ) -> [HabitAssociation] {
         analyze(
-            occurrences: occurrences(events: events, alcohol: alcohol) + lateBedtimeOccurrences(schedule: sleepSchedule, now: now),
+            occurrences: occurrences(events: events, alcohol: alcohol)
+                + travelOccurrences(episodes: travelEpisodes, now: now)
+                + lateBedtimeOccurrences(schedule: sleepSchedule, now: now),
             hrv: hrv, restingHeartRate: restingHeartRate, sleep: sleep,
             respiratoryRate: respiratoryRate, wristTemperature: wristTemperature,
             deepShare: deepShare, remShare: remShare, now: now
@@ -211,6 +221,38 @@ enum HabitAssociationEngine {
         }
     }
 
+    /// Un día cuenta como día de viaje si el episodio estaba en una fase que
+    /// de verdad carga: tránsito, adaptación en destino o readaptación en casa.
+    /// La estancia estable y la preparación no — si contaran, un viaje de tres
+    /// semanas etiquetaría veinte días como "viaje" y la asociación mediría
+    /// sobre todo días normales en otro país.
+    ///
+    /// `overlapsOtherFactors: true` siempre, y a propósito: un día de viaje
+    /// trae casi siempre sueño alterado, comida distinta y a veces alcohol, así
+    /// que ConfidenceEngine.habitAssociation tiene que saber que la
+    /// atribución no es limpia. Es la misma honestidad que el resto del
+    /// archivo aplica cuando varios factores coinciden en un día.
+    nonisolated static func travelOccurrences(episodes: [TravelEpisode], now: Date) -> [HabitOccurrence] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        var result: [HabitOccurrence] = []
+        let affecting: Set<TravelPhase> = [.outboundTransit, .destinationAdaptation, .returnTransit, .homeReadaptation]
+        for episode in episodes where !episode.isCancelled {
+            guard let start = episode.outboundDeparture else { continue }
+            var cursor = calendar.startOfDay(for: start)
+            let limit = calendar.startOfDay(for: min(now, episode.homeArrival?.addingTimeInterval(
+                episode.homeReadaptationDays() * 86_400) ?? now))
+            while cursor <= limit {
+                if affecting.contains(episode.phase(at: cursor)) {
+                    result.append(HabitOccurrence(kind: .travel, date: cursor, overlapsOtherFactors: true))
+                }
+                guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+                cursor = next
+            }
+        }
+        return result
+    }
+
     @MainActor private static func occurrences(events: [LifestyleEvent], alcohol: [AlcoholSample]) -> [HabitOccurrence] {
         let calendar = Calendar.current
         var result: [HabitOccurrence] = []
@@ -225,7 +267,6 @@ enum HabitAssociationEngine {
             if event.caffeineMg > 0, calendar.component(.hour, from: caffeineDate) >= 14 { kinds.append(.lateCaffeine) }
             if event.saunaMinutes > 0 { kinds.append(.sauna) }
             if event.coldMinutes > 0 { kinds.append(.cold) }
-            if event.timeZoneDifference > 0 { kinds.append(.travel) }
             if event.foodQuality == .indulgent { kinds.append(.indulgentFood) }
             if event.foodQuality == .healthy { kinds.append(.healthyFood) }
             if event.fastingHours >= 12 { kinds.append(.fasting) }

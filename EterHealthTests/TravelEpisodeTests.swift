@@ -147,9 +147,9 @@ final class TravelEpisodeTests: XCTestCase {
                                     outboundFlights: [outbound], returnFlights: [back])
         XCTAssertEqual(episode.outboundShiftHours, 8, accuracy: 0.001)
         XCTAssertEqual(episode.returnShiftHours, -8, accuracy: 0.001)
-        XCTAssertEqual(episode.destinationAdaptationDays, 8, accuracy: 0.001)
-        XCTAssertEqual(episode.homeReadaptationDays, 8 / 1.5, accuracy: 0.001)
-        XCTAssertLessThan(episode.homeReadaptationDays, episode.destinationAdaptationDays,
+        XCTAssertEqual(episode.destinationAdaptationDays(), 8, accuracy: 0.001)
+        XCTAssertEqual(episode.homeReadaptationDays(), 8 / 1.5, accuracy: 0.001)
+        XCTAssertLessThan(episode.homeReadaptationDays(), episode.destinationAdaptationDays(),
                           "Volver al oeste cuesta menos que ir al este, y el modelo tiene que decirlo.")
     }
 
@@ -167,9 +167,9 @@ final class TravelEpisodeTests: XCTestCase {
                                     outboundFlights: [outbound], returnFlights: [back])
         XCTAssertEqual(episode.outboundShiftHours, -9, accuracy: 0.001)
         XCTAssertEqual(episode.returnShiftHours, 9, accuracy: 0.001)
-        XCTAssertEqual(episode.destinationAdaptationDays, 9 / 1.5, accuracy: 0.001)
-        XCTAssertEqual(episode.homeReadaptationDays, 9, accuracy: 0.001)
-        XCTAssertGreaterThan(episode.homeReadaptationDays, episode.destinationAdaptationDays)
+        XCTAssertEqual(episode.destinationAdaptationDays(), 9 / 1.5, accuracy: 0.001)
+        XCTAssertEqual(episode.homeReadaptationDays(), 9, accuracy: 0.001)
+        XCTAssertGreaterThan(episode.homeReadaptationDays(), episode.destinationAdaptationDays())
     }
 
     func testProjectedReturnShiftUsesTheRealDateSoItIsNotJustTheOutboundNegated() {
@@ -260,9 +260,9 @@ final class TravelEpisodeTests: XCTestCase {
                                   destinationTimeZoneID: "America/New_York",
                                   outboundFlights: [outbound], returnFlights: [back])
         XCTAssertEqual(short.resolvedStayPolicy, .keepHomeSchedule)
-        XCTAssertEqual(short.destinationAdaptationDays, 0,
+        XCTAssertEqual(short.destinationAdaptationDays(), 0,
                        "Cero días de adaptación porque no se intenta, que es distinto de 'ya adaptado'.")
-        XCTAssertEqual(short.homeReadaptationDays, 0, "Si el reloj no se movió, no hay nada que readaptar.")
+        XCTAssertEqual(short.homeReadaptationDays(), 0, "Si el reloj no se movió, no hay nada que readaptar.")
         // Y por tanto no hay fase de adaptación en la línea temporal: se pasa
         // de la ida a la estancia directamente.
         XCTAssertEqual(short.phase(at: local("America/New_York", 2026, 7, 6, 14)), .destinationStable)
@@ -275,7 +275,7 @@ final class TravelEpisodeTests: XCTestCase {
                                  destinationTimeZoneID: "America/New_York",
                                  outboundFlights: [outbound], returnFlights: [longBack])
         XCTAssertEqual(long.resolvedStayPolicy, .adaptToDestination)
-        XCTAssertEqual(long.destinationAdaptationDays, 6 / 1.5, accuracy: 0.001)
+        XCTAssertEqual(long.destinationAdaptationDays(), 6 / 1.5, accuracy: 0.001)
     }
 
     func testTheShortStayThresholdScalesWithTheShiftNotJustAFixed48Hours() {
@@ -316,7 +316,7 @@ final class TravelEpisodeTests: XCTestCase {
         episode.declaredStayPolicy = .adaptToDestination
         XCTAssertEqual(episode.resolvedStayPolicy, .adaptToDestination,
                        "Lo que el atleta declara manda sobre el automático, en los dos sentidos.")
-        XCTAssertGreaterThan(episode.destinationAdaptationDays, 0)
+        XCTAssertGreaterThan(episode.destinationAdaptationDays(), 0)
     }
 
     // MARK: - Validez y coherencia de los datos
@@ -428,7 +428,7 @@ final class TravelEpisodeTests: XCTestCase {
         // Y los derivados se recalculan igual tras el round-trip, que es el
         // punto de no almacenarlos.
         XCTAssertEqual(decoded[0].outboundShiftHours, episode.outboundShiftHours, accuracy: 0.001)
-        XCTAssertEqual(decoded[0].destinationAdaptationDays, episode.destinationAdaptationDays, accuracy: 0.001)
+        XCTAssertEqual(decoded[0].destinationAdaptationDays(), episode.destinationAdaptationDays(), accuracy: 0.001)
         XCTAssertEqual(decoded[0].phase(at: local("Asia/Tokyo", 2026, 3, 5, 9)), .destinationAdaptation)
     }
 }

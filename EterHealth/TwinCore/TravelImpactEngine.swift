@@ -223,14 +223,15 @@ enum TravelImpactEngine {
     /// episodio cancelado o ya recuperado, devuelven `.none` — no un cero
     /// disfrazado de medición.
     nonisolated static func impact(episode: TravelEpisode?, at date: Date,
-                                   signals: TravelSignalContext = .none) -> TravelImpact {
+                                   signals: TravelSignalContext = .none,
+                                   rates: ReentrainmentRates = .prior) -> TravelImpact {
         guard let episode else { return .none }
-        let phase = episode.phase(at: date)
+        let phase = episode.phase(at: date, rates: rates)
         guard phase.isActive else { return .none }
 
-        let stabilized = stabilizedDate(episode: episode, at: date, signals: signals)
-        let offset = circadianOffset(episode: episode, at: date, stabilizedAt: stabilized)
-        let fatigue = transitFatigue(episode: episode, at: date)
+        let stabilized = stabilizedDate(episode: episode, at: date, signals: signals, rates: rates)
+        let offset = circadianOffset(episode: episode, at: date, stabilizedAt: stabilized, rates: rates)
+        let fatigue = transitFatigue(episode: episode, at: date, rates: rates)
 
         var factors: [TravelFactor] = []
         // Estructurales: los del tránsito que está pesando ahora.
@@ -245,7 +246,7 @@ enum TravelImpactEngine {
         }
         if abs(offset) >= 0.5 {
             factors.append(.circadianOffset(hours: offset,
-                                            daysRemaining: CircadianReentrainment.daysToRealign(offsetHours: offset)))
+                                            daysRemaining: CircadianReentrainment.daysToRealign(offsetHours: offset, rates: rates)))
         }
         if episode.resolvedStayPolicy == .keepHomeSchedule, phase == .destinationStable {
             factors.append(.keepHomeSchedule)
@@ -270,7 +271,8 @@ enum TravelImpactEngine {
     /// viaje sería una afirmación que no se puede sostener, así que lo que baja
     /// es la confianza, no lo que sube es el desajuste.
     nonisolated static func circadianOffset(episode: TravelEpisode, at date: Date,
-                                            stabilizedAt: Date? = nil) -> Double {
+                                            stabilizedAt: Date? = nil,
+                                            rates: ReentrainmentRates = .prior) -> Double {
         // Con horario de origen mantenido el reloj no se mueve, así que no hay
         // desajuste PROPIO que resolver — el coste del viaje es la fatiga de
         // tránsito. Limitación conocida y declarada: vivir en hora de casa en
@@ -278,7 +280,7 @@ enum TravelImpactEngine {
         // modelo no representa.
         guard episode.resolvedStayPolicy == .adaptToDestination else { return 0 }
 
-        switch episode.phase(at: date) {
+        switch episode.phase(at: date, rates: rates) {
         case .preDeparture, .recovered, .cancelled:
             return 0
         case .outboundTransit:
@@ -286,14 +288,14 @@ enum TravelImpactEngine {
         case .destinationAdaptation, .destinationStable:
             guard let arrival = episode.destinationArrival else { return 0 }
             if let stabilizedAt, date >= stabilizedAt { return 0 }
-            return remaining(shift: episode.outboundShiftHours, since: arrival, at: date)
+            return remaining(shift: episode.outboundShiftHours, since: arrival, at: date, rates: rates)
         case .returnTransit:
             let shift = episode.returnShiftHours
             return shift * transitProgress(episode.returnFlights, at: date)
         case .homeReadaptation:
             guard let homeArrival = episode.homeArrival else { return 0 }
             if let stabilizedAt, date >= stabilizedAt { return 0 }
-            return remaining(shift: episode.returnShiftHours, since: homeArrival, at: date)
+            return remaining(shift: episode.returnShiftHours, since: homeArrival, at: date, rates: rates)
         }
     }
 
@@ -302,10 +304,11 @@ enum TravelImpactEngine {
     /// desplazamiento de fase de tantas horas por día, que es lineal por
     /// definición; usar una exponencial aquí sólo porque el resto del modelo
     /// las usa sería cambiar el fenómeno para que encaje con el código.
-    private nonisolated static func remaining(shift: Double, since start: Date, at date: Date) -> Double {
+    private nonisolated static func remaining(shift: Double, since start: Date, at date: Date,
+                                              rates: ReentrainmentRates) -> Double {
         guard shift != 0 else { return 0 }
         let elapsedDays = max(0, date.timeIntervalSince(start) / 86_400)
-        let rate = CircadianReentrainment.hoursPerDay(forOffsetHours: shift)
+        let rate = rates.hoursPerDay(forOffsetHours: shift)
         let resolved = elapsedDays * rate
         let magnitude = max(0, abs(shift) - resolved)
         return shift > 0 ? magnitude : -magnitude
@@ -324,8 +327,9 @@ enum TravelImpactEngine {
     // MARK: Fatiga de tránsito
 
     /// El pico de fatiga del tramo que corresponda, decaído desde la llegada.
-    nonisolated static func transitFatigue(episode: TravelEpisode, at date: Date) -> Double {
-        let phase = episode.phase(at: date)
+    nonisolated static func transitFatigue(episode: TravelEpisode, at date: Date,
+                                           rates: ReentrainmentRates = .prior) -> Double {
+        let phase = episode.phase(at: date, rates: rates)
         guard phase.isActive, phase != .preDeparture else { return 0 }
         let leg = relevantLeg(episode: episode, phase: phase)
         let peak = peakFatigue(flights: leg.flights, transitDuration: leg.transitDuration)
@@ -372,11 +376,12 @@ enum TravelImpactEngine {
     /// Afirmar estabilidad con huecos sería exactamente el tipo de dato
     /// inventado que esta app no se permite.
     nonisolated static func stabilizedDate(episode: TravelEpisode, at date: Date,
-                                           signals: TravelSignalContext) -> Date? {
+                                           signals: TravelSignalContext,
+                                           rates: ReentrainmentRates = .prior) -> Date? {
         guard let baseline = signals.baseline,
               let sleepFloor = baseline.sleep.lowerNormal,
               let hrvFloor = baseline.hrv.lowerNormal else { return nil }
-        let phase = episode.phase(at: date)
+        let phase = episode.phase(at: date, rates: rates)
         let start: Date?
         switch phase {
         case .destinationAdaptation, .destinationStable: start = episode.destinationArrival

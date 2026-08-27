@@ -27,6 +27,12 @@ struct TwinAssessment {
     // y el simulador. Ninguno lo recalcula: dos estimaciones del mismo viaje
     // es exactamente lo que había antes de este PR entre la app y el widget.
     let travel: TravelImpact
+    // PR16: las tasas de re-sincronización que ESTA evaluación ha usado — las
+    // aprendidas cuando hay evidencia, el prior cuando no. Publicadas para que
+    // weekAhead simule con las mismas y no con el prior: si la semana decayera
+    // el desajuste más despacio que hoy, la tira mostraría un techo que la
+    // tarjeta ya ha levantado.
+    let travelRates: ReentrainmentRates
     // Replaces TwinStateStore's old predictedTomorrow(from:) — a real
     // step() of today's physiology through tomorrow's proposed session,
     // never a match on the Spanish recommendation string.
@@ -74,7 +80,8 @@ enum TwinEngine {
             events: events, alcohol: health.alcoholHistory,
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory,
             sleep: health.sleepHistory,
-            respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory, now: now
+            respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory,
+            travelEpisodes: context.travelHistory, now: now
         ).map { ($0.kind, $0) })
         var appliedLearnedHabits: Set<HabitKind> = []
         var appliedElectrolytes = false
@@ -339,12 +346,18 @@ enum TwinEngine {
         if PerformanceEngine.summarize(health: health, imports: imports, now: now).dual.guidance == .overload {
             confounders.insert(.extraordinaryLoad)
         }
+        // PR16: lo aprendido de los tramos ya medidos. Función pura del
+        // historial, sin tocar HealthKit — por eso funciona con episodios de
+        // hace dos años, cuando las series de sueño y HRV de aquellos días ya
+        // no existen.
+        let travelRates = TravelLearningEngine.profile(episodes: context.travelHistory).rates
         let travelImpact = TravelImpactEngine.impact(
             episode: context.travel, at: now,
             signals: TravelSignalContext(
                 baseline: personal, sleepHistory: health.sleepHistory, hrvHistory: health.hrvHistory,
                 restingHeartRateHistory: health.restingHeartRateHistory, confounders: confounders
-            )
+            ),
+            rates: travelRates
         )
         // DOS señales y no una. La señal "Viaje" única de antes escondía cuál
         // de los dos fenómenos mandaba, y decaen a ritmos muy distintos: un
@@ -417,10 +430,11 @@ enum TwinEngine {
         // futuro, se arrastra el de hoy perdiendo peso. Antes esa medición no
         // entraba en el vector en absoluto, así que dos atletas con la misma
         // carga y un HRV muy distinto predecían el mismo mañana.
-        let tomorrowPhysiology = step(physiology, session: SessionLoad.forecast(plan.nextSession), recoverySignals: .none, dtDays: 1)
+        let tomorrowPhysiology = step(physiology, session: SessionLoad.forecast(plan.nextSession),
+                                      recoverySignals: .none, dtDays: 1, rates: travelRates)
         let predictedTomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: anchor, calibration: calibration)
 
-        return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert, physiology: physiology, readout: readout, travel: travelImpact, predictedTomorrow: predictedTomorrow)
+        return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert, physiology: physiology, readout: readout, travel: travelImpact, travelRates: travelRates, predictedTomorrow: predictedTomorrow)
     }
 
     private static func calculateMuscles(_ workouts: [ImportedWorkout], healthWorkouts: [HealthWorkout], learnedRecovery: [String: Double], checkIn: DailyCheckIn?, now: Date) -> [MuscleReadiness] {

@@ -73,6 +73,37 @@ final class TravelEpisodeStore: ObservableObject {
             .sorted { ($0.homeArrival ?? .distantPast) > ($1.homeArrival ?? .distantPast) }
     }
 
+    /// PR16: guarda los días reales hasta estabilidad de un tramo.
+    ///
+    /// La PRIMERA confirmación gana y las siguientes se ignoran. No es
+    /// prudencia: "tres días seguidos dentro de banda" es un evento con fecha,
+    /// y sobrescribirlo días después mediría otra cosa (cuántos días llevas
+    /// estable, no cuántos tardaste). Los confusores se congelan aquí mismo
+    /// porque dentro de seis meses el check-in de aquel día ya no estará en
+    /// ninguna ventana que nadie consulte.
+    func recordStability(episodeID: UUID, leg: TravelLeg, days: Double,
+                         confounders: TravelConfounders, at date: Date = Date()) {
+        guard days >= 0, var episode = episodes.first(where: { $0.id == episodeID }) else { return }
+        var outcome = episode.measuredOutcome
+            ?? TravelMeasuredOutcome(destinationStabilityDays: nil, homeStabilityDays: nil,
+                                     confoundersRawValue: 0, lastMeasuredAt: date)
+        switch leg {
+        case .outbound:
+            guard outcome.destinationStabilityDays == nil else { return }
+            outcome.destinationStabilityDays = days
+        case .homeReturn:
+            guard outcome.homeStabilityDays == nil else { return }
+            outcome.homeStabilityDays = days
+        }
+        // Unión y no reemplazo: si la ida estuvo confundida por alcohol y la
+        // vuelta por enfermedad, el episodio arrastra las dos cosas.
+        outcome.confoundersRawValue = TravelConfounders(rawValue: outcome.confoundersRawValue)
+            .union(confounders).rawValue
+        outcome.lastMeasuredAt = date
+        episode.measuredOutcome = outcome
+        save(episode)
+    }
+
     func restore(_ restored: [TravelEpisode]) {
         for episode in restored { episodes.removeAll { $0.id == episode.id } }
         episodes.append(contentsOf: restored)

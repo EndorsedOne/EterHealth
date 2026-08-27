@@ -164,7 +164,7 @@ final class TravelImpactTests: XCTestCase {
         XCTAssertGreaterThan(inDestination.travelFatigue, 0)
         XCTAssertTrue(inDestination.factors.contains(.keepHomeSchedule))
         // Y al volver, tampoco hay readaptación: no se fingió adaptación.
-        XCTAssertEqual(short.homeReadaptationDays, 0)
+        XCTAssertEqual(short.homeReadaptationDays(), 0)
     }
 
     // MARK: - Estabilidad y confusores

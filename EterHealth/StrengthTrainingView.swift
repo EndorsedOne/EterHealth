@@ -214,7 +214,7 @@ struct StrengthTrainingView: View {
                                                                 reviews: WorkoutReviewStore.shared.reviews, activeInjuries: InjuryStore.shared.active,
                                                                 calibration: TwinStateStore.shared.calibration,
                                                                 personalAnchor: TwinStateStore.shared.personalAnchor(),
-                                                                travel: travel.currentEpisode()))
+                                                                travel: travel.currentEpisode(), travelHistory: travel.episodes))
         let automatic = StrengthRoutineBuilder.routines(from: imports)
         let routines = automatic.map {
             StrengthRoutineBuilder.personalized(routineStore.routine(named: $0.name) ?? $0, imports: imports,
@@ -470,7 +470,7 @@ struct DayWorkoutProposalView: View {
     private var context: TwinContext {
         TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events, reviews: WorkoutReviewStore.shared.reviews,
                    activeInjuries: InjuryStore.shared.active, calibration: TwinStateStore.shared.calibration,
-                   personalAnchor: TwinStateStore.shared.personalAnchor(), travel: travel.currentEpisode())
+                   personalAnchor: TwinStateStore.shared.personalAnchor(), travel: travel.currentEpisode(), travelHistory: travel.episodes)
     }
     private var assessment: TwinAssessment {
         TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(), context: context)
