@@ -575,7 +575,7 @@ enum MuscleMap {
         func matches(_ normalizedName: String) -> Bool {
             aliases.contains { alias in
                 let normalizedAlias = MuscleMap.normalized(alias)
-                normalizedName == normalizedAlias || normalizedName.contains(normalizedAlias)
+                return normalizedName == normalizedAlias || normalizedName.contains(normalizedAlias)
             }
         }
     }
