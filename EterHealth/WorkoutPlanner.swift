@@ -632,13 +632,11 @@ enum WorkoutPlanner {
             // muscle happens to dominate this person's usual routine order.
             if names.count >= 10 { break }
         }
-        // These must be names MuscleMap.groups/involvement actually
-        // recognizes (its substring matching is English-only, the same
-        // convention Hevy's own exports use — "Sentadilla"/"Press banca"
-        // silently fell through to its generic "Cuerpo completo" bucket,
-        // and "Curl femoral" was misread as a biceps curl via the bare
-        // "curl" check). Also exact matches for ExerciseCatalog, so a
-        // cold-start proposal gets the right equipment/pattern icon too.
+        // El fallback usa los nombres canónicos del catálogo para que una
+        // sesión en frío tenga icono, equipamiento y patrón precisos. Los
+        // ejercicios que prescribe Éter en español tienen, además, perfiles
+        // explícitos en MuscleMap: registrar exactamente lo recomendado no
+        // puede degradarlos al bucket genérico "Cuerpo completo".
         let fallback: [String]
         switch pattern {
         case .legs: fallback = ["Squat (Barbell)", "Romanian Deadlift (Barbell)", "Leg Press (Machine)", "Leg Curl (Machine)"]

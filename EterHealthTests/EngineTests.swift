@@ -863,6 +863,38 @@ final class EngineTests: XCTestCase {
         }
     }
 
+    // Cada variante que el planificador propone debe tener una atribución
+    // explícita. Si una traducción o una regla genérica la convierte en
+    // "Cuerpo completo", el gemelo pierde tanto volumen como recuperación.
+    func testPrescribedBodyweightExercisesHaveTheirIntendedMuscleProfiles() {
+        XCTAssertEqual(MuscleMap.involvement(for: "Flexiones"), ["Pecho": 1.0, "Tríceps": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Flexiones pike"), ["Hombros": 1.0, "Tríceps": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Flexiones cerradas"), ["Tríceps": 1.0, "Pecho": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Fondos en banco estable"), ["Tríceps": 1.0, "Pecho": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Plancha lateral"), ["Core": 1.0])
+        XCTAssertEqual(MuscleMap.involvement(for: "Hollow hold"), ["Core": 1.0])
+        XCTAssertNotEqual(MuscleMap.groups(for: "Fondos en banco estable"), ["Cuerpo completo"])
+    }
+
+    func testEveryExerciseInEterCatalogResolvesToACanonicalMuscleProfile() {
+        for descriptor in ExerciseCatalog.descriptors {
+            XCTAssertNotNil(MuscleMap.profile(for: descriptor.name), descriptor.name)
+        }
+    }
+
+    func testEveryBodyweightExerciseProposedByEterResolvesToACanonicalProfile() {
+        let prescribedNames = [
+            "Sentadilla búlgara", "Zancada inversa", "Puente de glúteo unilateral",
+            "Curl femoral deslizante", "Gemelo unilateral", "Plancha lateral",
+            "Remo con mochila", "Remo invertido bajo mesa segura", "Pájaros con botellas",
+            "Curl con mochila", "Dead bug", "Flexiones", "Flexiones pike",
+            "Fondos en banco estable", "Flexiones cerradas", "Hollow hold"
+        ]
+        for name in prescribedNames {
+            XCTAssertNotNil(MuscleMap.profile(for: name), name)
+        }
+    }
+
     // El contrapunto: derivar `tracksWeight` del equipamiento no debe apagar la
     // columna de KG donde sí hace falta, incluido el peso corporal LASTRADO y
     // el trineo (que se mide en tiempo y distancia, pero se carga con discos).

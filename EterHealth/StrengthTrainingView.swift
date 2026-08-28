@@ -920,6 +920,61 @@ private struct NumericDraftField<Value: Equatable>: View {
     }
 }
 
+/// Equivalente de `NumericDraftField` para una duración manual. El cronómetro
+/// puede actualizar `durationSeconds` en directo, pero al teclear no hay razón
+/// para mutar la serie ni para invalidar toda la sesión por cada dígito.
+///
+/// Se escribe como un cronómetro: "410" significa 4:10 y "45", 0:45. El
+/// texto queda local hasta perder el foco o pulsar Hecho; entonces, y sólo
+/// entonces, se guarda el número de segundos en la serie.
+private struct TimedDurationDraftField: View {
+    @Binding var durationSeconds: Double?
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("mm:ss", text: $draft)
+            .keyboardType(.numberPad)
+            .multilineTextAlignment(.center)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(minWidth: 30)
+            .fieldBox()
+            .focused($isFocused)
+            .onAppear { draft = formatted(durationSeconds) }
+            // Si el cronómetro termina o se repite una serie, el valor del
+            // modelo debe reflejarse aquí. Mientras alguien escribe, nunca se
+            // le pisa su borrador.
+            .onChange(of: durationSeconds) { _, newValue in
+                guard !isFocused else { return }
+                draft = formatted(newValue)
+            }
+            .onChange(of: isFocused) { wasFocused, nowFocused in
+                if !nowFocused, wasFocused { commit() }
+            }
+            .onSubmit { commit() }
+            .accessibilityLabel("Tiempo de la serie, minutos y segundos")
+    }
+
+    private func commit() {
+        let digits = String(draft.filter(\.isNumber).suffix(5))
+        durationSeconds = digits.isEmpty ? nil : seconds(from: digits)
+        draft = formatted(durationSeconds)
+    }
+
+    private func seconds(from digits: String) -> Double {
+        guard let value = Int(digits) else { return 0 }
+        return Double(value / 100 * 60 + value % 100)
+    }
+
+    private func formatted(_ seconds: Double?) -> String {
+        guard let seconds, seconds > 0 else { return "" }
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
 struct LiveStrengthWorkoutView: View {
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var health: HealthStore
@@ -934,10 +989,6 @@ struct LiveStrengthWorkoutView: View {
     @State private var requestedWatchStart = false
     // Only one set can realistically be timed at once, so a single shared
     // pair of state covers every exercise card.
-    // Borrador de entrada de tiempo por serie: mientras se teclea manda el
-    // texto crudo, y sólo al salir se formatea desde el modelo. Sin esto,
-    // reformatear en cada pulsación pelea con quien está escribiendo.
-    @State private var timeDrafts: [UUID: String] = [:]
     @State private var timingSetID: UUID?
     @State private var timingStartedAt: Date?
 
@@ -1276,20 +1327,7 @@ struct LiveStrengthWorkoutView: View {
                         .frame(maxWidth: .infinity).fieldBox()
                 }
             } else {
-                // mm:ss, como se piensa un ski de 4:10 — no "250 s". Se teclean
-                // dígitos y los dos últimos son los segundos, igual que en un
-                // cronómetro: no hay que escribir los dos puntos.
-                let id = set.wrappedValue.id
-                TextField("mm:ss", text: Binding(
-                    get: { timeDrafts[id] ?? Self.minutesSeconds(set.wrappedValue.durationSeconds) },
-                    set: { text in
-                        let digits = String(text.filter(\.isNumber).suffix(5))
-                        timeDrafts[id] = digits.isEmpty ? "" : Self.minutesSeconds(Self.secondsFromDigits(digits))
-                        set.wrappedValue.durationSeconds = digits.isEmpty ? nil : Self.secondsFromDigits(digits)
-                    }
-                ))
-                    .keyboardType(.numberPad).multilineTextAlignment(.center)
-                    .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
+                TimedDurationDraftField(durationSeconds: set.durationSeconds)
             }
         }.frame(maxWidth: .infinity)
     }
