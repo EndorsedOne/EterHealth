@@ -23,11 +23,23 @@ struct ExerciseDescriptor: Identifiable {
     let equipment: String
     let symbol: String
     var measurement: ExerciseMeasurement = .reps
+    /// El equipamiento que significa "sin carga externa que registrar".
+    static let bodyweightEquipment = "Peso corporal"
+
     // Un ergómetro de remo o ski no tiene carga externa que registrar: pedir
     // kilos ahí es pedir un dato que no existe. El trineo sí la tiene, así que
-    // esto es explícito por ejercicio y no inferido del tipo de medición.
+    // no se puede inferir del tipo de medición.
     // (Hevy hace lo mismo: para el Ski Erg muestra KM y TIME, sin KG.)
-    var tracksWeight: Bool = true
+    //
+    // Lo que sí se puede inferir es el peso corporal, y es lo que faltaba: una
+    // plancha y unas flexiones pedían kilos porque el default era `true` y
+    // nadie las había marcado a mano. Ahora se DERIVA del equipamiento, que ya
+    // estaba correctamente puesto en todo el catálogo, así que ningún ejercicio
+    // de peso corporal que se añada en el futuro puede volver a pedirlos por
+    // olvido. `weightOverride` queda para lo que el equipamiento no explica —
+    // los ergómetros, que son máquinas sin carga.
+    var weightOverride: Bool? = nil
+    var tracksWeight: Bool { weightOverride ?? (equipment != Self.bodyweightEquipment) }
 
     // Conveniencia derivada, no un segundo estado: "no se cuenta por reps".
     var isTimed: Bool { measurement != .reps }
@@ -84,16 +96,20 @@ enum ExerciseCatalog {
         .init(name: "Sled Pull", pattern: "Tirón horizontal cargado", equipment: "Trineo",
               symbol: "figure.strengthtraining.functional", measurement: .timeAndDistance),
         .init(name: "Rowing Machine", pattern: "Tirón cíclico", equipment: "Remo ergómetro",
-              symbol: "figure.rower", measurement: .timeAndDistance, tracksWeight: false),
+              symbol: "figure.rower", measurement: .timeAndDistance, weightOverride: false),
         .init(name: "SkiErg", pattern: "Tirón vertical cíclico", equipment: "Ski ergómetro",
-              symbol: "figure.skiing.crosscountry", measurement: .timeAndDistance, tracksWeight: false)
+              symbol: "figure.skiing.crosscountry", measurement: .timeAndDistance, weightOverride: false)
     ]
 
     static func descriptor(for name: String) -> ExerciseDescriptor {
         descriptors.first { normalized($0.name) == normalized(name) }
             ?? ExerciseDescriptor(name: name, pattern: inferredPattern(name), equipment: inferredEquipment(name),
                                   symbol: "figure.strengthtraining.traditional", measurement: inferredMeasurement(name),
-                                  tracksWeight: inferredTracksWeight(name))
+                                  // Sólo se declara cuando la inferencia dice
+                                  // explícitamente "sin carga"; en el resto se
+                                  // deja derivar del equipamiento inferido, que
+                                  // ya reconoce el peso corporal.
+                                  weightOverride: inferredTracksWeight(name) ? nil : false)
     }
 
     /// Construye la serie que se persiste desde una serie en vivo de éter.
@@ -157,7 +173,24 @@ enum ExerciseCatalog {
         if value.contains("dumbbell") || value.contains("mancuerna") { return "Mancuernas" }
         if value.contains("cable") || value.contains("polea") { return "Polea" }
         if value.contains("machine") || value.contains("máquina") { return "Máquina" }
-        if value.contains("pull up") || value.contains("push up") || value.contains("plank") { return "Peso corporal" }
+        // Ampliado: la lista corta dejaba fuera fondos, dominadas en español,
+        // abdominales, sentadillas al aire y los holds de core — todos peso
+        // corporal, y todos pidiendo kilos por ese motivo. Con tracksWeight
+        // ahora derivado del equipamiento, esta lista es la que decide si un
+        // ejercicio desconocido muestra la columna KG.
+        let bodyweight = ["pull up", "pull-up", "dominada", "chin up", "push up", "push-up", "flexion",
+                          "dip", "fondo", "plank", "plancha", "sit up", "crunch", "abdominal",
+                          "air squat", "sentadilla al aire", "burpee", "mountain climber",
+                          "hollow", "dead bug", "l-sit", "lsit", "wall sit", "dead hang",
+                          "glute bridge", "puente de gluteo", "pike"]
+        // Pero "peso corporal" y "sin kilos" no son lo mismo: una dominada
+        // lastrada o un fondo con cinturón son exactamente los movimientos en
+        // los que el lastre ES el dato que hay que registrar. Un test lo pilló:
+        // "Weighted Pull Up" contiene "pull up" y perdía la columna de KG.
+        let loaded = ["weighted", "lastrad", "con lastre", "con peso", "belt", "cinturon", "banded"]
+        let normalized = value.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        if loaded.contains(where: { normalized.contains($0) }) { return "Libre" }
+        if bodyweight.contains(where: { normalized.contains($0) }) { return "Peso corporal" }
         return "Libre"
     }
 }

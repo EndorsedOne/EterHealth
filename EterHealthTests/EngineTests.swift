@@ -840,6 +840,41 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(ExerciseCatalog.descriptor(for: "Squat (Barbell)").measurement, .reps)
     }
 
+    // La columna de KG en la sesión en vivo se decide con `tracksWeight`, y
+    // antes era un flag almacenado que venía `true` por defecto: cualquier
+    // ejercicio que no lo pusiera a mano — incluidas todas las planchas y todo
+    // el peso corporal que cae en el descriptor de fallback — pedía kilos que
+    // no existen. Ahora se deriva del equipamiento, así que la respuesta es
+    // correcta por construcción y no por haber acertado a rellenar un campo.
+    func testBodyweightAndTimedHoldsDoNotTrackWeight() {
+        for name in ["Push Up", "Flexiones", "Pull Up", "Dominadas", "Chin Up",
+                     "Plank", "Plancha lateral", "Air Squat", "Sentadilla al aire",
+                     "Burpee", "Mountain Climber", "Hollow Hold", "Dead Bug",
+                     "L-Sit", "Wall Sit", "Dead Hang", "Glute Bridge", "Dip",
+                     "Fondos en paralelas", "Sit Up", "Crunch abdominal", "Pike Push Up"] {
+            let descriptor = ExerciseCatalog.descriptor(for: name)
+            XCTAssertEqual(descriptor.equipment, ExerciseDescriptor.bodyweightEquipment, name)
+            XCTAssertFalse(descriptor.tracksWeight, "\(name) no se carga con kilos: la columna KG sobra")
+        }
+        // Los ergómetros no son peso corporal, pero tampoco llevan kilos: son
+        // el caso que justifica mantener el override explícito.
+        for name in ["Rowing Machine", "SkiErg"] {
+            XCTAssertFalse(ExerciseCatalog.descriptor(for: name).tracksWeight, name)
+        }
+    }
+
+    // El contrapunto: derivar `tracksWeight` del equipamiento no debe apagar la
+    // columna de KG donde sí hace falta, incluido el peso corporal LASTRADO y
+    // el trineo (que se mide en tiempo y distancia, pero se carga con discos).
+    func testLoadedMovementsStillTrackWeight() {
+        for name in ["Squat (Barbell)", "Bench Press (Barbell)", "Deadlift (Barbell)",
+                     "Weighted Pull Up", "Dominadas lastradas", "Weighted Dip",
+                     "Farmer Carry", "Sled Push", "Sled Pull",
+                     "Kettlebell Swing", "Dumbbell Row"] {
+            XCTAssertTrue(ExerciseCatalog.descriptor(for: name).tracksWeight, name)
+        }
+    }
+
     // Y con eso una simulación registrada en éter ya alimenta el componente de
     // estaciones del forecast. Antes sólo llegaba 1 de 8 (los acarreos), por
     // debajo del umbral de 4, así que la tubería existía pero no servía.
@@ -2841,7 +2876,14 @@ final class EngineTests: XCTestCase {
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
 
         let imports = ImportStore(persistToDisk: false)
-        let now = Date()
+        // `now` FIJO y no Date(). Con la hora real, el resultado dependía del
+        // día y de la hora a la que se ejecutara la suite: `lateWeek` mira el
+        // día de la semana, y las ventanas de separación miran horas. Este test
+        // pasó por la mañana y falló por la tarde del MISMO día sin que nada
+        // del código cambiara — comprobado haciendo stash de los cambios en
+        // curso y volviéndolo a ejecutar. Es la convención que el resto de la
+        // suite ya sigue (Date(timeIntervalSince1970:)), y aquí faltaba.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
         // A real, heavy leg day logged an hour ago — 4 leg exercises × 4
         // working sets each, all at a real working RPE so effort-weighting
         // doesn't discount them. Real quads/glutes/hamstring readiness

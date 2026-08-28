@@ -11,6 +11,10 @@ final class HealthStore: ObservableObject {
     @Published var lastUpdated: Date?
     @Published var snapshot = HealthSnapshot.empty
     @Published var vo2MaxHistory: [TrendPoint] = []
+    /// Por qué no se abrió la app del reloj, cuando no se abre. nil = todo bien
+    /// o nadie lo ha intentado. Antes el fallo era silencioso y no se
+    /// distinguía de "esta función no existe".
+    @Published var watchStartDiagnostic: String?
     @Published var hrvHistory: [TrendPoint] = []
     @Published var restingHeartRateHistory: [TrendPoint] = []
     @Published var sleepHistory: [TrendPoint] = []
@@ -457,14 +461,56 @@ final class HealthStore: ObservableObject {
         // there is nothing to hand off to, so this returns early instead.
         guard WCSession.isSupported() else { return false }
         let session = WCSession.default
-        guard session.isPaired, session.isWatchAppInstalled else { return false }
+        // ESPERAR la activación antes de preguntar. `isPaired` y
+        // `isWatchAppInstalled` sólo tienen valor una vez la sesión está
+        // `.activated`, y `activate()` se llama en el init de WatchMetricsStore
+        // — que es asíncrono. Al abrir la primera sesión de fuerza tras lanzar
+        // la app, este guard se evaluaba con la sesión todavía inactiva, salía
+        // por `false` y el reloj no se abría nunca. Peor: el llamante marca
+        // `requestedWatchStart = true` de entrada, así que no se reintentaba.
+        //
+        // Dos segundos como techo: si en ese tiempo no ha activado, algo va mal
+        // de verdad y es mejor decirlo que seguir esperando con la pantalla del
+        // entrenamiento ya abierta.
+        var waited = 0.0
+        while session.activationState != .activated, waited < 2.0 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 0.1
+        }
+        guard session.activationState == .activated else {
+            await MainActor.run {
+                self.watchStartDiagnostic = "La sesión con el Apple Watch no llegó a activarse."
+            }
+            return false
+        }
+        guard session.isPaired else {
+            await MainActor.run { self.watchStartDiagnostic = "No hay ningún Apple Watch emparejado." }
+            return false
+        }
+        guard session.isWatchAppInstalled else {
+            // Pasa de verdad con una instalación de desarrollo: el reloj tiene
+            // la app pero WCSession no la ve como companion instalada hasta que
+            // se instala por la vía normal. Decirlo es más útil que el silencio
+            // de antes, que se confundía con "la función no existe".
+            await MainActor.run {
+                self.watchStartDiagnostic = "éter no está instalada como app companion en el Apple Watch. Ábrela una vez desde el reloj o instálala desde la app Watch."
+            }
+            return false
+        }
+        await MainActor.run { self.watchStartDiagnostic = nil }
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .traditionalStrengthTraining
         configuration.locationType = .indoor
         return await withCheckedContinuation { continuation in
             store.startWatchApp(with: configuration) { success, error in
                 Task { @MainActor in
-                    if let error { self.errorMessage = "No se pudo iniciar el Apple Watch: \(error.localizedDescription)" }
+                    if let error {
+                        // Al diagnóstico y no a errorMessage: errorMessage abre
+                        // una alerta modal encima de la sesión de entrenamiento
+                        // que acabas de empezar, que es justo cuando menos
+                        // quieres una. La cabecera ya tiene sitio para decirlo.
+                        self.watchStartDiagnostic = "No se pudo iniciar el Apple Watch: \(error.localizedDescription)"
+                    }
                     continuation.resume(returning: success)
                 }
             }

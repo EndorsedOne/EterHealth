@@ -637,6 +637,25 @@ struct RoutineEditorView: View {
         }
     }
 
+    /// Mismo borrador que la vista en vivo (ver NumericDraftField): el editor
+    /// tenía los mismos TextField(value:format:) que reformatean por tecla.
+    private func editorWeightField(value: Binding<Double>) -> some View {
+        let format: (Double) -> String = {
+            $0 == $0.rounded() ? String(Int($0)) : String(format: "%.1f", $0)
+        }
+        let parse: (String) -> Double? = {
+            Double($0.replacingOccurrences(of: ",", with: ".")).map { max(0, $0) }
+        }
+        return NumericDraftField(value: value, format: format, parse: parse,
+                                 keyboard: .decimalPad, minWidth: 44)
+    }
+
+    private func editorNumberField(value: Binding<Int>) -> some View {
+        let format: (Int) -> String = { String($0) }
+        let parse: (String) -> Int? = { Int($0).map { max(0, $0) } }
+        return NumericDraftField(value: value, format: format, parse: parse, minWidth: 44)
+    }
+
     private func editorExerciseCard(_ exercise: Binding<RoutineExercise>) -> some View {
         let index = exercises.firstIndex { $0.id == exercise.wrappedValue.id } ?? 0
         return VStack(alignment: .leading, spacing: 12) {
@@ -654,19 +673,23 @@ struct RoutineEditorView: View {
                 Text("Descanso: \(exercise.wrappedValue.restSeconds / 60):\(String(format: "%02d", exercise.wrappedValue.restSeconds % 60))")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            // El editor mostraba KG y REPS a pelo, sin mirar el ejercicio: una
+            // plancha pedía kilos y repeticiones aquí igual que en la sesión.
+            // Mismo descriptor y mismas reglas que la vista en vivo.
+            let editorDescriptor = ExerciseCatalog.descriptor(for: exercise.wrappedValue.name)
             HStack {
                 Text("SERIE").frame(width: 42, alignment: .leading)
-                Text("KG").frame(maxWidth: .infinity)
-                Text("REPS").frame(maxWidth: .infinity)
+                if editorDescriptor.tracksWeight { Text("KG").frame(maxWidth: .infinity) }
+                Text(editorDescriptor.measurement == .reps ? "REPS" : "SEG").frame(maxWidth: .infinity)
                 Spacer().frame(width: 27)
             }.font(.caption2.bold()).foregroundStyle(.secondary)
             ForEach(exercise.sets.indices, id: \.self) { setIndex in
                 HStack(spacing: 9) {
                     Text("\(setIndex + 1)").font(.caption.bold()).frame(width: 42, alignment: .leading)
-                    TextField("0", value: exercise.sets[setIndex].weight, format: .number.precision(.fractionLength(0...1)))
-                        .keyboardType(.decimalPad).multilineTextAlignment(.center).fieldBox()
-                    TextField("0", value: exercise.sets[setIndex].reps, format: .number)
-                        .keyboardType(.numberPad).multilineTextAlignment(.center).fieldBox()
+                    if editorDescriptor.tracksWeight {
+                        editorWeightField(value: exercise.sets[setIndex].weight)
+                    }
+                    editorNumberField(value: exercise.sets[setIndex].reps)
                     Button(role: .destructive) { exercise.wrappedValue.sets.remove(at: setIndex) } label: { Image(systemName: "minus.circle") }
                         .eterTouchTarget().accessibilityLabel("Eliminar serie \(setIndex + 1)")
                 }
@@ -758,6 +781,145 @@ private struct LiveExercise: Identifiable {
     var tracksTime = false
 }
 
+/// Campo numérico con BORRADOR propio, para kilos y repeticiones.
+///
+/// Resuelve dos problemas que compartían la misma causa, los dos reportados
+/// desde el uso real ("escribir las reps o los kilos es una tortura", "va como
+/// congelada la pantalla"):
+///
+///  1. `TextField(value:format:)` reparsea y REFORMATEA el texto en cada
+///     pulsación. Teclear "12" pasa por el valor 1, que se reescribe como "1";
+///     borrar hasta vacío salta a "0"; y "0.5" es imposible porque "0." no es
+///     un número válido todavía. El formateador pelea con quien escribe. El
+///     propio archivo ya había resuelto esto para el campo de tiempo con un
+///     borrador de texto — esto es el mismo patrón, aplicado donde faltaba.
+///  2. Escribir en el binding del modelo en cada tecla mutaba el `@State` de
+///     la vista de entrenamiento entera, así que CADA PULSACIÓN reevaluaba el
+///     body completo: todas las tarjetas de ejercicio, todas las filas de
+///     serie. Con el borrador dentro de esta vista pequeña, teclear invalida
+///     sólo este campo y el modelo se toca una vez, al terminar.
+///
+/// El commit es al perder el foco y al pulsar "hecho", nunca por carácter.
+/// La cabecera de la sesión, en su propia vista.
+///
+/// Lee las métricas del reloj (pulso, calorías, estado), que llegan cada
+/// segundo mientras el Watch graba. Cuando esto vivía dentro del body de
+/// LiveStrengthWorkoutView, CADA uno de esos avisos invalidaba el body entero:
+/// todas las tarjetas de ejercicio y todos los campos de todas las series se
+/// reevaluaban una vez por segundo, encima de los dos TimelineView que ya
+/// repintan solos. Separarlo acota el repintado a esta tarjeta.
+private struct LiveSessionHeader: View {
+    @EnvironmentObject private var watchMetrics: WatchMetricsStore
+    @EnvironmentObject private var health: HealthStore
+    let startedAt: Date
+    let restEndsAt: Date?
+
+    /// h:mm:ss del tiempo de sesión. Copia local del helper de
+    /// LiveStrengthWorkoutView, que es privado a esa vista.
+    private func duration(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval))
+        let hours = total / 3_600, minutes = (total % 3_600) / 60, seconds = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%d:%02d", minutes, seconds)
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+        HStack {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("TIEMPO").font(.caption2.bold()).foregroundStyle(.secondary)
+                    Text(duration(context.date.timeIntervalSince(startedAt))).font(.title3.monospacedDigit().bold())
+                }
+            }
+            Spacer()
+            if let restEndsAt {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("DESCANSO").font(.caption2.bold()).foregroundStyle(.secondary)
+                        Text(max(0, Int(restEndsAt.timeIntervalSince(context.date))).formatted() + " s")
+                            .font(.title3.monospacedDigit().bold()).foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+        if watchMetrics.isRunning {
+            Divider()
+            HStack {
+                Label("\(Int(watchMetrics.heartRate.rounded())) ppm", systemImage: "heart.fill").foregroundStyle(.red)
+                Spacer()
+                Label("\(Int(watchMetrics.activeEnergy.rounded())) kcal", systemImage: "flame.fill").foregroundStyle(.orange)
+                Spacer()
+                Text(watchMetrics.isPaused ? "Watch en pausa" : "Watch conectado").font(.caption2.bold()).foregroundStyle(watchMetrics.isPaused ? EterTheme.negative : EterTheme.positive)
+            }.font(.caption)
+            Button {
+                watchMetrics.isPaused ? watchMetrics.resume() : watchMetrics.pause()
+            } label: {
+                Label(watchMetrics.isPaused ? "Reanudar en Watch" : "Pausar en Watch", systemImage: watchMetrics.isPaused ? "play.fill" : "pause.fill")
+                    .font(.caption.bold()).frame(maxWidth: .infinity)
+            }
+        } else {
+            // El motivo real cuando lo hay, y el texto genérico cuando no:
+            // "inícialo tú" es un consejo inútil si lo que pasa es que la app
+            // companion no está instalada.
+            if let diagnostic = health.watchStartDiagnostic {
+                Label(diagnostic, systemImage: "applewatch.slash")
+                    .font(.caption2).foregroundStyle(EterTheme.danger)
+            } else {
+                Text("Abriendo “Fuerza” en el Apple Watch para añadir pulso y calorías reales. Si no se abre, inícialo desde el reloj.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        }.cardStyle()
+    }
+}
+
+private struct NumericDraftField<Value: Equatable>: View {
+    @Binding var value: Value
+    let format: (Value) -> String
+    let parse: (String) -> Value?
+    var keyboard: UIKeyboardType = .numberPad
+    var minWidth: CGFloat = 52
+
+    @State private var draft: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("0", text: $draft)
+            .keyboardType(keyboard)
+            .multilineTextAlignment(.center)
+            .font(.title3.bold().monospacedDigit())
+            .lineLimit(1).minimumScaleFactor(0.6)
+            .frame(minWidth: minWidth)
+            .fieldBox()
+            .focused($isFocused)
+            .onAppear { draft = format(value) }
+            // Un cambio del modelo desde FUERA (los botones +/-, repetir la
+            // serie anterior) sí tiene que verse — pero sólo cuando el campo
+            // no está enfocado, o le pisaría el texto a quien escribe.
+            .onChange(of: value) { _, newValue in
+                guard !isFocused else { return }
+                draft = format(newValue)
+            }
+            .onChange(of: isFocused) { wasFocused, nowFocused in
+                if nowFocused { return }
+                if wasFocused { commit() }
+            }
+            .onSubmit { commit() }
+    }
+
+    private func commit() {
+        // Un borrador ilegible no borra el dato: se descarta y se repinta el
+        // valor real. Vaciar el campo a propósito sí cuenta como cero, que es
+        // lo que alguien espera al borrarlo todo.
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty, let zero = parse("0") { value = zero }
+        else if let parsed = parse(trimmed) { value = parsed }
+        draft = format(value)
+    }
+}
+
 struct LiveStrengthWorkoutView: View {
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var health: HealthStore
@@ -795,7 +957,13 @@ struct LiveStrengthWorkoutView: View {
             // the moment you scrolled down to see the next one. It's now a
             // fixed bar above the scrolling content instead.
             VStack(spacing: 0) {
-                sessionHeader.padding(18).padding(.bottom, 0)
+                // En su propia vista, y no inline: lee pulso, calorías y
+                // estado del reloj, que llegan cada segundo mientras el Watch
+                // graba. Inline, cada uno de esos avisos invalidaba el body
+                // COMPLETO — todas las tarjetas y todos los campos de todas
+                // las series. Extraerlo acota el repintado a la cabecera.
+                LiveSessionHeader(startedAt: startedAt, restEndsAt: restEndsAt)
+                    .padding(18).padding(.bottom, 0)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         ForEach($exercises) { $exercise in exerciseCard($exercise) }
@@ -843,48 +1011,6 @@ struct LiveStrengthWorkoutView: View {
                 _ = await health.startStrengthWorkoutOnWatch()
             }
         }
-    }
-
-    private var sessionHeader: some View {
-        VStack(spacing: 12) {
-        HStack {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("TIEMPO").font(.caption2.bold()).foregroundStyle(.secondary)
-                    Text(duration(context.date.timeIntervalSince(startedAt))).font(.title3.monospacedDigit().bold())
-                }
-            }
-            Spacer()
-            if let restEndsAt {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text("DESCANSO").font(.caption2.bold()).foregroundStyle(.secondary)
-                        Text(max(0, Int(restEndsAt.timeIntervalSince(context.date))).formatted() + " s")
-                            .font(.title3.monospacedDigit().bold()).foregroundStyle(.orange)
-                    }
-                }
-            }
-        }
-        if watchMetrics.isRunning {
-            Divider()
-            HStack {
-                Label("\(Int(watchMetrics.heartRate.rounded())) ppm", systemImage: "heart.fill").foregroundStyle(.red)
-                Spacer()
-                Label("\(Int(watchMetrics.activeEnergy.rounded())) kcal", systemImage: "flame.fill").foregroundStyle(.orange)
-                Spacer()
-                Text(watchMetrics.isPaused ? "Watch en pausa" : "Watch conectado").font(.caption2.bold()).foregroundStyle(watchMetrics.isPaused ? EterTheme.negative : EterTheme.positive)
-            }.font(.caption)
-            Button {
-                watchMetrics.isPaused ? watchMetrics.resume() : watchMetrics.pause()
-            } label: {
-                Label(watchMetrics.isPaused ? "Reanudar en Watch" : "Pausar en Watch", systemImage: watchMetrics.isPaused ? "play.fill" : "pause.fill")
-                    .font(.caption.bold()).frame(maxWidth: .infinity)
-            }
-        } else {
-            Text("Inicia “Fuerza” en el Apple Watch para añadir pulso y calorías reales a esta sesión.")
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-        }.cardStyle()
     }
 
     private func exerciseCard(_ exercise: Binding<LiveExercise>) -> some View {
@@ -952,9 +1078,7 @@ struct LiveStrengthWorkoutView: View {
     private func stepperField(value: Binding<Double>, step: Double, minimum: Double, decimalPlaces: ClosedRange<Int> = 0...1) -> some View {
         HStack(spacing: 3) {
             stepButton(systemImage: "minus") { value.wrappedValue = max(minimum, value.wrappedValue - step) }
-            TextField("0", value: value, format: .number.precision(.fractionLength(decimalPlaces)))
-                .keyboardType(.decimalPad).multilineTextAlignment(.center).font(.title3.bold().monospacedDigit())
-                .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 60).fieldBox()
+            weightField(value: value)
             stepButton(systemImage: "plus") { value.wrappedValue += step }
         }.frame(maxWidth: .infinity)
     }
@@ -962,9 +1086,7 @@ struct LiveStrengthWorkoutView: View {
     private func stepperField(value: Binding<Int>, step: Int, minimum: Int) -> some View {
         HStack(spacing: 3) {
             stepButton(systemImage: "minus") { value.wrappedValue = max(minimum, value.wrappedValue - step) }
-            TextField("0", value: value, format: .number)
-                .keyboardType(.numberPad).multilineTextAlignment(.center).font(.title3.bold().monospacedDigit())
-                .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 52).fieldBox()
+            plainNumberField(value: value, minWidth: 52)
             stepButton(systemImage: "plus") { value.wrappedValue += step }
         }.frame(maxWidth: .infinity)
     }
@@ -1042,19 +1164,34 @@ struct LiveStrengthWorkoutView: View {
         }
     }
 
-    private func plainNumberField(value: Binding<Int>) -> some View {
-        TextField("0", value: value, format: .number)
-            .keyboardType(.numberPad).multilineTextAlignment(.center)
-            .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
+    private func plainNumberField(value: Binding<Int>, minWidth: CGFloat = 30) -> some View {
+        let format: (Int) -> String = { String($0) }
+        let parse: (String) -> Int? = { Int($0).map { max(0, $0) } }
+        return NumericDraftField(value: value, format: format, parse: parse, minWidth: minWidth)
+    }
+
+    /// Kilos: acepta coma o punto decimal y muestra el entero sin ".0".
+    private func weightField(value: Binding<Double>) -> some View {
+        let format: (Double) -> String = {
+            $0 == $0.rounded() ? String(Int($0)) : String(format: "%.1f", $0)
+        }
+        let parse: (String) -> Double? = {
+            Double($0.replacingOccurrences(of: ",", with: ".")).map { max(0, $0) }
+        }
+        return NumericDraftField(value: value, format: format, parse: parse,
+                                 keyboard: .decimalPad, minWidth: 60)
     }
 
     private func distanceField(_ set: Binding<LiveSet>) -> some View {
-        TextField("0", value: Binding(
+        // El Binding y los closures con su tipo explícito: en línea, el
+        // inferidor no resolvía la expresión en tiempo razonable.
+        let meters = Binding<Int>(
             get: { Int(set.wrappedValue.distanceMeters ?? 0) },
-            set: { set.wrappedValue.distanceMeters = $0 > 0 ? Double($0) : nil }
-        ), format: .number)
-            .keyboardType(.numberPad).multilineTextAlignment(.center)
-            .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
+            set: { newValue in set.wrappedValue.distanceMeters = newValue > 0 ? Double(newValue) : nil }
+        )
+        let format: (Int) -> String = { $0 > 0 ? String($0) : "" }
+        let parse: (String) -> Int? = { Int($0).map { max(0, $0) } }
+        return NumericDraftField(value: meters, format: format, parse: parse, minWidth: 30)
     }
 
     /// "250" -> "4:10". Cadena vacía para nil, nunca "0:00": un cero se leería
@@ -1178,10 +1315,26 @@ struct LiveStrengthWorkoutView: View {
         completeSession(notifyWatch: true)
     }
 
+    /// La firma que dispara el envío al reloj: SÓLO lo que el reloj muestra.
+    ///
+    /// Antes recorría todas las series de todos los ejercicios y las unía en
+    /// una cadena. Como `.onChange` la evalúa en cada reevaluación del body, y
+    /// el body se reevaluaba en cada pulsación de kilos o reps, eso significaba
+    /// construir esa cadena y —al cambiar— MANDAR UN MENSAJE POR WATCHCONNECTIVITY
+    /// EN CADA TECLA. Con el reloj no alcanzable, `transferUserInfo` además
+    /// encola cada envío en disco. Eso es el "va como congelada la pantalla".
+    ///
+    /// Ahora depende de la serie siguiente, el recuento y el descanso, que es
+    /// exactamente lo que la pantalla del reloj pinta: editar el peso de una
+    /// serie ya hecha, o de una que no es la siguiente, no le dice nada nuevo
+    /// al reloj y por tanto no manda nada.
     private var workoutContextSignature: String {
-        exercises.flatMap { exercise in
-            exercise.sets.map { "\(exercise.name)|\($0.weight)|\($0.reps)|\($0.completed)" }
-        }.joined(separator: ";") + "|\(restEndsAt?.timeIntervalSince1970 ?? 0)"
+        let flattened = exercises.flatMap { exercise in exercise.sets.map { (exercise.name, $0) } }
+        let completed = flattened.filter { $0.1.completed }.count
+        let next = flattened.first { !$0.1.completed }
+        return [next?.0 ?? "", "\(next?.1.weight ?? 0)", "\(next?.1.reps ?? 0)",
+                "\(completed)", "\(flattened.count)",
+                "\(restEndsAt?.timeIntervalSince1970 ?? 0)"].joined(separator: "|")
     }
 
     private func syncWorkoutContext() {
