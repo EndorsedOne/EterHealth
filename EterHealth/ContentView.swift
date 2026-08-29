@@ -435,7 +435,7 @@ struct ContentView: View {
             .onChange(of: health.hasLoadedHistory) { _, ready in
                 if ready { Task { await travel.backfillAllPending(health: health, imports: imports) } }
             }
-            .onChange(of: travel.episodes.count) { _, _ in
+            .onChange(of: travel.episodes) { _, _ in
                 if health.hasLoadedHistory { Task { await travel.backfillAllPending(health: health, imports: imports) } }
             }
     }

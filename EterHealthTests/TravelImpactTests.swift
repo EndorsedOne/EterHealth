@@ -187,6 +187,24 @@ final class TravelImpactTests: XCTestCase {
 
     // MARK: - Backfill de viajes pasados (inferencia retroactiva por señales)
 
+    func testHistoricalTravelBaselineUsesOnlySamplesBeforeDeparture() {
+        let departure = local("Europe/Madrid", 2026, 3, 2, 11)
+        let before = (1...14).map {
+            TrendPoint(date: departure.addingTimeInterval(Double(-$0) * 86_400), value: 60)
+        }
+        let after = (1...14).map {
+            TrendPoint(date: departure.addingTimeInterval(Double($0) * 86_400), value: 100)
+        }
+        let profile = PersonalBaselineEngine.travelProfile(
+            sleep: before.map { TrendPoint(date: $0.date, value: 7.5) }
+                + after.map { TrendPoint(date: $0.date, value: 9.5) },
+            hrv: before + after, resting: [], before: departure
+        )
+        XCTAssertEqual(profile.hrv.expected ?? -1, 60, accuracy: 0.01)
+        XCTAssertEqual(profile.sleep.expected ?? -1, 7.5, accuracy: 0.01)
+        XCTAssertEqual(profile.hrv.samples, 14)
+    }
+
     func testRetroactiveStabilityInfersAPastOutboundLegFromSignals() {
         let episode = tokyoEpisode()
         let arrival = episode.destinationArrival!

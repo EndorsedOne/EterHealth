@@ -211,7 +211,9 @@ final class TravelEpisodeStore: ObservableObject {
         // reloj no estaba) no hay nada que inferir: se deja como estaba.
         guard !fetched.hrv.isEmpty || !fetched.sleep.isEmpty else { return }
         let signals = TravelSignalContext(
-            baseline: PersonalBaselineEngine.profile(health: health, imports: imports),
+            baseline: PersonalBaselineEngine.travelProfile(
+                sleep: fetched.sleep, hrv: fetched.hrv, resting: fetched.resting, before: departure
+            ),
             sleepHistory: fetched.sleep, hrvHistory: fetched.hrv,
             restingHeartRateHistory: fetched.resting, sleepSchedule: fetched.schedule,
             confounders: .none

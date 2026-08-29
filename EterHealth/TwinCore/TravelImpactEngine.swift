@@ -440,8 +440,14 @@ enum TravelImpactEngine {
         }
         guard let start else { return nil }
 
+        let leg = measuringLeg ?? (phase == .homeReadaptation ? .homeReturn : .outbound)
+        let localZone = leg == .homeReturn
+            ? TimeZone(identifier: episode.homeTimeZoneID)
+            : TimeZone(identifier: episode.destinationTimeZoneID)
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        // Las noches se agrupan en el día civil donde se estaba, no en el huso
+        // que tenga el teléfono meses después al reconstruir el viaje.
+        calendar.timeZone = localZone ?? .current
         // El horario contra el que se compara: el ANCLA PERSONAL, no la mediana
         // de las mismas noches que se están juzgando.
         //
@@ -457,9 +463,6 @@ enum TravelImpactEngine {
         // significa volver a esa misma hora de reloj pero en el huso de donde
         // estás. Así "23:30 en Tokio" cuenta como adaptado y "07:00 en Tokio"
         // (= 23:30 en Lisboa) no, que es la distinción que hace falta.
-        let localZone = (measuringLeg ?? (phase == .homeReadaptation ? .homeReturn : .outbound)) == .homeReturn
-            ? TimeZone(identifier: episode.homeTimeZoneID)
-            : TimeZone(identifier: episode.destinationTimeZoneID)
         let habitualBedtimeMinutes = habitualBedtimeMinutes(episode: episode, signals: signals)
 
         var streak = 0
