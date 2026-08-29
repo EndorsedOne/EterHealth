@@ -17,6 +17,13 @@ enum EnergyTimelineEngine {
         let currentHour: Double
         let sleepStartHour: Double?
         let sleepEndHour: Double?
+        let hrv: DailyMetricContext
+        let restingHeartRate: DailyMetricContext
+    }
+
+    struct DailyMetricContext {
+        let value: Double?
+        let expected: Double?
     }
 
     /// Punto de entrada para la app: calcula curva, eventos y marcadores de
@@ -25,7 +32,8 @@ enum EnergyTimelineEngine {
     /// funciones de abajo quedan accesibles individualmente.
     @MainActor
     static func build(assessment: TwinAssessment, health: HealthStore, imports: ImportStore,
-                      checkIn: DailyCheckIn?, lifestyle: [LifestyleEvent], now: Date = Date()) -> Result {
+                      checkIn: DailyCheckIn?, lifestyle: [LifestyleEvent], travel: TravelEpisode? = nil,
+                      now: Date = Date()) -> Result {
         let currentHour = hour(of: now, on: now)
         let sleepStart = health.sleepStages.startDate.map { max(0, hour(of: $0, on: now)) }
         let sleepEnd = health.sleepStages.endDate.map { min(currentHour, hour(of: $0, on: now)) }
@@ -38,8 +46,15 @@ enum EnergyTimelineEngine {
         )
         return Result(
             energy: model.energy, curve: model.curve, basis: model.basis, events: events,
-            inputMarkers: inputMarkers(from: lifestyle, now: now),
-            currentHour: currentHour, sleepStartHour: sleepStart, sleepEndHour: sleepEnd
+            inputMarkers: inputMarkers(
+                from: lifestyle, checkIn: checkIn, travel: travel,
+                sleepHours: health.snapshot.sleepHours, sleepEndHour: sleepEnd, now: now
+            ),
+            currentHour: currentHour, sleepStartHour: sleepStart, sleepEndHour: sleepEnd,
+            hrv: DailyMetricContext(value: baseline.hrv.current, expected: baseline.hrv.expected),
+            restingHeartRate: DailyMetricContext(
+                value: baseline.restingHeartRate.current, expected: baseline.restingHeartRate.expected
+            )
         )
     }
 
@@ -159,7 +174,9 @@ enum EnergyTimelineEngine {
     /// superponerlos sobre la curva. No modelan un valor (la curva ya absorbe su
     /// efecto donde lo tiene): son anotaciones de "aquí pasó esto", que es lo que
     /// el reto pedía — ver el input y la respuesta fisiológica en el mismo sitio.
-    static func inputMarkers(from lifestyle: [LifestyleEvent], now: Date) -> [EterWidgetInputMarker] {
+    static func inputMarkers(from lifestyle: [LifestyleEvent], checkIn: DailyCheckIn? = nil,
+                             travel: TravelEpisode? = nil, sleepHours: Double = 0,
+                             sleepEndHour: Double? = nil, now: Date) -> [EterWidgetInputMarker] {
         let calendar = Calendar.current
         let nowHour = hour(of: now, on: now)
         var markers: [EterWidgetInputMarker] = []
@@ -172,9 +189,38 @@ enum EnergyTimelineEngine {
             if event.coldMinutes > 0 { add(event.date, "snowflake", "cold", "Frío \(event.coldMinutes) min") }
             if event.caffeineMg > 0 { add(event.caffeineDate ?? event.date, "cup.and.saucer.fill", "coffee", "Cafeína \(event.caffeineMg) mg") }
             if event.alcoholDrinks > 0 { add(event.date, "wineglass.fill", "alcohol", "\(event.alcoholDrinks) bebida\(event.alcoholDrinks == 1 ? "" : "s")") }
+            if event.foodQuality != .notRecorded || event.fastingHours > 0 || event.lateDinner || event.heavyDinner {
+                var details: [String] = []
+                if event.foodQuality != .notRecorded { details.append(event.foodQuality.rawValue) }
+                if event.fastingHours > 0 { details.append("ayuno \(event.fastingHours) h") }
+                if event.lateDinner { details.append("cena tardía") }
+                if event.heavyDinner { details.append("cena copiosa") }
+                add(event.date, "fork.knife", "food", details.joined(separator: " · "))
+            }
             if !event.supplements.isEmpty {
                 add(event.supplementsDate ?? event.date, "pills.fill", "supplement",
                     event.supplements.map(\.rawValue).sorted().joined(separator: ", "))
+            }
+        }
+        if let checkIn, calendar.isDate(checkIn.createdAt, inSameDayAs: now) {
+            if checkIn.stress >= 4 {
+                add(checkIn.createdAt, "brain.head.profile", "stress", "Estrés declarado \(checkIn.stress)/5")
+            } else if checkIn.stress <= 2 && checkIn.fatigue <= 2 {
+                add(checkIn.createdAt, "figure.mind.and.body", "rest", "Descanso declarado")
+            }
+        }
+        if sleepHours > 0, let sleepEndHour {
+            let markerDate = calendar.startOfDay(for: now).addingTimeInterval(sleepEndHour * 3_600)
+            add(markerDate, "moon.zzz.fill", "sleep", String(format: "Sueño %.1f h", sleepHours))
+        }
+        if let travel, !travel.isCancelled {
+            let boundaries = [travel.outboundDeparture, travel.destinationArrival,
+                              travel.returnDeparture, travel.homeArrival].compactMap { $0 }
+            if let boundary = boundaries.first(where: { calendar.isDate($0, inSameDayAs: now) }) {
+                add(boundary, "airplane", "travel", travel.title)
+            } else if travel.outboundDeparture.map({ $0 <= now }) == true {
+                let start = calendar.startOfDay(for: now).addingTimeInterval(15 * 60)
+                add(start, "airplane", "travel", "Viaje activo · \(travel.title)")
             }
         }
         return markers.filter { $0.hour <= nowHour + 0.001 }.sorted { $0.hour < $1.hour }

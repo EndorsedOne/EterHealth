@@ -1,41 +1,19 @@
 import SwiftUI
 import Charts
 
-/// Reto 1 · "Tendencias de hoy". La curva modelada de energía ("tu batería",
-/// estilo Bevel) de fondo, los puntos REALES de HRV medidos hoy encima, y los
-/// inputs del día (sauna, frío, café, alcohol, suplementos) más los
-/// entrenamientos superpuestos como marcadores con su hora. Todo comparte el
-/// mismo eje de tiempo, así se ve el input y su respuesta fisiológica en el
-/// mismo sitio. Comparte el modelo (EnergyTimelineEngine) con el widget para no
-/// dibujar dos curvas distintas.
+/// Curva modelada de energía y contexto que puede explicar sus cambios. HRV y
+/// pulso en reposo son señales diarias, no series intradía comparables con una
+/// batería: se muestran contra la línea base personal y no contaminan el chart.
 struct TodayTrendsCardView: View {
     let result: EnergyTimelineEngine.Result
-    let hrvSamples: [TrendPoint]
-    let restingHeartRate: Int
-    let referenceDate: Date
 
     private struct CurvePoint: Identifiable { let id: Int; let hour: Double; let value: Double }
-    private struct HRVPoint: Identifiable { let id: Int; let hour: Double; let value: Double; let normalized: Double }
 
     // Mismo mapeo índice→hora que EnergyTimelineEngine.energyModel (pasos de
     // media hora, tope en la hora actual).
     private var curvePoints: [CurvePoint] {
         result.curve.enumerated().map { index, value in
             CurvePoint(id: index, hour: min(result.currentHour, Double(index) / 2), value: value)
-        }
-    }
-
-    private var hrvPoints: [HRVPoint] {
-        let startOfDay = Calendar.current.startOfDay(for: referenceDate)
-        let values = hrvSamples.map(\.value)
-        guard let lo = values.min(), let hi = values.max() else { return [] }
-        let span = max(1, hi - lo)
-        return hrvSamples.enumerated().map { index, point in
-            let hour = point.date.timeIntervalSince(startOfDay) / 3600
-            // Cuando todas las muestras son casi iguales, span→1 y todo se
-            // aplasta arriba; centrar en 50 es más honesto que apilar en 100.
-            let normalized = hi == lo ? 50 : (point.value - lo) / span * 100
-            return HRVPoint(id: index, hour: hour, value: point.value, normalized: normalized)
         }
     }
 
@@ -47,16 +25,17 @@ struct TodayTrendsCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            physiologicalContext
             chart.frame(height: 210)
             legend
-            Text("Curva de energía modelada (izquierda, 0–100) · puntos de HRV reales medidos hoy (derecha, ms). \(result.basis).")
+            Text("Curva de energía estimada (0–100). Los iconos sitúan eventos registrados que aportan contexto; no demuestran por sí solos causalidad. \(result.basis).")
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }
         .cardStyle()
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Tendencias de hoy").font(.headline)
                 Text("Tu batería del día y cómo responden tus señales").font(.caption).foregroundStyle(.secondary)
@@ -66,19 +45,44 @@ struct TodayTrendsCardView: View {
                 Text("\(result.energy)").font(.title2.bold()).fontDesign(.rounded).foregroundStyle(energyColor)
                 Text("energía").font(.caption2).foregroundStyle(.secondary)
             }
-            if restingHeartRate > 0 {
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text("\(restingHeartRate)").font(.title2.bold()).fontDesign(.rounded)
-                    Text("reposo ppm").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
         }
     }
 
-    private var hrvRange: (min: Double, max: Double)? {
-        let values = hrvSamples.map(\.value)
-        guard let lo = values.min(), let hi = values.max() else { return nil }
-        return (lo, hi)
+    private var physiologicalContext: some View {
+        HStack(spacing: 10) {
+            metricContext(title: "HRV", unit: "ms", metric: result.hrv, percentComparison: true)
+            Divider().frame(height: 42)
+            metricContext(title: "Reposo", unit: "ppm", metric: result.restingHeartRate, percentComparison: false)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func metricContext(title: String, unit: String, metric: EnergyTimelineEngine.DailyMetricContext,
+                               percentComparison: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption.bold()).foregroundStyle(.secondary)
+            if let value = metric.value {
+                Text("\(Int(value.rounded())) \(unit)").font(.headline).fontDesign(.rounded)
+                Text(comparison(metric, percent: percentComparison))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            } else {
+                Text("Sin dato").font(.headline).foregroundStyle(.secondary)
+                Text("Aún sin lectura de hoy").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func comparison(_ metric: EnergyTimelineEngine.DailyMetricContext, percent: Bool) -> String {
+        guard let value = metric.value, let expected = metric.expected, expected > 0 else {
+            return "Línea base aún insuficiente"
+        }
+        let delta = percent ? (value - expected) / expected * 100 : value - expected
+        let rounded = Int(delta.rounded())
+        let signed = rounded > 0 ? "+\(rounded)" : "\(rounded)"
+        return "\(signed)\(percent ? "%" : "") frente a tu normal"
     }
 
     private var chart: some View {
@@ -105,11 +109,6 @@ struct TodayTrendsCardView: View {
                     .foregroundStyle(energyColor)
                     .symbolSize(90)
             }
-            ForEach(hrvPoints) { point in
-                PointMark(x: .value("Hora", point.hour), y: .value("HRV", point.normalized))
-                    .foregroundStyle(Color.purple)
-                    .symbolSize(46)
-            }
         }
         .chartXScale(domain: 0...24)
         .chartYScale(domain: 0...100)
@@ -124,16 +123,6 @@ struct TodayTrendsCardView: View {
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
                 AxisValueLabel { if let energy = value.as(Int.self) { Text("\(energy)") } }
             }
-            if let range = hrvRange {
-                AxisMarks(position: .trailing, values: [0, 50, 100]) { value in
-                    AxisValueLabel {
-                        if let fraction = value.as(Double.self) {
-                            Text("\(Int((range.min + (range.max - range.min) * fraction / 100).rounded()))")
-                                .foregroundStyle(Color.purple.opacity(0.9))
-                        }
-                    }
-                }
-            }
         }
         .chartOverlay { proxy in
             GeometryReader { geometry in
@@ -141,13 +130,14 @@ struct TodayTrendsCardView: View {
                     let rect = geometry[plotFrame]
                     // Entrenamientos arriba, inputs de estilo de vida abajo, para
                     // que no se pisen y se lean como dos capas distintas.
-                    ForEach(Array(result.events.enumerated()), id: \.offset) { _, event in
+                    ForEach(Array(result.events.enumerated()), id: \.offset) { index, event in
                         marker(proxy: proxy, rect: rect, hour: (event.startHour + event.endHour) / 2,
-                               symbol: event.symbol, color: .orange, y: rect.minY + 10)
+                               symbol: event.symbol, color: .orange, y: rect.minY + 10 + CGFloat(index % 2) * 22)
                     }
-                    ForEach(Array(result.inputMarkers.enumerated()), id: \.offset) { _, input in
+                    ForEach(Array(result.inputMarkers.enumerated()), id: \.offset) { index, input in
                         marker(proxy: proxy, rect: rect, hour: input.hour,
-                               symbol: input.symbol, color: inputColor(input.kind), y: rect.maxY - 10)
+                               symbol: input.symbol, color: inputColor(input.kind),
+                               y: rect.maxY - 10 - CGFloat(index % 2) * 22)
                     }
                 }
             }
@@ -171,8 +161,7 @@ struct TodayTrendsCardView: View {
     private var legend: some View {
         HStack(spacing: 14) {
             Label("Energía", systemImage: "bolt.fill").foregroundStyle(energyColor)
-            if !hrvPoints.isEmpty { Label("HRV real", systemImage: "circle.fill").foregroundStyle(.purple) }
-            if !result.inputMarkers.isEmpty { Label("Inputs", systemImage: "circle.fill").foregroundStyle(.teal) }
+            if !result.inputMarkers.isEmpty { Label("Contexto", systemImage: "circle.fill").foregroundStyle(.teal) }
             if !result.events.isEmpty { Label("Ejercicio", systemImage: "circle.fill").foregroundStyle(.orange) }
         }.font(.caption2).frame(maxWidth: .infinity)
     }
@@ -188,15 +177,19 @@ struct TodayTrendsCardView: View {
         case "coffee": return .brown
         case "alcohol": return .purple
         case "supplement": return .teal
+        case "food": return .green
+        case "stress": return .pink
+        case "rest": return .blue
+        case "sleep": return .indigo
+        case "travel": return .mint
         default: return .gray
         }
     }
 
     private var accessibilitySummary: String {
         var parts = ["Energía actual \(result.energy) de 100. \(result.basis)."]
-        if let range = hrvRange {
-            parts.append("HRV de hoy entre \(Int(range.min)) y \(Int(range.max)) milisegundos en \(hrvSamples.count) muestras.")
-        }
+        if let value = result.hrv.value { parts.append("HRV \(Int(value.rounded())) milisegundos. \(comparison(result.hrv, percent: true)).") }
+        if let value = result.restingHeartRate.value { parts.append("Pulso en reposo \(Int(value.rounded())) pulsaciones por minuto. \(comparison(result.restingHeartRate, percent: false)).") }
         if !result.inputMarkers.isEmpty {
             parts.append("Inputs: " + result.inputMarkers.map(\.label).joined(separator: ", ") + ".")
         }

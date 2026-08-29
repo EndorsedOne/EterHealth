@@ -31,7 +31,7 @@ final class DashboardViewModel: ObservableObject {
         self.assessment = assessment
         energyTimeline = EnergyTimelineEngine.build(
             assessment: assessment, health: health, imports: imports,
-            checkIn: checkIn, lifestyle: events
+            checkIn: checkIn, lifestyle: events, travel: travel
         )
         plan = TrainingPlanEngine.status(
             health: health, imports: imports, readiness: assessment.score,

@@ -445,10 +445,7 @@ struct ContentView: View {
         // necesita algo de día transcurrido; de madrugada recién arrancada no
         // hay tendencia que enseñar todavía.
         if let result = dashboard.energyTimeline, result.currentHour > 0.5, result.curve.count > 1 {
-            TodayTrendsCardView(
-                result: result, hrvSamples: health.todayHRVSamples,
-                restingHeartRate: health.snapshot.restingHeartRate, referenceDate: Date()
-            )
+            TodayTrendsCardView(result: result)
         }
     }
 
