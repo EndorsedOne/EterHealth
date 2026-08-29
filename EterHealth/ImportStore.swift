@@ -566,16 +566,34 @@ enum ImportError: LocalizedError, Equatable {
 }
 
 enum MuscleMap {
+    private final class ProfileLookup: NSObject {
+        let profile: ExerciseProfile?
+        init(_ profile: ExerciseProfile?) { self.profile = profile }
+    }
+
     struct ExerciseProfile: Identifiable {
         let id: String
         let aliases: [String]
         let groups: [String]
         let involvement: [String: Double]
+        private let normalizedAliases: [String]
+
+        init(id: String, aliases: [String], groups: [String], involvement: [String: Double]) {
+            self.id = id
+            self.aliases = aliases
+            self.groups = groups
+            self.involvement = involvement
+            // Resolver un alias sucede en cada serie histórica. Normalizar los
+            // alias dentro de matches() multiplicaba este trabajo por cada
+            // sesión y terminaba bloqueando la UI al cargar datos reales.
+            normalizedAliases = aliases.map {
+                $0.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+            }
+        }
 
         func matches(_ normalizedName: String) -> Bool {
-            aliases.contains { alias in
-                let normalizedAlias = MuscleMap.normalized(alias)
-                return normalizedName == normalizedAlias || normalizedName.contains(normalizedAlias)
+            normalizedAliases.contains { alias in
+                normalizedName == alias || normalizedName.contains(alias)
             }
         }
     }
@@ -616,9 +634,20 @@ enum MuscleMap {
         .init(id: "skiErg", aliases: ["SkiErg", "Ski Erg"], groups: ["Espalda", "Hombros", "Core"], involvement: ["Espalda": 0.5, "Hombros": 0.5, "Core": 0.25])
     ]
 
+    // Los historiales contienen muchas repeticiones del mismo nombre. NSCache
+    // es seguro entre hilos y evita recorrer los perfiles en cada render,
+    // cálculo de fatiga y gráfico. También cachea que un nombre sea desconocido.
+    // NSCache sincroniza internamente sus accesos; Swift no puede expresar esa
+    // garantía Foundation, por eso la marcamos explícitamente aquí.
+    private nonisolated(unsafe) static let profileCache = NSCache<NSString, ProfileLookup>()
+
     static func profile(for raw: String) -> ExerciseProfile? {
         let name = normalized(raw)
-        return knownProfiles.first { $0.matches(name) }
+        let key = name as NSString
+        if let cached = profileCache.object(forKey: key) { return cached.profile }
+        let resolved = knownProfiles.first { $0.matches(name) }
+        profileCache.setObject(ProfileLookup(resolved), forKey: key)
+        return resolved
     }
 
     private static func normalized(_ raw: String) -> String {

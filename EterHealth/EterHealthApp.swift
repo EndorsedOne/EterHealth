@@ -34,7 +34,16 @@ struct EterHealthApp: App {
                 .environmentObject(twinStates)
                 .environmentObject(temperatureDeviations)
                 .environmentObject(travel)
-                .task { await health.prepare() }
+                .task {
+                    // La primera interacción pertenece a Hoy. Una vez que el
+                    // primer frame y sus datos mínimos han aparecido, dejamos
+                    // que Salud prepare el histórico para las demás pestañas
+                    // sin hacer al usuario esperar a pulsarlas.
+                    await health.prepare()
+                    try? await Task.sleep(for: .seconds(1.2))
+                    guard !Task.isCancelled else { return }
+                    await health.loadExtendedHistory()
+                }
         }
     }
 }

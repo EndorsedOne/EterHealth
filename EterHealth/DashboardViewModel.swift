@@ -7,6 +7,12 @@ final class DashboardViewModel: ObservableObject {
     @Published private(set) var performance: PerformanceSummary?
     @Published private(set) var balance: TrainingBalance?
     @Published private(set) var running: RunningPerformanceSummary?
+    @Published private(set) var isLoadingPerformance = false
+    // Reto 1 · curva de tendencias del día ya calculada. Se computa aquí, en el
+    // refresco debounced del gemelo, y NUNCA dentro de body: build() recorre el
+    // histórico y llama a PersonalBaselineEngine, justo el trabajo caro que el
+    // reto 3 saca del primer render.
+    @Published private(set) var energyTimeline: EnergyTimelineEngine.Result?
 
     // TwinCore's engines no longer read GoalStore/LifestyleFactorStore/
     // InjuryStore/TwinStateStore internally — profile/events/activeInjuries/
@@ -23,17 +29,41 @@ final class DashboardViewModel: ObservableObject {
                                   personalAnchor: personalAnchor, travel: travel, travelHistory: travelHistory)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context)
         self.assessment = assessment
+        energyTimeline = EnergyTimelineEngine.build(
+            assessment: assessment, health: health, imports: imports,
+            checkIn: checkIn, lifestyle: events
+        )
         plan = TrainingPlanEngine.status(
             health: health, imports: imports, readiness: assessment.score,
             muscles: assessment.muscles, checkIn: checkIn, context: context,
             physiologicalAlert: assessment.physiologicalAlert
         )
-        performance = PerformanceEngine.summarize(health: health, imports: imports)
-        balance = PerformanceEngine.balance(health: health, imports: imports, context: context)
+        // Rendimiento no es necesario para responder la primera pregunta de la
+        // app ("¿cómo estoy hoy?"). Invalidamos su caché y lo calculamos sólo
+        // al entrar en esa pestaña; antes se hacía aquí, bloqueando el primer
+        // render y cada actualización de Salud con tres análisis adicionales.
+        performance = nil
+        balance = nil
+        running = nil
+    }
+
+    func refreshPerformance(health: HealthStore, imports: ImportStore, reviews: [WorkoutReview],
+                            context: TwinContext) async {
+        guard performance == nil, balance == nil, running == nil, !isLoadingPerformance else { return }
+        isLoadingPerformance = true
+        // Cede el primer frame al indicador de carga antes de recorrer el
+        // histórico. Los motores son síncronos por diseño, así que dividirlos
+        // evita una única pausa larga al navegar a Rendimiento.
+        await Task.yield()
         running = RunningPerformanceEngine.summarize(
             workouts: health.workoutHistory,
             zones: health.runningHeartRateZones,
             reviews: reviews
         )
+        await Task.yield()
+        performance = PerformanceEngine.summarize(health: health, imports: imports)
+        await Task.yield()
+        balance = PerformanceEngine.balance(health: health, imports: imports, context: context)
+        isLoadingPerformance = false
     }
 }

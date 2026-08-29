@@ -40,6 +40,10 @@ private struct Snapshot: Codable {
     let dailyLoads: [Double]
     let runningShare: Int
     let strengthShare: Int
+    // Reto 1 · opcionales por el mismo motivo que loadChannel: los snapshots
+    // ya guardados no los traen y el decoder sintetizado no aplica defaults.
+    var hrvPoints: [HRVPoint]?
+    var inputMarkers: [InputMarker]?
 
     static let sample = Snapshot(
         updatedAt: .now, readiness: 70, state: "Disponible", recommendation: "Recuperación",
@@ -58,7 +62,10 @@ private struct Snapshot: Codable {
         loadConfidence: "Alta", loadConfidenceScore: 82,
         loadConfidenceReason: "28 días de carga observados y 8 sesiones recientes.",
         dailyLoads: [12, 0, 18, 9, 0, 31, 8, 15, 0, 24, 10, 6, 0, 28, 12, 7, 0, 20, 35, 8, 0, 16, 11, 26, 0, 14, 20, 9],
-        runningShare: 72, strengthShare: 28
+        runningShare: 72, strengthShare: 28,
+        hrvPoints: [HRVPoint(hour: 6.5, value: 61), HRVPoint(hour: 7.2, value: 55), HRVPoint(hour: 9.1, value: 49)],
+        inputMarkers: [InputMarker(hour: 7.0, symbol: "cup.and.saucer.fill", kind: "coffee", label: "Cafeína 95 mg"),
+                       InputMarker(hour: 8.0, symbol: "snowflake", kind: "cold", label: "Frío 3 min")]
     )
 }
 
@@ -67,6 +74,18 @@ private struct EnergyEvent: Codable {
     let endHour: Double
     let symbol: String
     let drain: Double
+}
+
+private struct HRVPoint: Codable {
+    let hour: Double
+    let value: Double
+}
+
+private struct InputMarker: Codable {
+    let hour: Double
+    let symbol: String
+    let kind: String
+    let label: String
 }
 
 private struct Entry: TimelineEntry { let date: Date; let snapshot: Snapshot }
@@ -214,6 +233,29 @@ private struct EnergyTimeline: View {
                         x: plotWidth * min(24, max(0, snapshot.currentHour)) / 24,
                         y: plotHeight * (1 - min(100, max(0, snapshot.energyCurve.last ?? Double(snapshot.energy))) / 100)
                     )
+                // Reto 1 · puntos REALES de HRV de hoy, normalizados a su propio
+                // rango dentro del gráfico (mismo criterio que la app). Encima
+                // de la curva para que se lean como el dato medido sobre el
+                // modelo.
+                if let hrv = snapshot.hrvPoints, !hrv.isEmpty {
+                    let values = hrv.map(\.value)
+                    let low = values.min() ?? 0
+                    let span = max(1, (values.max() ?? 1) - low)
+                    ForEach(Array(hrv.enumerated()), id: \.offset) { _, point in
+                        Circle().fill(Color.purple).overlay(Circle().stroke(.white.opacity(0.65), lineWidth: 0.5))
+                            .frame(width: 5, height: 5)
+                            .position(
+                                x: min(plotWidth, max(0, plotWidth * point.hour / 24)),
+                                y: plotHeight * (1 - (point.value - low) / span)
+                            )
+                    }
+                }
+                // Reto 1 · inputs de estilo de vida con su hora, abajo.
+                ForEach(Array((snapshot.inputMarkers ?? []).enumerated()), id: \.offset) { _, marker in
+                    Image(systemName: marker.symbol).font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(inputColor(marker.kind))
+                        .position(x: min(plotWidth - 4, max(4, plotWidth * marker.hour / 24)), y: plotHeight - 6)
+                }
                 Text("100").font(.system(size: 8)).foregroundStyle(.secondary)
                     .position(x: plotWidth + 15, y: 5)
                 Text("0").font(.system(size: 8)).foregroundStyle(.secondary)
@@ -228,6 +270,17 @@ private struct EnergyTimeline: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Banco de energía durante el día")
         .accessibilityValue("\(snapshot.energy) a las \(snapshot.updatedAt.formatted(date: .omitted, time: .shortened))")
+    }
+
+    private func inputColor(_ kind: String) -> Color {
+        switch kind {
+        case "sauna": return .red
+        case "cold": return .cyan
+        case "coffee": return .brown
+        case "alcohol": return .purple
+        case "supplement": return .teal
+        default: return .gray
+        }
     }
 }
 

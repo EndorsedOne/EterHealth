@@ -84,6 +84,7 @@ struct ContentView: View {
     @State private var backupMessage: String?
     @State private var todayStrengthRoutine: StrengthRoutine?
     @State private var automaticBackupRevision = 0
+    @State private var dashboardRefreshTask: Task<Void, Never>?
     @StateObject private var dashboard = DashboardViewModel()
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
@@ -92,13 +93,29 @@ struct ContentView: View {
         TabView(selection: $selectedTab) {
             appPage { todayPage }
                 .tabItem { Label("Hoy", systemImage: "sparkles") }.tag(0)
-            appPage { performancePage }
+            // TabView monta sus hijos antes de que el usuario los vea. No
+            // dejamos que eso construya los gráficos y forecasts de todas las
+            // pestañas durante el arranque: primero Hoy, después lo que se
+            // solicite de forma explícita.
+            appPage {
+                if selectedTab == 1 { performancePage }
+                else { deferredTab(title: "Rendimiento", systemImage: "figure.run") }
+            }
                 .tabItem { Label("Rendimiento", systemImage: "figure.run") }.tag(1)
-            appPage { StrengthTrainingView() }
+            appPage {
+                if selectedTab == 2 { StrengthTrainingView() }
+                else { deferredTab(title: "Fuerza", systemImage: "dumbbell.fill") }
+            }
                 .tabItem { Label("Fuerza", systemImage: "dumbbell.fill") }.tag(2)
-            appPage { healthPage }
+            appPage {
+                if selectedTab == 3 { healthPage }
+                else { deferredTab(title: "Salud", systemImage: "heart.text.square") }
+            }
                 .tabItem { Label("Salud", systemImage: "heart.text.square") }.tag(3)
-            appPage { dataPage }
+            appPage {
+                if selectedTab == 4 { dataPage }
+                else { deferredTab(title: "Datos", systemImage: "externaldrive") }
+            }
                 .tabItem { Label("Datos", systemImage: "externaldrive") }.tag(4)
         }
         .fileImporter(
@@ -217,18 +234,18 @@ struct ContentView: View {
                 .environmentObject(health)
         }
         .onChange(of: health.lastUpdated) { _, _ in
-            refreshDashboard()
-            captureCurrentPlanIfNeeded()
-            syncWatchSummary()
-            performAutomaticBackupIfNeeded()
+            scheduleDashboardRefresh(includeBackup: true, initialAnalysis: dashboard.assessment == nil)
         }
         .onReceive(checkIns.objectWillChange) { _ in
-            Task { @MainActor in await Task.yield(); refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
+            scheduleDashboardRefresh()
         }
         .onReceive(lifestyle.objectWillChange) { _ in
-            Task { @MainActor in await Task.yield(); refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
+            scheduleDashboardRefresh()
         }
-        .onChange(of: imports.workoutCount) { _, _ in refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
+        .onChange(of: imports.workoutCount) { _, _ in scheduleDashboardRefresh() }
+        .onChange(of: selectedTab) { _, tab in
+            if tab == 1 { loadPerformanceIfNeeded() }
+        }
         // syncWatchSummary sólo estaba enganchado a CAMBIOS (lastUpdated,
         // check-in, estilo de vida, importaciones). Con la app abierta y nada
         // cambiando, el iPhone no enviaba nada nunca y el reloj se quedaba en
@@ -256,7 +273,13 @@ struct ContentView: View {
         // syncWatchSummary aquí también: si el permiso de Salud ya estaba
         // concedido antes de que esta vista apareciera, ningún onChange llega a
         // dispararse y el reloj se quedaría esperando igual.
-        .onAppear { refreshDashboard(); syncWatchSummary() }
+        .onAppear {
+            // En un relanzamiento Salud puede seguir preparando su primera
+            // lectura. No calculamos el gemelo con datos vacíos en el primer
+            // frame: eso era trabajo caro invisible antes de poder hacer
+            // siquiera scroll.
+            if health.lastUpdated != nil { scheduleDashboardRefresh(initialAnalysis: true) }
+        }
     }
 
     // Type erasure is intentional at the navigation boundary. Each tab contains a
@@ -291,6 +314,41 @@ struct ContentView: View {
                          travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
     }
 
+    private func scheduleDashboardRefresh(includeBackup: Bool = false, initialAnalysis: Bool = false) {
+        dashboardRefreshTask?.cancel()
+        dashboardRefreshTask = Task { @MainActor in
+            // Salud puede publicar varias señales durante la misma lectura.
+            // Un pequeño debounce convierte esa ráfaga en una sola evaluación.
+            try? await Task.sleep(for: initialAnalysis ? .seconds(1.5) : .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            refreshDashboard()
+            await Task.yield()
+            captureCurrentPlanIfNeeded()
+            await Task.yield()
+            syncWatchSummary()
+            if includeBackup {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                performAutomaticBackupIfNeeded()
+            }
+            if selectedTab == 1 { loadPerformanceIfNeeded() }
+        }
+    }
+
+    private func loadPerformanceIfNeeded() {
+        guard health.authorizationRequested else { return }
+        Task { @MainActor in
+            await health.loadExtendedHistory()
+            await dashboard.refreshPerformance(health: health, imports: imports,
+                                               reviews: workoutReviews.reviews, context: twinContext)
+        }
+    }
+
+    private func deferredTab(title: String, systemImage: String) -> some View {
+        ContentUnavailableView(title, systemImage: systemImage,
+                               description: Text("Se cargará al abrir esta pestaña."))
+    }
+
     private var currentAssessment: TwinAssessment {
         dashboard.assessment ?? TwinEngine.assess(
             health: health, imports: imports, checkIn: checkIns.entry(), context: twinContext
@@ -308,6 +366,23 @@ struct ContentView: View {
     @ViewBuilder private var todayPage: some View {
         if !health.authorizationRequested {
             permissionCard
+        } else if dashboard.assessment == nil || dashboard.plan == nil {
+            // Estructura barata e inmediatamente desplazable mientras se
+            // reciben las lecturas mínimas y se prepara el gemelo. Es mejor
+            // un estado honesto que ejecutar TwinEngine desde body y congelar
+            // la primera interacción.
+            VStack(alignment: .leading, spacing: 18) {
+                EterPageHeader(eyebrow: "Hoy", title: "Preparando tu estado")
+                ProgressView().controlSize(.large)
+                Text("Cargando primero sueño, actividad y corazón. Tu análisis y plan aparecerán enseguida.")
+                    .foregroundStyle(.secondary)
+                LazyVGrid(columns: columns, spacing: 12) {
+                    metric("Sueño", value: health.snapshot.sleepHours > 0 ? String(format: "%.1f", health.snapshot.sleepHours) : "—", unit: "h", icon: "moon.fill")
+                    metric("HRV", value: health.snapshot.hrv > 0 ? health.snapshot.hrv.formatted() : "—", unit: "ms", icon: "waveform.path.ecg")
+                    metric("Pulso", value: health.snapshot.heartRate > 0 ? health.snapshot.heartRate.formatted() : "—", unit: "ppm", icon: "heart.fill")
+                    metric("Pasos", value: health.snapshot.steps.formatted(), unit: "", icon: "figure.walk")
+                }
+            }
         } else {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Hoy", title: "Tu estado real")
@@ -315,6 +390,7 @@ struct ContentView: View {
                 lifestyleFactorCard
                 physiologicalAlertCard
                 twinCard
+                todayTrendsCard
                 currentPlanCard
                 proposedWorkoutCard
                 // Simular decisión antes de la semana: la lógica es
@@ -343,6 +419,18 @@ struct ContentView: View {
                 latestSessionCard
                 updateControl
             }
+        }
+    }
+
+    @ViewBuilder private var todayTrendsCard: some View {
+        // Ya calculada en DashboardViewModel.refresh (fuera de body). La curva
+        // necesita algo de día transcurrido; de madrugada recién arrancada no
+        // hay tendencia que enseñar todavía.
+        if let result = dashboard.energyTimeline, result.currentHour > 0.5, result.curve.count > 1 {
+            TodayTrendsCardView(
+                result: result, hrvSamples: health.todayHRVSamples,
+                restingHeartRate: health.snapshot.restingHeartRate, referenceDate: Date()
+            )
         }
     }
 
@@ -489,25 +577,32 @@ struct ContentView: View {
     }
 
 
-    private var performancePage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
-            trainingRoadmapCard
-            goalDistanceCard
-            hyroxForecastCard
-            triathlonForecastCard
-            RunningPerformanceView(
-                running: dashboard.running ?? RunningPerformanceEngine.summarize(
-                    workouts: health.workoutHistory,
-                    zones: health.runningHeartRateZones,
-                    reviews: workoutReviews.reviews
-                ),
-                plan: currentPlan
-            )
-            performanceDashboard
-            heartZoneChart
-            trainingAnalytics
-            recentTraining
+    @ViewBuilder private var performancePage: some View {
+        // Nunca calculamos estos fallbacks dentro de body: TabView puede pedir
+        // la vista antes de que el usuario pulse Rendimiento, justo el trabajo
+        // invisible que hacía pesado el arranque. La pestaña muestra primero
+        // su estado y después recibe el resultado diferido del view model.
+        if let running = dashboard.running, dashboard.performance != nil, dashboard.balance != nil {
+            VStack(alignment: .leading, spacing: 18) {
+                EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
+                trainingRoadmapCard
+                goalDistanceCard
+                hyroxForecastCard
+                triathlonForecastCard
+                RunningPerformanceView(running: running, plan: currentPlan)
+                performanceDashboard
+                heartZoneChart
+                trainingAnalytics
+                recentTraining
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 18) {
+                EterPageHeader(eyebrow: "Rendimiento", title: "Preparando tu histórico")
+                ProgressView().controlSize(.large)
+                Text("Primero cargamos tu estado de hoy. Ahora estamos preparando rendimiento, carga y previsiones.")
+                    .foregroundStyle(.secondary)
+            }
+            .task { loadPerformanceIfNeeded() }
         }
     }
 
@@ -1633,12 +1728,22 @@ struct ContentView: View {
         let previousStart = calendar.date(byAdding: .day, value: -20, to: now)!
         let current = combinedMuscleDistribution(from: start, to: now)
         let previous = combinedMuscleDistribution(from: previousStart, to: start)
+        let cardio = cardioMuscleStimulus(from: start, to: now)
+        let hasCardio = cardio.values.contains { $0 > 0 }
         let volume = imports.weeklyVolume()
         return VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack { VStack(alignment: .leading) { Text("Distribución muscular").font(.headline); Text("Hevy + Apple Salud · últimos 10 días frente a los 10 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
-                MuscleRadar(current: current, previous: previous, periodDays: 10).frame(height: 285)
-                HStack(spacing: 16) { Label("Actual", systemImage: "circle.fill").foregroundStyle(.blue); Label("Anterior", systemImage: "circle.fill").foregroundStyle(.gray) }.font(.caption).frame(maxWidth: .infinity)
+                HStack { VStack(alignment: .leading) { Text("Distribución muscular").font(.headline); Text("Series de fuerza (Hevy + Apple Salud) · últimos 10 días frente a los 10 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
+                MuscleRadar(current: current, previous: previous, cardio: cardio, periodDays: 10).frame(height: 285)
+                HStack(spacing: 16) {
+                    Label("Actual", systemImage: "circle.fill").foregroundStyle(.blue)
+                    Label("Anterior", systemImage: "circle.fill").foregroundStyle(.gray)
+                    if hasCardio { Label("Cardio", systemImage: "circle.dashed").foregroundStyle(.orange) }
+                }.font(.caption).frame(maxWidth: .infinity)
+                if hasCardio {
+                    Text("El % cuenta sólo series de fuerza. La capa naranja es el estímulo que la carrera, el ciclismo y el senderismo dejan en piernas y core, en series-equivalentes: cargan la pierna de verdad, pero no es volumen de hipertrofia.")
+                        .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                }
             }.cardStyle()
             VStack(alignment: .leading, spacing: 12) {
                 Text("Volumen de fuerza").font(.headline)
@@ -1749,6 +1854,40 @@ struct ContentView: View {
         case "Bíceps", "Tríceps": return "Brazos"
         default: return muscle
         }
+    }
+
+    // Estímulo de PIERNA (y core) que la carrera, el ciclismo y el senderismo
+    // dejan de verdad, en series-equivalentes, para dibujarlo como capa aparte
+    // en el radar. Deliberadamente NO entra en combinedMuscleDistribution: ese
+    // gráfico cuenta series de hipertrofia y el cardio no las produce (ver el
+    // comentario largo allí). Pero "no es hipertrofia" no es lo mismo que "no
+    // cargó las piernas" — reutilizamos el MISMO modelo de fatiga del gemelo
+    // (TrainingPlanEngine.cardioMuscleLoad, escalado por duración y desnivel)
+    // para mostrar ese estímulo sin mezclarlo ni contarlo doble.
+    private func cardioMuscleStimulus(from start: Date, to end: Date) -> [String: Double] {
+        var result: [String: Double] = [:]
+        for workout in health.recentWorkouts where workout.date >= start && workout.date < end {
+            guard !imports.isHealthKitMirror(workout) else { continue }
+            let kind: PlannedSessionKind?
+            switch workout.activity {
+            case "Carrera": kind = workout.durationMinutes >= 75 ? .longRun : .easyRun
+            case "Ciclismo": kind = .bike
+            // El senderismo carga cuádriceps/glúteos/gemelos como una carrera
+            // suave; se aproxima con ese mismo patrón (el modelo no tiene un
+            // `kind` propio para él y devolver [:] sería fingir que no cuenta).
+            case "Senderismo": kind = .easyRun
+            default: kind = nil
+            }
+            guard let kind else { continue }
+            let load = TrainingPlanEngine.cardioMuscleLoad(
+                for: kind,
+                durationMinutes: workout.durationMinutes,
+                elevationMeters: workout.elevationMeters ?? 0,
+                elevationDescendedMeters: workout.elevationDescendedMeters ?? 0
+            )
+            for (muscle, sets) in load { result[muscleBucket(muscle), default: 0] += sets }
+        }
+        return result
     }
 
     private func metric(_ title: String, value: String, unit: String, icon: String, insight: String? = nil) -> some View {
