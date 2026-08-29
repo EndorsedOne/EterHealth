@@ -480,6 +480,39 @@ enum TravelImpactEngine {
         return nil
     }
 
+    /// Decisión pura del backfill de viajes pasados: qué tramos cuya ventana de
+    /// gracia ya cerró (`< now`) confirman estabilidad según las señales, y en
+    /// cuántos días desde la llegada. Sin HealthKit — el store le pasa las
+    /// señales ya leídas, así esto se testea en aislamiento igual que
+    /// stabilizedDate. Sólo mira tramos aún sin medir (stabilityMeasurableUntil
+    /// devuelve nil cuando ya hay medición). Es la misma comprobación que en
+    /// vivo, sólo que mirando atrás en vez de esperar a que pasen los días.
+    nonisolated static func retroactiveStability(
+        episode: TravelEpisode, signals: TravelSignalContext,
+        rates: ReentrainmentRates = .prior, now: Date = Date()
+    ) -> [(leg: TravelLeg, days: Double)] {
+        var result: [(leg: TravelLeg, days: Double)] = []
+        if let window = episode.stabilityMeasurableUntil(leg: .outbound, rates: rates), window < now,
+           let arrival = episode.destinationArrival {
+            // La ida no se puede medir más allá de la vuelta a casa.
+            let limit = min(window, episode.homeArrival ?? window)
+            if let stabilized = stabilizedDate(episode: episode, at: limit, signals: signals,
+                                               rates: rates, measuringLeg: .outbound),
+               stabilized >= arrival {
+                result.append((.outbound, stabilized.timeIntervalSince(arrival) / 86_400))
+            }
+        }
+        if let window = episode.stabilityMeasurableUntil(leg: .homeReturn, rates: rates), window < now,
+           let homeArrival = episode.homeArrival {
+            if let stabilized = stabilizedDate(episode: episode, at: window, signals: signals,
+                                               rates: rates, measuringLeg: .homeReturn),
+               stabilized >= homeArrival {
+                result.append((.homeReturn, stabilized.timeIntervalSince(homeArrival) / 86_400))
+            }
+        }
+        return result
+    }
+
     /// Un día cuenta como estabilizado si todas las señales CON DATO están en
     /// banda. Sueño y HRV son obligatorias (sin ellas no se llega hasta aquí);
     /// pulso en reposo y regularidad de horario confirman cuando existen.

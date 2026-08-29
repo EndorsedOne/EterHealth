@@ -246,6 +246,10 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, tab in
             if tab == 1 { loadPerformanceIfNeeded() }
         }
+        // Backfill de estabilidad de viajes pasados. En una vista aparte (no un
+        // .onChange más en esta cadena) porque el type-checker de SwiftUI no
+        // aguanta un modificador más sobre este TabView ya enorme.
+        .background(travelBackfillTrigger)
         // syncWatchSummary sólo estaba enganchado a CAMBIOS (lastUpdated,
         // check-in, estilo de vida, importaciones). Con la app abierta y nada
         // cambiando, el iPhone no enviaba nada nunca y el reloj se quedaba en
@@ -420,6 +424,20 @@ struct ContentView: View {
                 updateControl
             }
         }
+    }
+
+    // Dispara el backfill de viajes pasados cuando el histórico ya está cargado
+    // (baseline fiable) y cada vez que se da de alta/edita un viaje. El store
+    // sólo consulta HealthKit para tramos pasados sin medir, así que repetir la
+    // llamada es barato y no re-mide lo ya medido.
+    private var travelBackfillTrigger: some View {
+        Color.clear
+            .onChange(of: health.hasLoadedHistory) { _, ready in
+                if ready { Task { await travel.backfillAllPending(health: health, imports: imports) } }
+            }
+            .onChange(of: travel.episodes.count) { _, _ in
+                if health.hasLoadedHistory { Task { await travel.backfillAllPending(health: health, imports: imports) } }
+            }
     }
 
     @ViewBuilder private var todayTrendsCard: some View {

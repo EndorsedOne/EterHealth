@@ -179,6 +179,62 @@ final class TravelEpisodeStore: ObservableObject {
         save(episode)
     }
 
+    /// Infiere retroactivamente la estabilidad de los tramos de un viaje cuya
+    /// ventana en vivo ya se cerró, a partir del histórico real de HRV, pulso en
+    /// reposo, sueño y horario. Es la misma comprobación que en vivo
+    /// (TravelImpactEngine.stabilizedDate), solo que mirando atrás: así un viaje
+    /// pasado dado de alta con sus billetes SÍ aporta al aprendizaje en vez de
+    /// cerrarse como "nadie confirmó estabilidad".
+    ///
+    /// Sólo actúa sobre tramos cuya ventana de gracia ya expiró (`< now`): los
+    /// que siguen dentro los mide la ruta en vivo, con sus confusores reales del
+    /// check-in. Los confusores del backfill quedan vacíos a propósito — el
+    /// check-in de aquellos días ya no existe— así que un viaje reconstruido se
+    /// asume limpio; el aprendizaje ya exige confusores vacíos para ser usable.
+    func backfillStability(for episodeID: UUID, health: HealthStore, imports: ImportStore,
+                           now: Date = Date()) async {
+        guard let episode = episodes.first(where: { $0.id == episodeID }),
+              let departure = episode.outboundDeparture, !episode.isCancelled else { return }
+        let rates = learnedRates
+        // Ventanas de gracia ya cerradas (pasadas). Si ninguna, la ruta en vivo
+        // se encarga y aquí no hay nada que reconstruir.
+        let pastWindows = [TravelLeg.outbound, .homeReturn]
+            .compactMap { episode.stabilityMeasurableUntil(leg: $0, rates: rates) }
+            .filter { $0 < now }
+        guard let windowEnd = pastWindows.max() else { return }
+
+        // 21 noches antes de salir para el ancla de horario habitual, hasta el
+        // fin de la última ventana medible.
+        let windowStart = departure.addingTimeInterval(-TravelImpactEngine.habitualBedtimeLookbackDays * 86_400)
+        let fetched = await health.travelSignalWindow(start: windowStart, end: windowEnd)
+        // Sin señales reales en esas fechas (Apple Salud ya no las tiene o el
+        // reloj no estaba) no hay nada que inferir: se deja como estaba.
+        guard !fetched.hrv.isEmpty || !fetched.sleep.isEmpty else { return }
+        let signals = TravelSignalContext(
+            baseline: PersonalBaselineEngine.profile(health: health, imports: imports),
+            sleepHistory: fetched.sleep, hrvHistory: fetched.hrv,
+            restingHeartRateHistory: fetched.resting, sleepSchedule: fetched.schedule,
+            confounders: .none
+        )
+        for outcome in TravelImpactEngine.retroactiveStability(episode: episode, signals: signals, rates: rates, now: now) {
+            recordStability(episodeID: episode.id, leg: outcome.leg, days: outcome.days, confounders: .none, at: now)
+        }
+    }
+
+    /// Pasa el backfill por todos los episodios con algún tramo pasado sin medir.
+    /// Barato en régimen permanente: al medir un tramo su ventana pasa a nil y
+    /// deja de entrar aquí, así que no repite trabajo ni consulta HealthKit dos
+    /// veces por el mismo tramo.
+    func backfillAllPending(health: HealthStore, imports: ImportStore, now: Date = Date()) async {
+        let pending = episodes.filter { episode in
+            !episode.isCancelled &&
+            [TravelLeg.outbound, .homeReturn].contains { leg in
+                (episode.stabilityMeasurableUntil(leg: leg, rates: learnedRates).map { $0 < now }) ?? false
+            }
+        }.map(\.id)
+        for id in pending { await backfillStability(for: id, health: health, imports: imports, now: now) }
+    }
+
     func restore(_ restored: [TravelEpisode]) {
         for episode in restored { episodes.removeAll { $0.id == episode.id } }
         episodes.append(contentsOf: restored)

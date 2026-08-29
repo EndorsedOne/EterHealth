@@ -307,6 +307,20 @@ final class HealthStore: ObservableObject {
         hasLoadedHistory = true
     }
 
+    /// Señales de sueño, HRV, pulso en reposo y horario de sueño para una
+    /// VENTANA ARBITRARIA (no "últimos N días"). Sirve para inferir la
+    /// estabilidad de un viaje PASADO a partir de lo que Apple Salud todavía
+    /// guarde de aquellas fechas. Consulta a demanda: no toca las @Published del
+    /// arranque, así que no afecta al tiempo de arranque.
+    func travelSignalWindow(start: Date, end: Date) async
+        -> (sleep: [TrendPoint], hrv: [TrendPoint], resting: [TrendPoint], schedule: [NightlySleepSchedule]) {
+        async let hrv = dailyAverage(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli), start: start, end: end)
+        async let resting = dailyAverage(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), start: start, end: end)
+        async let sleep = sleepDurationHistory(from: start, to: end)
+        async let schedule = sleepScheduleHistory(from: start, to: end)
+        return await (sleep: sleep, hrv: hrv, resting: resting, schedule: schedule)
+    }
+
     func saveStrengthWorkout(start: Date, end: Date) async {
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .traditionalStrengthTraining
@@ -652,10 +666,14 @@ final class HealthStore: ObservableObject {
     }
 
     private func sleepDurationHistory(days: Int) async -> [TrendPoint] {
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: Date()))!
+        return await sleepDurationHistory(from: start, to: Date())
+    }
+
+    private func sleepDurationHistory(from start: Date, to end: Date) async -> [TrendPoint] {
         guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
         let calendar = Calendar.current
-        let start = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: Date()))!
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         return await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
                 let values = samples as? [HKCategorySample] ?? []
@@ -689,10 +707,14 @@ final class HealthStore: ObservableObject {
     // consistent bedtime/wake time are) can be measured, not just how
     // long each night was.
     private func sleepScheduleHistory(days: Int) async -> [NightlySleepSchedule] {
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: Date()))!
+        return await sleepScheduleHistory(from: start, to: Date())
+    }
+
+    private func sleepScheduleHistory(from start: Date, to end: Date) async -> [NightlySleepSchedule] {
         guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
         let calendar = Calendar.current
-        let start = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: Date()))!
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         return await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
                 let values = samples as? [HKCategorySample] ?? []
@@ -795,10 +817,14 @@ final class HealthStore: ObservableObject {
     }
 
     private func dailyAverage(_ id: HKQuantityTypeIdentifier, unit: HKUnit, days: Int) async -> [TrendPoint] {
+        let end = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: end))!
+        return await dailyAverage(id, unit: unit, start: start, end: end)
+    }
+
+    private func dailyAverage(_ id: HKQuantityTypeIdentifier, unit: HKUnit, start: Date, end: Date) async -> [TrendPoint] {
         guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return [] }
         let calendar = Calendar.current
-        let end = Date()
-        let start = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: end))!
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         return await withCheckedContinuation { continuation in
             let query = HKStatisticsCollectionQuery(
