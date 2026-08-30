@@ -1540,7 +1540,8 @@ struct ContentView: View {
                                        sleepHours: health.snapshot.sleepHours)
         WidgetSnapshotStore.update(
             assessment: assessment, health: health, imports: imports,
-            checkIn: checkIns.entry(), lifestyle: lifestyle
+            checkIn: checkIns.entry(), lifestyle: lifestyle,
+            travel: travel.episodeForEvaluation()
         )
     }
 

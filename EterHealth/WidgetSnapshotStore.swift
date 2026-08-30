@@ -45,6 +45,8 @@ struct EterWidgetSnapshot: Codable, Sendable {
     // suplementos) con su hora, para superponerlos sobre la curva modelada.
     var hrvPoints: [EterWidgetHRVPoint]?
     var inputMarkers: [EterWidgetInputMarker]?
+    var hrvBaseline: Double?
+    var restingHeartRateBaseline: Double?
 }
 
 struct EterWidgetEnergyEvent: Codable, Sendable {
@@ -73,7 +75,8 @@ enum WidgetSnapshotStore {
     private static let key = "eter.widget.snapshot.v1"
 
     static func update(assessment: TwinAssessment, health: HealthStore, imports: ImportStore,
-                       checkIn: DailyCheckIn?, lifestyle: LifestyleFactorStore, now: Date = Date()) {
+                       checkIn: DailyCheckIn?, lifestyle: LifestyleFactorStore,
+                       travel: TravelEpisode? = nil, now: Date = Date()) {
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let calendar = Calendar.current
         let start = calendar.date(byAdding: .day, value: -10, to: now) ?? now
@@ -94,10 +97,10 @@ enum WidgetSnapshotStore {
             now: now, currentHour: currentHour, sleepStartHour: sleepStart,
             sleepEndHour: sleepEnd, events: events
         )
-        let inputMarkers = EnergyTimelineEngine.inputMarkers(from: lifestyleWindow, now: now)
-        let hrvPoints = health.todayHRVSamples.map {
-            EterWidgetHRVPoint(hour: EnergyTimelineEngine.hour(of: $0.date, on: now), value: $0.value)
-        }
+        let inputMarkers = EnergyTimelineEngine.inputMarkers(
+            from: lifestyleWindow, checkIn: checkIn, travel: travel,
+            sleepHours: health.snapshot.sleepHours, sleepEndHour: sleepEnd, now: now
+        )
         let confidence = ConfidenceEngine.energy(
             baselineConfidence: baseline.confidence,
             hasSleep: health.snapshot.sleepHours > 0,
@@ -138,7 +141,9 @@ enum WidgetSnapshotStore {
             dailyLoads: performance.daily.map(\.load),
             runningShare: Int((Double(runningSessions) / Double(sessionTotal) * 100).rounded()),
             strengthShare: Int((Double(strengthSessions) / Double(sessionTotal) * 100).rounded()),
-            hrvPoints: hrvPoints, inputMarkers: inputMarkers
+            hrvPoints: nil, inputMarkers: inputMarkers,
+            hrvBaseline: baseline.hrv.expected,
+            restingHeartRateBaseline: baseline.restingHeartRate.expected
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults(suiteName: suiteName)?.set(data, forKey: key)

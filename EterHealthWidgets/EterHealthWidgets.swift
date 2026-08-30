@@ -44,6 +44,8 @@ private struct Snapshot: Codable {
     // ya guardados no los traen y el decoder sintetizado no aplica defaults.
     var hrvPoints: [HRVPoint]?
     var inputMarkers: [InputMarker]?
+    var hrvBaseline: Double?
+    var restingHeartRateBaseline: Double?
 
     static let sample = Snapshot(
         updatedAt: .now, readiness: 70, state: "Disponible", recommendation: "Recuperación",
@@ -65,7 +67,8 @@ private struct Snapshot: Codable {
         runningShare: 72, strengthShare: 28,
         hrvPoints: [HRVPoint(hour: 6.5, value: 61), HRVPoint(hour: 7.2, value: 55), HRVPoint(hour: 9.1, value: 49)],
         inputMarkers: [InputMarker(hour: 7.0, symbol: "cup.and.saucer.fill", kind: "coffee", label: "Cafeína 95 mg"),
-                       InputMarker(hour: 8.0, symbol: "snowflake", kind: "cold", label: "Frío 3 min")]
+                       InputMarker(hour: 8.0, symbol: "snowflake", kind: "cold", label: "Frío 3 min")],
+        hrvBaseline: 49, restingHeartRateBaseline: 59
     )
 }
 
@@ -94,7 +97,7 @@ private struct Provider: TimelineProvider {
     func placeholder(in context: Context) -> Entry { Entry(date: .now, snapshot: .sample) }
     func getSnapshot(in context: Context, completion: @escaping (Entry) -> Void) { completion(load()) }
     func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> Void) {
-        completion(Timeline(entries: [load()], policy: .after(Date().addingTimeInterval(30 * 60))))
+        completion(Timeline(entries: [load()], policy: .after(Date().addingTimeInterval(20 * 60))))
     }
     private func load() -> Entry {
         guard let data = UserDefaults(suiteName: suite)?.data(forKey: snapshotKey),
@@ -171,10 +174,12 @@ private struct EnergyView: View {
             }
             EnergyTimeline(snapshot: entry.snapshot, color: energyColor)
             HStack(spacing: 5) {
-                Text(label).font(.caption2.bold()).foregroundStyle(energyColor)
-                Text("· \(entry.snapshot.energyBasis)").font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                contextMetric("HRV", value: entry.snapshot.hrv, baseline: entry.snapshot.hrvBaseline, percent: true, unit: "ms")
+                Spacer(minLength: 4)
+                contextMetric("Reposo", value: entry.snapshot.restingHeartRate,
+                              baseline: entry.snapshot.restingHeartRateBaseline, percent: false, unit: "ppm")
             }
-            Text(entry.snapshot.energyConfidenceReason ?? "Confianza limitada hasta actualizar las señales personales.")
+            Text("\(label) · \(entry.snapshot.energyBasis)")
                 .font(.system(size: 7)).foregroundStyle(.secondary).lineLimit(1)
         }.containerBackground(eterBackground, for: .widget).foregroundStyle(.white)
             .accessibilityHint("Confianza \(entry.snapshot.energyConfidence ?? "baja"). \(entry.snapshot.energyConfidenceReason ?? "Faltan señales personales.")")
@@ -187,6 +192,16 @@ private struct EnergyView: View {
         case "Media": return .orange
         default: return .red
         }
+    }
+    private func contextMetric(_ name: String, value: Int, baseline: Double?, percent: Bool, unit: String) -> some View {
+        let delta: Int? = baseline.flatMap { expected in
+            guard expected > 0 else { return nil }
+            let raw = percent ? (Double(value) - expected) / expected * 100 : Double(value) - expected
+            return Int(raw.rounded())
+        }
+        let comparison = delta.map { "\($0 > 0 ? "+" : "")\($0)\(percent ? "%" : "")" } ?? "sin base"
+        return Text("\(name) \(value) \(unit) · \(comparison)")
+            .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
     }
 }
 
@@ -233,23 +248,6 @@ private struct EnergyTimeline: View {
                         x: plotWidth * min(24, max(0, snapshot.currentHour)) / 24,
                         y: plotHeight * (1 - min(100, max(0, snapshot.energyCurve.last ?? Double(snapshot.energy))) / 100)
                     )
-                // Reto 1 · puntos REALES de HRV de hoy, normalizados a su propio
-                // rango dentro del gráfico (mismo criterio que la app). Encima
-                // de la curva para que se lean como el dato medido sobre el
-                // modelo.
-                if let hrv = snapshot.hrvPoints, !hrv.isEmpty {
-                    let values = hrv.map(\.value)
-                    let low = values.min() ?? 0
-                    let span = max(1, (values.max() ?? 1) - low)
-                    ForEach(Array(hrv.enumerated()), id: \.offset) { _, point in
-                        Circle().fill(Color.purple).overlay(Circle().stroke(.white.opacity(0.65), lineWidth: 0.5))
-                            .frame(width: 5, height: 5)
-                            .position(
-                                x: min(plotWidth, max(0, plotWidth * point.hour / 24)),
-                                y: plotHeight * (1 - (point.value - low) / span)
-                            )
-                    }
-                }
                 // Reto 1 · inputs de estilo de vida con su hora, abajo.
                 ForEach(Array((snapshot.inputMarkers ?? []).enumerated()), id: \.offset) { _, marker in
                     Image(systemName: marker.symbol).font(.system(size: 9, weight: .bold))
@@ -279,6 +277,11 @@ private struct EnergyTimeline: View {
         case "coffee": return .brown
         case "alcohol": return .purple
         case "supplement": return .teal
+        case "food": return .green
+        case "stress": return .pink
+        case "rest": return .blue
+        case "sleep": return .indigo
+        case "travel": return .mint
         default: return .gray
         }
     }

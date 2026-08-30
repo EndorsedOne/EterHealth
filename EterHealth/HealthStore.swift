@@ -52,6 +52,9 @@ final class HealthStore: ObservableObject {
     private let store = HKHealthStore()
     private var observerQueries: [HKObserverQuery] = []
     private var scheduledRefresh: Task<Void, Never>?
+    /// Punto de salida independiente de la UI para consumidores que deben
+    /// actualizarse cuando HealthKit despierta la app en segundo plano.
+    var didRefresh: (@MainActor () -> Void)?
 
     private var shareTypes: Set<HKSampleType> {
         var types: Set<HKSampleType> = [HKObjectType.workoutType()]
@@ -213,6 +216,7 @@ final class HealthStore: ObservableObject {
             }
         }
         lastUpdated = Date()
+        didRefresh?()
     }
 
     /// Histórico pesado diferido: nunca debe impedir que Hoy responda.
@@ -274,6 +278,7 @@ final class HealthStore: ObservableObject {
         // único punto donde loadExtendedHistory vuelve a tocar lastUpdated:
         // ContentView lo trata como la señal para recomputar la valoración.
         lastUpdated = Date()
+        didRefresh?()
         await Task.yield()
 
         // ── Fase 2: sólo pestañas Salud/Datos/Composición ────────────────────
