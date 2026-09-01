@@ -108,11 +108,31 @@ struct WeekAheadStripView: View {
                     // Hoy mismo (el día real, no simulado) ya trae este
                     // dato en "Propuesta de hoy"; esto es lo mismo,
                     // resumido, para el resto de la semana.
-                    if !isCompletedTrainingDay(selected) {
+                    if !selected.completedSessions.isEmpty {
+                        Text("HECHO HOY")
+                            .font(.caption2.bold()).tracking(EterTheme.eyebrowTracking)
+                            .foregroundStyle(.secondary).padding(.top, 3)
+                        ForEach(selected.completedSessions) { session in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(session.title, systemImage: "checkmark.circle.fill")
+                                    .font(.caption.bold()).foregroundStyle(.primary)
+                                Text(session.detail).font(.caption2).foregroundStyle(.secondary)
+                                Text(session.impact).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                            }
+                            .padding(.vertical, 3)
+                        }
+                        if let impact = selected.weeklyImpact {
+                            Label(impact, systemImage: "arrow.triangle.branch")
+                                .font(.caption).foregroundStyle(EterTheme.positive).lineSpacing(2)
+                                .padding(.top, 2)
+                        }
+                    } else {
                         Label(sessionSummary(selected), systemImage: "gauge.with.dots.needle.50percent")
                             .font(.caption).foregroundStyle(.secondary)
+                        Text(selected.prescription)
+                            .font(.caption).foregroundStyle(.primary).lineSpacing(2)
                     }
-                    Text(selected.rationale).font(.caption).foregroundStyle(.secondary).lineSpacing(2)
+                    Text(selected.rationale).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                 }
                 .padding(11)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -148,7 +168,7 @@ struct WeekAheadStripView: View {
         isCompletedTrainingDay(day) ? "Entrenado hoy" : day.kind.rawValue
     }
     private func isCompletedTrainingDay(_ day: TrainingPlanEngine.DayForecast) -> Bool {
-        day.kind == .recovery && day.alreadyTrainedToday
+        day.alreadyTrainedToday
     }
 
     // "Ritmo, nivel de exigencia" the week strip was missing — duration
@@ -187,7 +207,9 @@ struct WeekAheadStripView: View {
         .buttonStyle(.plain)
         .eterTouchTarget()
         .accessibilityLabel("\(isToday ? "Hoy" : weekdayFullLabel(day.date)): \(day.kind.rawValue)\(day.isDeload ? ", descarga" : "")")
-        .accessibilityHint(isCompletedTrainingDay(day) ? day.rationale : "\(sessionSummary(day)). \(day.rationale)")
+        .accessibilityHint(isCompletedTrainingDay(day)
+            ? "\(day.completedSessions.count) sesiones completadas. \(day.weeklyImpact ?? day.rationale)"
+            : "\(sessionSummary(day)). \(day.prescription). \(day.rationale)")
     }
 
     private func dayTitle(_ date: Date) -> String {

@@ -120,6 +120,13 @@ struct DisciplineDose {
     var deficitMinutes: Double { max(0, targetMinutes - completedMinutes) }
 }
 
+struct CompletedTrainingSession: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let detail: String
+    let impact: String
+}
+
 // PR11: el día que carga los DOS canales. status() decide una sola sesión
 // por día, y eso está bien — pero varios días tienen de verdad hueco para un
 // segundo estímulo del otro canal (la cuota de fuerza sin cubrir en un día de
@@ -226,6 +233,10 @@ struct WeeklyPlanStatus {
     // routes into the same "asimilar la carga" fallback, used to read as
     // an ordinary, unaccounted-for rest day instead.
     let alreadyTrainedToday: Bool
+    /// Todas las sesiones significativas terminadas hoy, no una sesión
+    /// representativa. La tira semanal las muestra por separado y utiliza
+    /// su impacto conjunto para explicar cómo cambia el resto del plan.
+    let completedSessionsToday: [CompletedTrainingSession]
 }
 
 struct DeloadAdjustment: Equatable {
@@ -254,6 +265,44 @@ struct GoalTrainingFocus {
 
 @MainActor
 enum TrainingPlanEngine {
+    private static func completedSessionSummaries(
+        health: [HealthWorkout], imported: [ImportedWorkout]
+    ) -> [CompletedTrainingSession] {
+        let healthRows = health.map { workout in
+            let distance = workout.distanceKilometers.map { String(format: " · %.1f km", $0) } ?? ""
+            let intensity: String
+            if workout.activity == "Carrera", workout.durationMinutes >= 60 || (workout.distanceKilometers ?? 0) >= 10 {
+                intensity = "Carga aeróbica larga: reserva 36–48 h antes de otra sesión clave de carrera."
+            } else if isStrengthWorkout(workout) {
+                intensity = "Carga de fuerza incorporada: el siguiente patrón se elegirá según músculos y recuperación."
+            } else {
+                intensity = "Esta carga ya descuenta volumen y modifica la prioridad de las sesiones restantes."
+            }
+            return CompletedTrainingSession(
+                id: "health-\(workout.id.uuidString)", title: workout.activity,
+                detail: "\(Int(workout.durationMinutes.rounded())) min\(distance)", impact: intensity)
+        }
+        let importedRows = imported.map { workout in
+            let minutes = max(0, workout.end.timeIntervalSince(workout.start) / 60)
+            let effectiveSets = workout.effectiveMuscleSets.values.reduce(0, +)
+            let legs: Set<String> = ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"]
+            let involvedLegs = workout.effectiveMuscleSets.contains { legs.contains($0.key) && $0.value > 0 }
+            return CompletedTrainingSession(
+                id: "import-\(workout.id)", title: workout.title,
+                detail: "\(Int(minutes.rounded())) min · \(Int(effectiveSets.rounded())) series efectivas",
+                impact: involvedLegs
+                    ? "La carga de pierna limita carrera intensa y fuerza inferior hasta que la recuperación lo permita."
+                    : "La carga de tren superior cuenta para la cuota de fuerza sin gastar la misma reserva de piernas.")
+        }
+        return (healthRows + importedRows).sorted { $0.id < $1.id }
+    }
+
+    private static func weeklyImpactSummary(_ sessions: [CompletedTrainingSession]) -> String? {
+        guard !sessions.isEmpty else { return nil }
+        let impacts = Array(Set(sessions.map(\.impact))).sorted()
+        return "El plan de mañana en adelante ya se ha recalculado con \(sessions.count) \(sessions.count == 1 ? "sesión" : "sesiones") de hoy. \(impacts.joined(separator: " "))"
+    }
+
     // The exact goal blocks(for:) periodizes around — same selection (primary
     // events preferred, earliest first). Anything that needs to know the
     // goal's own kind/distance (WorkoutPlanner scaling long-run volume by
@@ -685,17 +734,19 @@ enum TrainingPlanEngine {
         // "already trained today": the plan kept proposing a fresh hard
         // session (a long run) as if today were still a blank slate.
         let importedSessionsToday = imports.workouts.filter { calendar.isDate($0.start, inSameDayAs: now) && $0.end <= now }
-        let meaningfulImportedSessionToday = importedSessionsToday.filter {
+        let meaningfulImportedSessionsToday = importedSessionsToday.filter {
             ($0.end.timeIntervalSince($0.start) / 60) * PerformanceEngine.cardioFactor("Fuerza") >= 20
-        }.max { $0.start < $1.start }
+        }.sorted { $0.start < $1.start }
         // Hevy's own exercise-level muscleSets is precise enough to tell a
         // push/pull day (no leg involvement) from a leg day — a HealthKit-
         // only strength session can't make that distinction (Watch data
         // doesn't carry it), so it's treated conservatively as leg-involving.
         let legMuscleNames: Set<String> = ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"]
-        let strengthTodayInvolvedLegs = meaningfulImportedSessionToday.map { session in
+        let strengthTodayInvolvedLegs = meaningfulImportedSessionsToday.isEmpty || meaningfulImportedSessionsToday.contains { session in
             session.effectiveMuscleSets.contains { legMuscleNames.contains($0.key) && $0.value > 0 }
-        } ?? true
+        }
+        let completedSessionsToday = completedSessionSummaries(
+            health: meaningfulSessionsToday, imported: meaningfulImportedSessionsToday)
         let hoursSinceLong = hoursSinceLastCompleted(matching: isLongRun, health: health, imports: imports, now: now)
         let hoursSinceQuality = hoursSinceLastCompleted(matching: isQualityRun, health: health, imports: imports, now: now)
         let hoursSinceLongSwim = hoursSinceLastCompleted(matching: isLongSwim, health: health, imports: imports, now: now)
@@ -945,7 +996,7 @@ enum TrainingPlanEngine {
                 next = .recovery
                 rationale = "La carrera de hoy ya cuenta como la sesión del día. Recuperar ahora protege la siguiente sesión clave."
             }
-        } else if !meaningfulSessionsToday.isEmpty || meaningfulImportedSessionToday != nil {
+        } else if !meaningfulSessionsToday.isEmpty || !meaningfulImportedSessionsToday.isEmpty {
             next = .recovery
             if !strengthTodayInvolvedLegs {
                 let legsReadiness = average(muscles.filter { legMuscleNames.contains($0.name) }.map(\.readiness))
@@ -1130,7 +1181,8 @@ enum TrainingPlanEngine {
             daysToEvent: event.map { calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: $0.date).day ?? 0 },
             eventName: event?.name, isDeload: isDeload,
             volumeFactor: adjustedTargets.volumeFactor,
-            alreadyTrainedToday: !meaningfulSessionsToday.isEmpty || meaningfulImportedSessionToday != nil
+            alreadyTrainedToday: !meaningfulSessionsToday.isEmpty || !meaningfulImportedSessionsToday.isEmpty,
+            completedSessionsToday: completedSessionsToday
         )
     }
 
@@ -1158,6 +1210,14 @@ enum TrainingPlanEngine {
         // guessing one from an assumed pace.
         let targetMinutes: Int?
         let intensityLabel: String
+        /// Prescripción ejecutable del día seleccionado. No obliga al UI a
+        /// reconstruir una sesión a partir de una etiqueta genérica.
+        let prescription: String
+        /// Solo se rellena para hoy, con todas las sesiones reales ya
+        /// terminadas. El futuro sigue siendo una propuesta, no un hecho.
+        var completedSessions: [CompletedTrainingSession] = []
+        /// Consecuencia concreta de lo hecho hoy sobre la secuencia futura.
+        var weeklyImpact: String? = nil
     }
 
     /// El titular corto de hoy — "Empuje ligero", "Tirada larga",
@@ -1408,7 +1468,12 @@ enum TrainingPlanEngine {
         var results = [DayForecast(date: today, kind: todayKind, isDeload: override == nil && real.isDeload, rationale: todayRationale,
                                    alreadyTrainedToday: override == nil && real.alreadyTrainedToday,
                                    targetMinutes: todayMinutesEstimate > 0 ? todayMinutesEstimate : nil,
-                                   intensityLabel: intensityLabel(for: todayKind))]
+                                   intensityLabel: intensityLabel(for: todayKind),
+                                   prescription: override == nil ? real.recommendation : prescription(
+                                    for: todayKind, block: activeBlock(on: today, profile: profile),
+                                    readiness: assessment.readout.score, muscles: assessment.muscles),
+                                   completedSessions: override == nil ? real.completedSessionsToday : [],
+                                   weeklyImpact: override == nil ? weeklyImpactSummary(real.completedSessionsToday) : nil)]
         guard days > 1 else { return results }
 
         let loadSummary = PerformanceEngine.summarize(health: health, imports: imports, now: now)
@@ -1766,7 +1831,10 @@ enum TrainingPlanEngine {
             let simulatedMinutesEstimate = Int(estimatedSessionMinutes(for: kind, phase: block.phase).rounded())
             results.append(DayForecast(date: date, kind: kind, isDeload: false, rationale: finalRationale,
                                        targetMinutes: simulatedMinutesEstimate > 0 ? simulatedMinutesEstimate : nil,
-                                       intensityLabel: intensityLabel(for: kind)))
+                                       intensityLabel: intensityLabel(for: kind),
+                                       prescription: prescription(for: kind, block: block, readiness: state.readiness,
+                                                                  muscles: assessment.muscles,
+                                                                  avoidLegsTomorrow: avoidLegsThisDay)))
         }
         return results
     }
