@@ -480,24 +480,14 @@ struct DayWorkoutProposalView: View {
                                   muscles: assessment.muscles, checkIn: checkIns.entry(), context: context,
                                   physiologicalAlert: assessment.physiologicalAlert)
     }
-    // PR8: el patrón del día sale de plan.strengthPattern, no de buscar
-    // "pierna"/"tirón"/"empuje" dentro del titular ya renderizado. El
-    // `|| recommendation.contains("tiron")` que había aquí es la prueba de
-    // por qué: alguien ya se encontró con que la versión sin tilde no
-    // entraba, y el arreglo fue añadir la otra ortografía en vez de dejar de
-    // parsear texto. Un plan sin patrón (no es día de fuerza, o ninguno es
-    // compatible con las restricciones activas) ya no cae en la rutina de
-    // empuje por omisión: cae en lo que WorkoutPlanner proponga de verdad.
-    private static let routineName: [StrengthPattern: String] = [.legs: "Pierna", .pull: "Pull", .push: "Push"]
-
     private var proposal: StrengthRoutine {
-        // Imported gym templates are only reused when the athlete has declared
-        // gym access. Without it, WorkoutPlanner builds the bodyweight variant
-        // appropriate to the same pattern and readiness.
-        if goals.profile.gymAvailable, let pattern = plan.strengthPattern,
-           let name = Self.routineName[pattern], let routine = routines.first(where: { $0.name == name }) {
-            return StrengthRoutineBuilder.applyingVolumeFactor(InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active), factor: plan.volumeFactor)
-        }
+        // Siempre parte de la decisión estructurada del entrenador. Antes,
+        // si existía una plantilla Push/Pull/Pierna, se copiaba simplemente
+        // la última rutina completa: conservaba ejercicios familiares, pero
+        // ignoraba qué músculos estaban ya cubiertos, qué levantamiento era
+        // prioritario y qué selección acababa de hacer WorkoutPlanner.
+        // WorkoutPlanner ya reutiliza ejercicios y cargas de Hevy; no hace
+        // falta saltarse su selección para conservar el historial.
         let generated = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry(), context: context)
         let routine = StrengthRoutineBuilder.routine(
             from: generated, imports: imports,

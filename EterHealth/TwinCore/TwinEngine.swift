@@ -304,7 +304,7 @@ enum TwinEngine {
         case .overload: loadImpact = -10
         default: loadImpact = 0
         }
-        if loadImpact != 0 {
+        if loadImpact != 0 || loadGuidance == .returning {
             score += loadImpact
             signals.append(TwinSignal(
                 name: "Carga acumulada",

@@ -1925,6 +1925,42 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: 1.60, sustainedWeeks: 1, observedDays: 12), .overload)
     }
 
+    func testHistoricalCapacityTurnsARecentSpikeIntoControlledReturnNotOverload() {
+        let summary = DualLoadSummary(
+            acuteAerobic: 40, habitualAerobic: 40,
+            acuteStrength: 120, habitualStrength: 60,
+            observedDays: 20, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 1,
+            historicalAerobicCapacity: 0, historicalStrengthCapacity: 150
+        )
+        XCTAssertEqual(summary.strengthRatio, 2, accuracy: 0.001)
+        XCTAssertEqual(summary.strengthGuidance, .returning,
+                       "Una subida grande frente al último mes sigue exigiendo margen, pero no es capacidad desconocida cuando cabe en un volumen sostenido anterior.")
+    }
+
+    func testHistoricalCapacityNeverHidesARealAllTimeSpike() {
+        let summary = DualLoadSummary(
+            acuteAerobic: 40, habitualAerobic: 40,
+            acuteStrength: 190, habitualStrength: 60,
+            observedDays: 20, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 1,
+            historicalAerobicCapacity: 0, historicalStrengthCapacity: 150
+        )
+        XCTAssertEqual(summary.strengthGuidance, .overload,
+                       "Superar claramente incluso la capacidad histórica debe conservar el aviso de sobrecarga.")
+    }
+
+    func testHistoricalCapacityRequiresFourActiveWeeksAndUsesTheirMedian() {
+        var history: [DailyDualTraining] = []
+        for day in 0..<84 {
+            let olderWeek = day / 7
+            let strength = day < 56 && day.isMultiple(of: 7) ? Double(80 + olderWeek * 10) : 0
+            history.append(DailyDualTraining(date: Date(timeIntervalSince1970: Double(day) * 86_400),
+                                             sessions: strength > 0 ? 1 : 0,
+                                             aerobic: 0, strength: strength))
+        }
+        let capacity = PerformanceEngine.historicalWeeklyCapacity(history: history)
+        XCTAssertEqual(capacity.strength, 115, accuracy: 0.001)
+    }
+
     func testDeloadRewritesWeeklyTargetsAndRemovesQuality() {
         let normal = TrainingPlanEngine.deloadAdjustment(
             runningSessions: 4, strengthSessions: 3, qualitySessions: 1, enabled: false
@@ -6316,6 +6352,9 @@ final class EngineTests: XCTestCase {
         let strengthDays = week.prefix(3)
         XCTAssertTrue(strengthDays.allSatisfy { $0.kind == .strength },
                      "Sanity check: this scenario must actually produce three consecutive real strength days, or the test proves nothing.")
+        XCTAssertTrue(strengthDays.allSatisfy { !$0.strengthExercises.isEmpty })
+        XCTAssertTrue(strengthDays.flatMap(\.strengthExercises).allSatisfy { !$0.prescription.isEmpty && !$0.cue.isEmpty },
+                      "Cada día de fuerza de la semana debe transportar ejercicios, series/repeticiones y una pauta ejecutable, no sólo la etiqueta Fuerza.")
         let patterns = strengthDays.map(\.rationale)
         XCTAssertTrue(patterns[0].localizedCaseInsensitiveContains("pierna"))
         XCTAssertTrue(patterns[1].localizedCaseInsensitiveContains("empuje"))

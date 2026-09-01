@@ -131,6 +131,37 @@ struct WeekAheadStripView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         Text(selected.prescription)
                             .font(.caption).foregroundStyle(.primary).lineSpacing(2)
+                        if !selected.strengthExercises.isEmpty {
+                            Divider().padding(.vertical, 3)
+                            HStack {
+                                Text(selected.strengthTitle ?? "Sesión de fuerza").font(.caption.bold())
+                                Spacer()
+                                if let duration = selected.strengthDuration {
+                                    Text(duration).font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            ForEach(selected.strengthExercises) { exercise in
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(exercise.name).font(.caption.bold())
+                                    Text(exercise.prescription).font(.caption2).foregroundStyle(.secondary)
+                                    Text(exercise.cue).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+                                }.padding(.vertical, 2)
+                            }
+                            if !selected.strengthVolumeTargets.isEmpty {
+                                Text("VOLUMEN DE ESTA SEMANA")
+                                    .font(.caption2.bold()).tracking(EterTheme.eyebrowTracking)
+                                    .foregroundStyle(.secondary).padding(.top, 4)
+                                ForEach(selected.strengthVolumeTargets) { target in
+                                    let after = target.completedSets + target.plannedSets
+                                    HStack {
+                                        Text(target.muscle).font(.caption2)
+                                        Spacer()
+                                        Text("\(target.completedSets, specifier: "%.0f") + \(target.plannedSets, specifier: "%.1f") → \(after, specifier: "%.1f") / \(target.targetSets, specifier: "%.0f") series")
+                                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
                     }
                     Text(selected.rationale).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                 }
