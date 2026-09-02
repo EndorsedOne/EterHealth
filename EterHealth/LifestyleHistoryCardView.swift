@@ -17,7 +17,7 @@ struct LifestyleHistoryCardView: View {
                     Text("Exposiciones que pueden explicar cambios posteriores").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                DataTrustBadge(trust: DataTrust(nature: .declared, source: "Éter + Apple Salud", measuredAt: lifestyle.events.first?.date ?? health.alcoholHistory.first?.date, samples: lifestyle.events.count + health.alcoholHistory.count, level: ConfidenceEngine.declared(samples: lifestyle.events.count + health.alcoholHistory.count).level, explanation: "Registro declarado de alcohol, sauna, frío y viajes.", limitations: "Las asociaciones observadas no demuestran causalidad."))
+                DataTrustBadge(trust: DataTrust(nature: .declared, source: "Éter + Apple Salud", measuredAt: lifestyle.events.first?.date ?? health.alcoholHistory.first?.date, samples: lifestyle.events.count + health.alcoholHistory.count, level: ConfidenceEngine.declared(samples: lifestyle.events.count + health.alcoholHistory.count).level, explanation: "Registro declarado de alimentación, ayuno, hidratación, cafeína y recuperación.", limitations: "Las asociaciones observadas no demuestran causalidad."))
             }
             if lifestyle.events.isEmpty && health.alcoholHistory.isEmpty {
                 Text("Todavía no hay factores registrados.").font(.caption).foregroundStyle(.secondary).padding(.vertical, 8)

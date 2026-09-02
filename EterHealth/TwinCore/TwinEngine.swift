@@ -227,11 +227,23 @@ enum TwinEngine {
                 let context = event.digestiveSymptoms.isEmpty ? "Cena tardía o copiosa registrada para interpretar el sueño posterior." : event.digestiveSymptoms.joined(separator: ", ")
                 signals.append(TwinSignal(name: "Digestión", value: event.digestiveSymptoms.isEmpty ? "Contexto" : "Molestias", impact: impact, detail: context + learned.detail))
             }
-            if event.fastingHours > 0 && ageHours <= 24 {
-                let learned = event.fastingHours >= 12 ? learnedHabit(.fasting) : (impact: 0, detail: "")
+            if (event.fastingHours > 0 || event.trainedFasted) && ageHours <= 24 {
+                let learned: (impact: Int, detail: String)
+                if event.trainedFasted {
+                    learned = learnedHabit(.fastedTraining)
+                } else if event.fastingHours >= 12 {
+                    learned = learnedHabit(.fasting)
+                } else {
+                    learned = (impact: 0, detail: "")
+                }
                 score += learned.impact
-                signals.append(TwinSignal(name: "Ayuno", value: "\(event.fastingHours) h", impact: learned.impact,
-                    detail: (event.trainedFasted ? "Entrenamiento en ayunas registrado." : "Se conserva como contexto metabólico.") + learned.detail))
+                let signalName = event.trainedFasted ? "Entrenamiento en ayunas" : "Ayuno"
+                let value = event.fastingHours > 0 ? "\(event.fastingHours) h" : "Registrado"
+                let detail = event.trainedFasted
+                    ? "Se conserva como contexto de la sesión. No penaliza por defecto: Éter solo aplicará un efecto cuando exista un patrón personal con confianza suficiente."
+                    : "Se conserva como contexto metabólico."
+                signals.append(TwinSignal(name: signalName, value: value, impact: learned.impact,
+                    detail: detail + learned.detail))
             }
             if (event.foodQuality == .healthy || event.foodQuality == .indulgent) && ageHours <= 24 {
                 let kind: HabitKind = event.foodQuality == .healthy ? .healthyFood : .indulgentFood

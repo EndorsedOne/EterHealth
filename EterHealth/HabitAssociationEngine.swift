@@ -2,7 +2,7 @@ import Foundation
 
 enum HabitKind: String, CaseIterable, Hashable, Identifiable {
     case alcohol, lateCaffeine, sauna, cold, travel, indulgentFood, healthyFood
-    case fasting, lateOrHeavyDinner, lowHydration
+    case fasting, fastedTraining, lateOrHeavyDinner, lowHydration
     // Real, not self-reported like the others above — derived by comparing
     // each night's actual HealthKit-recorded bedtime (HealthStore.
     // sleepScheduleHistory) against this person's own recent median, not
@@ -30,6 +30,7 @@ enum HabitKind: String, CaseIterable, Hashable, Identifiable {
         case .indulgentFood: return "Comida libre"
         case .healthyFood: return "Comida saludable"
         case .fasting: return "Ayuno"
+        case .fastedTraining: return "Entrenamiento en ayunas"
         case .lateOrHeavyDinner: return "Cena tardía o copiosa"
         case .lowHydration: return "Hidratación baja"
         case .lateBedtime: return "Acostarse tarde"
@@ -48,6 +49,7 @@ enum HabitKind: String, CaseIterable, Hashable, Identifiable {
         case .travel: return "airplane"
         case .indulgentFood, .healthyFood, .lateOrHeavyDinner: return "fork.knife"
         case .fasting: return "clock"
+        case .fastedTraining: return "figure.run"
         case .lowHydration: return "drop"
         case .lateBedtime: return "moon.zzz.fill"
         case .magnesiumGlycinate, .melatonin, .ashwagandha, .lTheanine:
@@ -270,6 +272,7 @@ enum HabitAssociationEngine {
             if event.foodQuality == .indulgent { kinds.append(.indulgentFood) }
             if event.foodQuality == .healthy { kinds.append(.healthyFood) }
             if event.fastingHours >= 12 { kinds.append(.fasting) }
+            if event.trainedFasted { kinds.append(.fastedTraining) }
             if event.lateDinner || event.heavyDinner { kinds.append(.lateOrHeavyDinner) }
             if event.hydration == .low { kinds.append(.lowHydration) }
             let overlap = kinds.count + event.supplements.count > 1

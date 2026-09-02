@@ -530,6 +530,56 @@ final class EngineTests: XCTestCase {
                       "Caffeine with no explicit caffeineDate override must still be counted, falling back to the event's own date instead of being silently skipped.")
     }
 
+    func testFastedTrainingIsVisibleAndReachesTwinWithoutFastingHours() {
+        let now = Date()
+        let event = LifestyleEvent(
+            id: UUID(), date: now.addingTimeInterval(-3_600), alcoholDrinks: 0,
+            saunaMinutes: 0, saunaTemperatureC: 80, coldMinutes: 0, coldTemperatureC: 12,
+            timeZoneDifference: 0, travelDirection: .east, caffeineMg: 0, caffeineDate: nil,
+            foodQuality: .notRecorded, fastingHours: 0, trainedFasted: true,
+            lateDinner: false, heavyDinner: false, hydration: .notRecorded, electrolytes: false,
+            digestiveSymptoms: [], supplements: [], note: "")
+
+        XCTAssertEqual(event.summary, "entrenamiento en ayunas")
+        let assessment = TwinEngine.assess(
+            health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil,
+            context: TwinContext(profile: neutralProfile, events: [event], reviews: [], activeInjuries: [],
+                                 calibration: neutralCalibration, personalAnchor: neutralAnchor), now: now)
+        let signal = assessment.signals.first { $0.name == "Entrenamiento en ayunas" }
+        XCTAssertNotNil(signal)
+        XCTAssertEqual(signal?.impact, 0,
+                       "Sin aprendizaje personal suficiente debe aportar contexto, no una penalización genérica.")
+
+        let markers = EnergyTimelineEngine.inputMarkers(from: [event], now: now)
+        XCTAssertTrue(markers.contains { $0.kind == "fastedTraining" && $0.label == "Entrenamiento en ayunas" })
+    }
+
+    func testFastedTrainingLearnsSeparatelyFromGeneralFasting() {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = calendar.startOfDay(for: Date()).addingTimeInterval(-40 * 86_400)
+        let exposureDays = [10, 20, 30]
+        let events = exposureDays.map { day in
+            LifestyleEvent(
+                id: UUID(), date: start.addingTimeInterval(Double(day) * 86_400 + 8 * 3_600),
+                alcoholDrinks: 0, saunaMinutes: 0, saunaTemperatureC: 80,
+                coldMinutes: 0, coldTemperatureC: 12, timeZoneDifference: 0,
+                travelDirection: .east, caffeineMg: 0, caffeineDate: nil,
+                foodQuality: .notRecorded, fastingHours: 0, trainedFasted: true,
+                lateDinner: false, heavyDinner: false, hydration: .notRecorded,
+                electrolytes: false, digestiveSymptoms: [], supplements: [], note: "")
+        }
+        let sleep = (0..<36).map { day in
+            TrendPoint(date: start.addingTimeInterval(Double(day) * 86_400),
+                       value: exposureDays.contains(day - 1) ? 7.8 : 7.0)
+        }
+        let associations = HabitAssociationEngine.analyze(
+            events: events, alcohol: [], hrv: [], restingHeartRate: [], sleep: sleep, now: Date())
+
+        XCTAssertNotNil(associations.first { $0.kind == .fastedTraining })
+        XCTAssertNil(associations.first { $0.kind == .fasting },
+                     "Entrenar en ayunas no debe contaminar el aprendizaje de un ayuno prolongado sin ejercicio.")
+    }
+
     func testHabitAssociationLearnsFromRespiratoryRateAndWristTemperature() {
         let calendar = Calendar(identifier: .gregorian)
         let start = calendar.startOfDay(for: Date()).addingTimeInterval(-40 * 86_400)

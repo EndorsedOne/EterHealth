@@ -189,6 +189,9 @@ enum EnergyTimelineEngine {
             if event.coldMinutes > 0 { add(event.date, "snowflake", "cold", "Frío \(event.coldMinutes) min") }
             if event.caffeineMg > 0 { add(event.caffeineDate ?? event.date, "cup.and.saucer.fill", "coffee", "Cafeína \(event.caffeineMg) mg") }
             if event.alcoholDrinks > 0 { add(event.date, "wineglass.fill", "alcohol", "\(event.alcoholDrinks) bebida\(event.alcoholDrinks == 1 ? "" : "s")") }
+            if event.trainedFasted {
+                add(event.date, "figure.run", "fastedTraining", "Entrenamiento en ayunas")
+            }
             if event.foodQuality != .notRecorded || event.fastingHours > 0 || event.lateDinner || event.heavyDinner {
                 var details: [String] = []
                 if event.foodQuality != .notRecorded { details.append(event.foodQuality.rawValue) }
