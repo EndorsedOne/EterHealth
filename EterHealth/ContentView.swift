@@ -621,10 +621,8 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
                 performanceForecastSection
+                loadIntensitySection
                 RunningPerformanceView(running: running, plan: currentPlan)
-                performanceDashboard
-                heartZoneChart
-                trainingAnalytics
                 recentTraining
             }
         } else {
@@ -1789,47 +1787,16 @@ struct ContentView: View {
         }.frame(maxWidth: .infinity, alignment: .leading).cardStyle()
     }
 
-    private var trainingAnalytics: some View {
-        let calendar = Calendar.current
-        let now = Date()
-        let start = calendar.date(byAdding: .day, value: -10, to: now)!
-        let previousStart = calendar.date(byAdding: .day, value: -20, to: now)!
-        let current = combinedMuscleDistribution(from: start, to: now)
-        let previous = combinedMuscleDistribution(from: previousStart, to: start)
-        let cardio = cardioMuscleStimulus(from: start, to: now)
-        let hasCardio = cardio.values.contains { $0 > 0 }
-        let volume = imports.weeklyVolume()
-        return VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack { VStack(alignment: .leading) { Text("Distribución muscular").font(.headline); Text("Series de fuerza (Hevy + Apple Salud) · últimos 10 días frente a los 10 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
-                MuscleRadar(current: current, previous: previous, cardio: cardio, periodDays: 10).frame(height: 285)
-                HStack(spacing: 16) {
-                    Label("Actual", systemImage: "circle.fill").foregroundStyle(.blue)
-                    Label("Anterior", systemImage: "circle.fill").foregroundStyle(.gray)
-                    if hasCardio { Label("Cardio", systemImage: "circle.dashed").foregroundStyle(.orange) }
-                }.font(.caption).frame(maxWidth: .infinity)
-                if hasCardio {
-                    Text("El % cuenta sólo series de fuerza. La capa naranja es el estímulo que la carrera, el ciclismo y el senderismo dejan en piernas y core, en series-equivalentes: cargan la pierna de verdad, pero no es volumen de hipertrofia.")
-                        .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-                }
-            }.cardStyle()
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Volumen de fuerza").font(.headline)
-                Text("Carga total semanal: peso × repeticiones").font(.caption).foregroundStyle(.secondary)
-                if volume.isEmpty { Text("Importa una exportación de Hevy para ver el histórico.").font(.caption).foregroundStyle(.secondary).frame(height: 80) }
-                else {
-                    Chart(volume) { point in
-                        BarMark(x: .value("Semana", point.date, unit: .weekOfYear), y: .value("Volumen", point.value))
-                            .foregroundStyle(EterTheme.positive.gradient).cornerRadius(3)
-                    }
-                    .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()) } }
-                    .chartYAxis { AxisMarks(position: .leading) { _ in AxisGridLine().foregroundStyle(Color.primary.opacity(0.10)); AxisValueLabel() } }
-                    .frame(height: 165)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Volumen semanal de fuerza")
-                    .accessibilityValue(volume.map { "\($0.date.formatted(date: .abbreviated, time: .omitted)): \(Int($0.value.rounded())) kilogramos de volumen" }.joined(separator: ". "))
-                }
-            }.cardStyle()
+    // "Carga e intensidad": agrupa la carga de entrenamiento y el foco de
+    // intensidad (performanceDashboard) con la distribución por zonas de FC
+    // (heartZoneChart) bajo una sola sección, porque describen lo mismo — cómo
+    // de dura y cómo de repartida está tu carga — y antes iban como cards
+    // sueltas y salteadas.
+    private var loadIntensitySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            EterSectionHeader("Carga e intensidad", eyebrow: "Cómo entrenas")
+            performanceDashboard
+            heartZoneChart
         }
     }
 
@@ -1873,89 +1840,6 @@ struct ContentView: View {
         case 4: return .orange
         default: return .red
         }
-    }
-
-    private func combinedMuscleDistribution(from start: Date, to end: Date) -> [String: Double] {
-        var result = imports.muscleDistribution(from: start, to: end)
-        for workout in health.recentWorkouts where workout.date >= start && workout.date < end {
-            // Hevy can also write a summary workout to HealthKit — its detailed
-            // CSV is already counted above, so ignore that summary to avoid
-            // counting twice. But that's not the only way a duplicate shows
-            // up: éter's own live session ALSO writes its own generic
-            // HKWorkout on completion (saveStrengthWorkout, source "éter",
-            // so the "hevy" name check alone never caught it) for the exact
-            // same session already counted above via imports — every
-            // éter-logged session was silently counted twice, once with
-            // real per-exercise set data and again with a rough fixed-
-            // fraction estimate, which is exactly what inflated two modest
-            // sessions into "230% bíceps". isHealthKitMirror matches by
-            // start time + duration regardless of source name, the same
-            // general check TrainingPlanEngine's own "already trained
-            // today" logic already relies on.
-            guard !workout.source.localizedCaseInsensitiveContains("hevy"), !imports.isHealthKitMirror(workout) else { continue }
-            // muscleGroups exists for every activity type — including
-            // Carrera/Ciclismo/Senderismo/Caminata/Natación — because
-            // TwinEngine's fatigue model genuinely needs to know a run
-            // tired out your legs. But this chart counts *hypertrophy
-            // sets*, and cardio doesn't produce those: a 111-minute hike
-            // isn't ~22 leg sets. Without this, every cardio session's
-            // fatigue-oriented leg/core involvement got converted into
-            // "equivalent sets" here too — the actual mechanism behind
-            // "465% piernas" after two modest strength days: real
-            // contribution was ~32%, the other ~430 points were hikes,
-            // runs, and bike rides that have nothing to do with hypertrophy
-            // dosing. Restrict to what StrengthProgressEngine's own
-            // Watch-only merge already restricts itself to: strength
-            // activity only.
-            guard workout.activity == "Fuerza" || workout.activity == "Fuerza funcional" else { continue }
-            let equivalentSets = max(1, workout.durationMinutes / 5)
-            for (muscle, involvement) in workout.muscleGroups {
-                result[muscleBucket(muscle), default: 0] += equivalentSets * involvement
-            }
-        }
-        return result
-    }
-
-    private func muscleBucket(_ muscle: String) -> String {
-        switch muscle {
-        case "Cuádriceps", "Glúteos", "Isquios", "Gemelos": return "Piernas"
-        case "Bíceps", "Tríceps": return "Brazos"
-        default: return muscle
-        }
-    }
-
-    // Estímulo de PIERNA (y core) que la carrera, el ciclismo y el senderismo
-    // dejan de verdad, en series-equivalentes, para dibujarlo como capa aparte
-    // en el radar. Deliberadamente NO entra en combinedMuscleDistribution: ese
-    // gráfico cuenta series de hipertrofia y el cardio no las produce (ver el
-    // comentario largo allí). Pero "no es hipertrofia" no es lo mismo que "no
-    // cargó las piernas" — reutilizamos el MISMO modelo de fatiga del gemelo
-    // (TrainingPlanEngine.cardioMuscleLoad, escalado por duración y desnivel)
-    // para mostrar ese estímulo sin mezclarlo ni contarlo doble.
-    private func cardioMuscleStimulus(from start: Date, to end: Date) -> [String: Double] {
-        var result: [String: Double] = [:]
-        for workout in health.recentWorkouts where workout.date >= start && workout.date < end {
-            guard !imports.isHealthKitMirror(workout) else { continue }
-            let kind: PlannedSessionKind?
-            switch workout.activity {
-            case "Carrera": kind = workout.durationMinutes >= 75 ? .longRun : .easyRun
-            case "Ciclismo": kind = .bike
-            // El senderismo carga cuádriceps/glúteos/gemelos como una carrera
-            // suave; se aproxima con ese mismo patrón (el modelo no tiene un
-            // `kind` propio para él y devolver [:] sería fingir que no cuenta).
-            case "Senderismo": kind = .easyRun
-            default: kind = nil
-            }
-            guard let kind else { continue }
-            let load = TrainingPlanEngine.cardioMuscleLoad(
-                for: kind,
-                durationMinutes: workout.durationMinutes,
-                elevationMeters: workout.elevationMeters ?? 0,
-                elevationDescendedMeters: workout.elevationDescendedMeters ?? 0
-            )
-            for (muscle, sets) in load { result[muscleBucket(muscle), default: 0] += sets }
-        }
-        return result
     }
 
     private func metric(_ title: String, value: String, unit: String, icon: String, insight: String? = nil) -> some View {

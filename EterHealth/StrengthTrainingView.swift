@@ -230,6 +230,10 @@ struct StrengthTrainingView: View {
 
             strengthProgressSection
 
+            // Movidas desde Rendimiento: distribución muscular y volumen de
+            // fuerza son análisis de fuerza y su sitio es esta pestaña.
+            MuscleVolumeSection()
+
             ForEach(routines) { routine in routineCard(routine, customized: routineStore.routine(named: routine.name) != nil) }
 
             Button {
