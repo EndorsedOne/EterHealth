@@ -48,6 +48,13 @@ final class HealthStore: ObservableObject {
     @Published var todayHRVSamples: [TrendPoint] = []
     @Published private(set) var isHistoryLoading = false
     @Published private(set) var hasLoadedHistory = false
+    // Fin de la FASE 1 de loadExtendedHistory: ya están las líneas base que el
+    // gemelo de Hoy lee de verdad (HRV/reposo/sueño/archivo/zonas). El gemelo se
+    // calcula UNA sola vez, cuando esto es true, en vez de una pasada aproximada
+    // con históricos vacíos + otra refinada (lo que se percibía como "carga dos
+    // veces"). hasLoadedHistory, en cambio, es el fin de la FASE 2 (pestañas
+    // secundarias).
+    @Published private(set) var hasCriticalHistory = false
 
     private let store = HKHealthStore()
     private var observerQueries: [HKObserverQuery] = []
@@ -170,7 +177,12 @@ final class HealthStore: ObservableObject {
     func refresh() async {
         isLoading = true
         defer { isLoading = false }
-        hasLoadedHistory = false
+        // OJO: refresh() NO reinicia hasLoadedHistory ni recarga el archivo de
+        // 365 días. Antes lo hacía, y como cada foreground dispara un observer
+        // de HealthKit → refresh(), abrir la app volvía a descargar TODO el
+        // histórico y a recomputar Rendimiento desde cero — el "hace el proceso
+        // dos veces" y el arranque pesado. Este método sólo actualiza HOY; el
+        // archivo se carga una vez por proceso en loadExtendedHistory().
         let start = Calendar.current.startOfDay(for: Date())
         async let steps = cumulative(.stepCount, unit: .count(), start: start)
         async let energy = cumulative(.activeEnergyBurned, unit: .kilocalorie(), start: start)
@@ -195,7 +207,12 @@ final class HealthStore: ObservableObject {
         sleepStages = resolvedSleep
         todayHRVSamples = await todayHRV
         recentWorkouts = await initialWorkouts
-        workoutHistory = recentWorkouts
+        // Sólo se siembra el archivo con los 30 días recientes mientras el
+        // histórico completo aún no ha llegado (primer arranque). Una vez
+        // loadExtendedHistory lo ha poblado con 365 días, un refresh de HOY no
+        // debe machacarlo con la ventana corta: eso obligaba a Rendimiento a
+        // recargar el archivo entero una y otra vez.
+        if !hasLoadedHistory { workoutHistory = recentWorkouts }
         // Descent has no HealthKit metadata equivalent to elevationMeters
         // (ascent) — the only way to get it is a per-workout route query,
         // real HealthKit cost on top of everything above. Scoped to just
@@ -276,7 +293,10 @@ final class HealthStore: ObservableObject {
 
         // El gemelo puede recalcularse ya contra líneas base reales. Este es el
         // único punto donde loadExtendedHistory vuelve a tocar lastUpdated:
-        // ContentView lo trata como la señal para recomputar la valoración.
+        // ContentView lo trata como la señal para recomputar la valoración. Y
+        // marcamos hasCriticalHistory ANTES del sello para que la primera (y
+        // única) valoración se dispare ya con datos reales.
+        hasCriticalHistory = true
         lastUpdated = Date()
         didRefresh?()
         await Task.yield()

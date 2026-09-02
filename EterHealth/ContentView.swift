@@ -234,7 +234,7 @@ struct ContentView: View {
                 .environmentObject(health)
         }
         .onChange(of: health.lastUpdated) { _, _ in
-            scheduleDashboardRefresh(includeBackup: true, initialAnalysis: dashboard.assessment == nil)
+            scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(checkIns.objectWillChange) { _ in
             scheduleDashboardRefresh()
@@ -282,7 +282,7 @@ struct ContentView: View {
             // lectura. No calculamos el gemelo con datos vacíos en el primer
             // frame: eso era trabajo caro invisible antes de poder hacer
             // siquiera scroll.
-            if health.lastUpdated != nil { scheduleDashboardRefresh(initialAnalysis: true) }
+            if health.lastUpdated != nil { scheduleDashboardRefresh() }
         }
     }
 
@@ -318,13 +318,24 @@ struct ContentView: View {
                          travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
     }
 
-    private func scheduleDashboardRefresh(includeBackup: Bool = false, initialAnalysis: Bool = false) {
+    private func scheduleDashboardRefresh(includeBackup: Bool = false) {
         dashboardRefreshTask?.cancel()
         dashboardRefreshTask = Task { @MainActor in
             // Salud puede publicar varias señales durante la misma lectura.
             // Un pequeño debounce convierte esa ráfaga en una sola evaluación.
-            try? await Task.sleep(for: initialAnalysis ? .seconds(1.5) : .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
+            // Primera valoración: en vez de una pasada aproximada sobre
+            // históricos vacíos y otra refinada después (lo que se percibía como
+            // "carga dos veces"), esperamos a que la fase 1 del histórico esté
+            // lista y computamos UNA vez con datos reales. Si aún no está, la
+            // arrancamos (idempotente) y salimos: su re-sello de lastUpdated
+            // vuelve a invocar esto, ya con hasCriticalHistory en true. Tras la
+            // primera valoración (assessment != nil) esto nunca vuelve a frenar.
+            if dashboard.assessment == nil && !health.hasCriticalHistory {
+                Task { await health.loadExtendedHistory() }
+                return
+            }
             refreshDashboard()
             await Task.yield()
             captureCurrentPlanIfNeeded()

@@ -13,6 +13,11 @@ final class DashboardViewModel: ObservableObject {
     // histórico y llama a PersonalBaselineEngine, justo el trabajo caro que el
     // reto 3 saca del primer render.
     @Published private(set) var energyTimeline: EnergyTimelineEngine.Result?
+    // La lectura de Salud contra la que se calculó Rendimiento. Mientras no
+    // cambie, la caché es válida y no se recomputa — antes se tiraba a la basura
+    // en CADA refresh() del gemelo (check-in, estilo de vida, foreground...),
+    // así que volver a Rendimiento siempre lo recargaba desde cero.
+    private var performanceStamp: Date?
 
     // TwinCore's engines no longer read GoalStore/LifestyleFactorStore/
     // InjuryStore/TwinStateStore internally — profile/events/activeInjuries/
@@ -38,18 +43,22 @@ final class DashboardViewModel: ObservableObject {
             muscles: assessment.muscles, checkIn: checkIn, context: context,
             physiologicalAlert: assessment.physiologicalAlert
         )
-        // Rendimiento no es necesario para responder la primera pregunta de la
-        // app ("¿cómo estoy hoy?"). Invalidamos su caché y lo calculamos sólo
-        // al entrar en esa pestaña; antes se hacía aquí, bloqueando el primer
-        // render y cada actualización de Salud con tres análisis adicionales.
-        performance = nil
-        balance = nil
-        running = nil
+        // Rendimiento NO se invalida aquí. Se calcula la primera vez que se
+        // entra en esa pestaña y se conserva mientras la lectura de Salud no
+        // cambie (performanceStamp). Antes se ponía a nil en cada refresh() del
+        // gemelo, así que un check-in, un factor de estilo de vida o simplemente
+        // volver a la app forzaban a recargar Rendimiento entero.
     }
 
     func refreshPerformance(health: HealthStore, imports: ImportStore, reviews: [WorkoutReview],
                             context: TwinContext) async {
-        guard performance == nil, balance == nil, running == nil, !isLoadingPerformance else { return }
+        // Ya calculado para esta misma lectura de Salud: nada que hacer. Sólo se
+        // recomputa cuando health.lastUpdated cambia (datos nuevos) o si nunca
+        // se calculó.
+        if performance != nil, balance != nil, running != nil,
+           performanceStamp == health.lastUpdated { return }
+        guard !isLoadingPerformance else { return }
+        let stamp = health.lastUpdated
         isLoadingPerformance = true
         // Cede el primer frame al indicador de carga antes de recorrer el
         // histórico. Los motores son síncronos por diseño, así que dividirlos
@@ -64,6 +73,7 @@ final class DashboardViewModel: ObservableObject {
         performance = PerformanceEngine.summarize(health: health, imports: imports)
         await Task.yield()
         balance = PerformanceEngine.balance(health: health, imports: imports, context: context)
+        performanceStamp = stamp
         isLoadingPerformance = false
     }
 }
