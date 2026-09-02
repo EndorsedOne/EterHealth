@@ -85,16 +85,7 @@ struct ContentView: View {
     @State private var todayStrengthRoutine: StrengthRoutine?
     @State private var automaticBackupRevision = 0
     @State private var dashboardRefreshTask: Task<Void, Never>?
-    @State private var forecastTab: ForecastTab = .distances
     @StateObject private var dashboard = DashboardViewModel()
-
-    // Disciplinas de la card de Previsión unificada. Antes cada una tenía su
-    // propia ventana suelta; ahora un selector conmuta entre las que estén
-    // activas según los objetivos.
-    private enum ForecastTab: String, CaseIterable, Identifiable {
-        case distances = "Distancias", hyrox = "Hyrox", triathlon = "Triatlón"
-        var id: String { rawValue }
-    }
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
 
@@ -620,7 +611,7 @@ struct ContentView: View {
         if let running = dashboard.running, dashboard.performance != nil, dashboard.balance != nil {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
-                performanceForecastSection
+                GoalDistanceCard(strengthOnly: false)
                 loadIntensitySection
                 RunningPerformanceView(running: running, plan: currentPlan)
                 recentTraining
@@ -633,133 +624,6 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             .task { loadPerformanceIfNeeded() }
-        }
-    }
-
-    private var availableForecastTabs: [ForecastTab] {
-        var tabs: [ForecastTab] = []
-        if !goals.activeGoals.isEmpty { tabs.append(.distances) }
-        if goals.goal(.hyrox) != nil { tabs.append(.hyrox) }
-        if goals.activeGoals.contains(where: { $0.kind == .triathlon || $0.kind == .ironman }) { tabs.append(.triathlon) }
-        return tabs
-    }
-
-    // Previsión unificada: un selector conmuta entre distancias, Hyrox y
-    // triatlón (los que estén activos). Cada previsión conserva su propia card;
-    // el selector va encima, así no se duplica el estilo ni la lógica de cada
-    // una.
-    @ViewBuilder private var performanceForecastSection: some View {
-        let tabs = availableForecastTabs
-        if !tabs.isEmpty {
-            let selected = tabs.contains(forecastTab) ? forecastTab : tabs[0]
-            VStack(alignment: .leading, spacing: 12) {
-                if tabs.count > 1 {
-                    Picker("Previsión", selection: Binding(get: { selected }, set: { forecastTab = $0 })) {
-                        ForEach(tabs) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                switch selected {
-                case .distances: goalDistanceCard
-                case .hyrox: hyroxForecastCard
-                case .triathlon: triathlonForecastCard
-                }
-            }
-        }
-    }
-
-    private var goalDistanceCard: some View {
-        let running = dashboard.running ?? RunningPerformanceEngine.summarize(
-            workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-            reviews: workoutReviews.reviews
-        )
-        let strength = StrengthProgressEngine.summarize(imports.workouts)
-        let distances = GoalDistanceEngine.evaluate(
-            goals: goals.activeGoals, running: running, strength: strength,
-            importedWorkouts: imports.workouts, healthWorkouts: health.workoutHistory
-        )
-        return VStack(alignment: .leading, spacing: 14) {
-            EterSectionHeader("Dónde estás y qué falta", eyebrow: "Distancia al objetivo")
-            ForEach(distances) { item in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(item.goal.title).font(.headline)
-                        if let days = item.daysRemaining {
-                            Text("\(days) días").font(.caption2.bold()).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Circle().fill(item.confidence.color).frame(width: 7, height: 7)
-                        Text(item.confidence.rawValue).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        goalDistanceMetric("Actual", item.current)
-                        goalDistanceMetric("Objetivo", item.target)
-                    }
-                    if let progress = item.progress {
-                        ProgressView(value: progress).tint(goalDistanceColor(item.state))
-                        Text("Proximidad de marca \(Int((progress * 100).rounded()))% · \(item.gap)")
-                            .font(.caption.bold()).foregroundStyle(goalDistanceColor(item.state))
-                    } else {
-                        Text(item.gap).font(.caption).foregroundStyle(.secondary).lineSpacing(2)
-                    }
-                    Text(item.evidence).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                }
-                if item.id != distances.last?.id { Divider() }
-            }
-            Text("La proximidad compara la marca actual estimada con el objetivo; no representa el porcentaje de preparación total para competir.")
-                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-        }.cardStyle()
-    }
-
-    @ViewBuilder private var hyroxForecastCard: some View {
-        if let goal = goals.goal(.hyrox) {
-            let running = dashboard.running ?? RunningPerformanceEngine.summarize(
-                workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-                reviews: workoutReviews.reviews
-            )
-            let forecast = HyroxForecastEngine.forecast(
-                running: running, workouts: imports.workouts,
-                division: goal.hyroxDivision ?? .open,
-                vo2Max: health.vo2MaxHistory.last?.value,
-                bodyFatPercentage: health.bodyFatHistory.last?.value
-            )
-            HyroxForecastCard(
-                goal: goal, forecast: forecast,
-                measuredAt: [health.lastUpdated, imports.workouts.first?.start].compactMap { $0 }.max()
-            )
-        }
-    }
-
-    @ViewBuilder private var triathlonForecastCard: some View {
-        if let goal = goals.activeGoals.first(where: { $0.kind == .triathlon || $0.kind == .ironman }) {
-            let running = dashboard.running ?? RunningPerformanceEngine.summarize(
-                workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-                reviews: workoutReviews.reviews
-            )
-            let forecast = TriathlonForecastEngine.forecast(
-                distance: goal.resolvedTriathlonDistance ?? .olympic,
-                running: running, workouts: health.workoutHistory, courseDetails: goal.courseDetails
-            )
-            TriathlonForecastCard(
-                goal: goal, forecast: forecast,
-                measuredAt: [health.lastUpdated, imports.workouts.first?.start].compactMap { $0 }.max()
-            )
-        }
-    }
-
-    private func goalDistanceMetric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.subheadline.bold()).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func goalDistanceColor(_ state: GoalDistanceState) -> Color {
-        switch state {
-        case .achieved: return EterTheme.positive
-        case .close: return EterTheme.primary
-        case .progressing: return EterTheme.warning
-        case .missingTarget, .insufficientData: return .secondary
         }
     }
 

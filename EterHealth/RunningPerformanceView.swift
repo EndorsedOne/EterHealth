@@ -5,12 +5,29 @@ struct RunningPerformanceView: View {
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var workoutReviews: WorkoutReviewStore
     @EnvironmentObject private var goals: GoalStore
+    @EnvironmentObject private var imports: ImportStore
 
     let running: RunningPerformanceSummary
     let plan: WeeklyPlanStatus
 
     @State private var selectedForecastDistance: ForecastDistance = .halfMarathon
     @State private var forecastWindowDays = 30
+    @State private var selectedDiscipline: ForecastDiscipline = .running
+
+    // La card "Performance forecast" es una sola, con un selector de disciplina
+    // arriba (antes Hyrox/triatlón tenían ventana propia). Sólo aparecen las que
+    // tienen objetivo activo; carrera siempre.
+    private enum ForecastDiscipline: String, CaseIterable, Identifiable {
+        case running = "Carrera", hyrox = "HYROX", triathlon = "Triatlón"
+        var id: String { rawValue }
+    }
+
+    private var availableDisciplines: [ForecastDiscipline] {
+        var result: [ForecastDiscipline] = [.running]
+        if goals.goal(.hyrox) != nil { result.append(.hyrox) }
+        if goals.activeGoals.contains(where: { $0.kind == .triathlon || $0.kind == .ironman }) { result.append(.triathlon) }
+        return result
+    }
 
     var body: some View {
         let coverage = RunningPerformanceEngine.coverage(workouts: health.workoutHistory, reviews: workoutReviews.reviews,
@@ -29,7 +46,15 @@ struct RunningPerformanceView: View {
             } else {
                 runningCoverageCard(coverage)
                 runningVolumeCard(running)
+            }
+            // El "Performance forecast" (con su selector de disciplina) se
+            // muestra si hay carreras O algún objetivo híbrido: así el forecast
+            // de HYROX/triatlón sigue apareciendo aunque todavía no haya
+            // carreras registradas.
+            if !running.sessions.isEmpty || availableDisciplines.count > 1 {
                 raceForecastCard(running)
+            }
+            if !running.sessions.isEmpty {
                 if running.hasZoneData { runningIntensityCard(running, coverage: coverage, block: plan.block) }
                 recentRunsCard(running)
             }
@@ -161,6 +186,57 @@ struct RunningPerformanceView: View {
     }
 
     private func raceForecastCard(_ running: RunningPerformanceSummary) -> some View {
+        let disciplines = availableDisciplines
+        let selected = disciplines.contains(selectedDiscipline) ? selectedDiscipline : .running
+        return VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Performance forecast").font(.headline)
+                Text("Predicción de hoy y cómo ha evolucionado").font(.caption2).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if disciplines.count > 1 {
+                Picker("Disciplina", selection: Binding(get: { selected }, set: { selectedDiscipline = $0 })) {
+                    ForEach(disciplines) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented)
+            }
+            switch selected {
+            case .running: runningForecastContent(running)
+            case .hyrox: hyroxForecastContent(running)
+            case .triathlon: triathlonForecastContent(running)
+            }
+        }.cardStyle()
+    }
+
+    @ViewBuilder private func hyroxForecastContent(_ running: RunningPerformanceSummary) -> some View {
+        if let goal = goals.goal(.hyrox) {
+            HyroxForecastCard(
+                goal: goal,
+                forecast: HyroxForecastEngine.forecast(
+                    running: running, workouts: imports.workouts,
+                    division: goal.hyroxDivision ?? .open,
+                    vo2Max: health.vo2MaxHistory.last?.value,
+                    bodyFatPercentage: health.bodyFatHistory.last?.value
+                ),
+                measuredAt: [health.lastUpdated, imports.workouts.first?.start].compactMap { $0 }.max(),
+                bare: true
+            )
+        }
+    }
+
+    @ViewBuilder private func triathlonForecastContent(_ running: RunningPerformanceSummary) -> some View {
+        if let goal = goals.activeGoals.first(where: { $0.kind == .triathlon || $0.kind == .ironman }) {
+            TriathlonForecastCard(
+                goal: goal,
+                forecast: TriathlonForecastEngine.forecast(
+                    distance: goal.resolvedTriathlonDistance ?? .olympic,
+                    running: running, workouts: health.workoutHistory, courseDetails: goal.courseDetails
+                ),
+                measuredAt: [health.lastUpdated, imports.workouts.first?.start].compactMap { $0 }.max(),
+                bare: true
+            )
+        }
+    }
+
+    private func runningForecastContent(_ running: RunningPerformanceSummary) -> some View {
         let forecast = selectedRaceForecast(running)
         let trend = RunningPerformanceEngine.forecastTrend(
             distance: selectedForecastDistance,
@@ -169,13 +245,9 @@ struct RunningPerformanceView: View {
             days: forecastWindowDays
         )
         return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Performance forecast").font(.headline)
-                    Text("Predicción de hoy y cómo ha evolucionado").font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if let forecast {
+            if let forecast {
+                HStack {
+                    Spacer()
                     DataTrustBadge(trust: DataTrust(
                         nature: .calculated, source: forecast.basis, measuredAt: nil, samples: 0,
                         level: forecast.confidence, explanation: forecast.basis,
@@ -251,7 +323,7 @@ struct RunningPerformanceView: View {
             } else {
                 ContentUnavailableView("Previsión no disponible", systemImage: "figure.run", description: Text("Necesitamos al menos una carrera con distancia y duración válidas."))
             }
-        }.cardStyle()
+        }
     }
 
     private func selectedRaceForecast(_ running: RunningPerformanceSummary) -> RaceForecast? {

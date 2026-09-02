@@ -4,6 +4,8 @@ struct TriathlonForecastCard: View {
     let goal: TrainingGoal
     let forecast: TriathlonForecast?
     let measuredAt: Date?
+    /// true cuando va incrustado dentro de otra card (Performance forecast).
+    var bare: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -59,7 +61,7 @@ struct TriathlonForecastCard: View {
                 Text("Necesitamos al menos una carrera con distancia y duración para construir la pierna de running. Natación y ciclismo pueden empezar con una estimación genérica hasta que registres tus propias sesiones.")
                     .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
             }
-        }.cardStyle()
+        }.cardStyle(active: !bare)
     }
 
     private func forecastHeadline(_ forecast: TriathlonForecast) -> some View {

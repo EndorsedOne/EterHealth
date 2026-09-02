@@ -234,6 +234,13 @@ extension View {
             .shadow(color: Color.black.opacity(0.045), radius: 10, y: 4)
     }
 
+    /// cardStyle sólo cuando `active`. Para incrustar una card dentro de otra
+    /// (p. ej. el forecast de HYROX/triatlón dentro de "Performance forecast")
+    /// sin duplicar el fondo/borde de tarjeta.
+    @ViewBuilder func cardStyle(active: Bool) -> some View {
+        if active { cardStyle() } else { self }
+    }
+
     func eterInsetStyle() -> some View {
         self.padding(12)
             .background(EterTheme.raisedSurface)

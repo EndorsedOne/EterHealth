@@ -230,6 +230,10 @@ struct StrengthTrainingView: View {
 
             strengthProgressSection
 
+            // Objetivos de fuerza (press banca, sentadilla, peso muerto,
+            // hipertrofia). Los de carrera/híbridos viven en Rendimiento.
+            GoalDistanceCard(strengthOnly: true)
+
             // Movidas desde Rendimiento: distribución muscular y volumen de
             // fuerza son análisis de fuerza y su sitio es esta pestaña.
             MuscleVolumeSection()
