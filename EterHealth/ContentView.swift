@@ -85,7 +85,16 @@ struct ContentView: View {
     @State private var todayStrengthRoutine: StrengthRoutine?
     @State private var automaticBackupRevision = 0
     @State private var dashboardRefreshTask: Task<Void, Never>?
+    @State private var forecastTab: ForecastTab = .distances
     @StateObject private var dashboard = DashboardViewModel()
+
+    // Disciplinas de la card de Previsión unificada. Antes cada una tenía su
+    // propia ventana suelta; ahora un selector conmuta entre las que estén
+    // activas según los objetivos.
+    private enum ForecastTab: String, CaseIterable, Identifiable {
+        case distances = "Distancias", hyrox = "Hyrox", triathlon = "Triatlón"
+        var id: String { rawValue }
+    }
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
 
@@ -611,10 +620,7 @@ struct ContentView: View {
         if let running = dashboard.running, dashboard.performance != nil, dashboard.balance != nil {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
-                trainingRoadmapCard
-                goalDistanceCard
-                hyroxForecastCard
-                triathlonForecastCard
+                performanceForecastSection
                 RunningPerformanceView(running: running, plan: currentPlan)
                 performanceDashboard
                 heartZoneChart
@@ -629,6 +635,38 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
             .task { loadPerformanceIfNeeded() }
+        }
+    }
+
+    private var availableForecastTabs: [ForecastTab] {
+        var tabs: [ForecastTab] = []
+        if !goals.activeGoals.isEmpty { tabs.append(.distances) }
+        if goals.goal(.hyrox) != nil { tabs.append(.hyrox) }
+        if goals.activeGoals.contains(where: { $0.kind == .triathlon || $0.kind == .ironman }) { tabs.append(.triathlon) }
+        return tabs
+    }
+
+    // Previsión unificada: un selector conmuta entre distancias, Hyrox y
+    // triatlón (los que estén activos). Cada previsión conserva su propia card;
+    // el selector va encima, así no se duplica el estilo ni la lógica de cada
+    // una.
+    @ViewBuilder private var performanceForecastSection: some View {
+        let tabs = availableForecastTabs
+        if !tabs.isEmpty {
+            let selected = tabs.contains(forecastTab) ? forecastTab : tabs[0]
+            VStack(alignment: .leading, spacing: 12) {
+                if tabs.count > 1 {
+                    Picker("Previsión", selection: Binding(get: { selected }, set: { forecastTab = $0 })) {
+                        ForEach(tabs) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                switch selected {
+                case .distances: goalDistanceCard
+                case .hyrox: hyroxForecastCard
+                case .triathlon: triathlonForecastCard
+                }
+            }
         }
     }
 
@@ -771,6 +809,9 @@ struct ContentView: View {
                 Text("\(goals.profile.trainingDaysPerWeek) días/semana · \(goals.profile.gymAvailable ? "gimnasio disponible" : "sin gimnasio")")
                     .font(.caption2).foregroundStyle(.secondary)
             }.cardStyle()
+            // La hoja de ruta se deriva de estos objetivos, así que vive aquí,
+            // en Datos, y no en Rendimiento (donde sólo era un bloque más).
+            trainingRoadmapCard
         }
     }
 
