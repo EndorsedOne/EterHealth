@@ -81,6 +81,9 @@ enum TwinEngine {
             hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory,
             sleep: health.sleepHistory,
             respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory,
+            deepShare: SleepArchitectureEngine.dailyDeepShareSeries(health.sleepStagesHistory),
+            remShare: SleepArchitectureEngine.dailyRemShareSeries(health.sleepStagesHistory),
+            sleepSchedule: health.sleepScheduleHistory,
             travelEpisodes: context.travelHistory, now: now
         ).map { ($0.kind, $0) })
         var appliedLearnedHabits: Set<HabitKind> = []
@@ -205,11 +208,24 @@ enum TwinEngine {
                 let caffeineAge = now.timeIntervalSince(consumed) / 3600
                 if caffeineAge <= 18 {
                     let remaining = Double(event.caffeineMg) * pow(0.5, caffeineAge / 5)
-                    let isLate = Calendar.current.component(.hour, from: consumed) >= 14
-                    let learned = isLate ? learnedHabit(.lateCaffeine) : (impact: 0, detail: "")
-                    score += learned.impact
-                    signals.append(TwinSignal(name: "Cafeína", value: "\(event.caffeineMg) mg", impact: learned.impact,
-                        detail: "Quedan aproximadamente \(Int(remaining.rounded())) mg según una semivida provisional de 5 h; no es una medición clínica." + learned.detail))
+                    let bedtimeRemaining = CaffeinePharmacokinetics.estimatedRemainingAtBedtime(
+                        doseMg: Double(event.caffeineMg), consumed: consumed,
+                        schedule: health.sleepScheduleHistory
+                    )
+                    var learnedImpact = 0
+                    var learnedDetail = ""
+                    if appliedLearnedHabits.insert(.lateCaffeine).inserted,
+                       let association = habitAssociations[.lateCaffeine],
+                       association.confidence.level != .low,
+                       association.direction != .neutral {
+                        let reference = max(1, association.averageExposureLevel ?? 80)
+                        let ratio = min(2.5, bedtimeRemaining / reference)
+                        learnedImpact = Int((Double(HabitAssociationEngine.readinessImpact(association)) * ratio).rounded())
+                        learnedDetail = " Ajuste según ~\(Int(bedtimeRemaining.rounded())) mg estimados al dormir frente a ~\(Int(reference.rounded())) mg de exposición media aprendida; confianza \(association.confidence.level.rawValue.lowercased())."
+                    }
+                    score += learnedImpact
+                    signals.append(TwinSignal(name: "Cafeína", value: "\(event.caffeineMg) mg", impact: learnedImpact,
+                        detail: "Quedan aproximadamente \(Int(remaining.rounded())) mg según una semivida provisional de 5 h; no es una medición clínica." + learnedDetail))
                 }
             }
             if event.hydration == .low && ageHours <= 24 {

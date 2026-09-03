@@ -31,6 +31,7 @@ enum HyroxStationBasis: String, Equatable {
     case populationBand = "banda de la división"
     case observedStations = "tiempos reales por estación"
     case impliedFromSimulations = "implícito de tus simulaciones"
+    case enrichedRow = "remo medido y resto por banda"
 }
 
 enum HyroxForecastEngine {
@@ -57,14 +58,21 @@ enum HyroxForecastEngine {
     nonisolated static func forecast(
         running: RunningPerformanceSummary, workouts: [ImportedWorkout],
         division: HyroxDivision = .open, now: Date = Date(),
-        vo2Max: Double? = nil, bodyFatPercentage: Double? = nil
+        vo2Max: Double? = nil, bodyFatPercentage: Double? = nil,
+        workoutEnrichments: [WorkoutEnrichment] = []
     ) -> HyroxForecast? {
         guard let runForecast = running.tenK ?? running.fiveK else { return nil }
         let exercises = workouts
             .filter { $0.start <= now && $0.start >= now.addingTimeInterval(-240 * 86_400) }
             .flatMap(\.exercises).map { normalized($0.name) }
+        let hasEnrichedRow = workoutEnrichments.contains {
+            $0.useForHyrox && $0.workoutDate <= now &&
+                $0.workoutDate >= now.addingTimeInterval(-240 * 86_400) &&
+                (($0.distanceMeters ?? 0) > 0 || ($0.effectiveDurationSeconds ?? 0) > 0 || ($0.averagePowerWatts ?? 0) > 0)
+        }
         let stations = stationDefinitions.map { name, terms in
-            HyroxStationEvidence(name: name, observed: exercises.contains { exercise in terms.contains { exercise.contains($0) } })
+            let importedEvidence = exercises.contains { exercise in terms.contains { exercise.contains($0) } }
+            return HyroxStationEvidence(name: name, observed: importedEvidence || (name == "Row" && hasEnrichedRow))
         }
         let stationCoverage = stations.filter(\.observed).count
         let specific = workouts.filter {
@@ -84,6 +92,7 @@ enum HyroxForecastEngine {
         let runSeconds = run8K * (1 + (compromise.lowerBound + compromise.upperBound) / 2)
         let stationBand = stationTimeBand(division)
         let priorStationSeconds = (stationBand.lowerBound + stationBand.upperBound) / 2
+        let rowingEvidence = enrichedRowingEstimate(workoutEnrichments, division: division, now: now)
         let transitionSeconds = division == .doubles ? 270.0 : 330.0
 
         let credibleSimulations = specific.map { $0.end.timeIntervalSince($0.start) }
@@ -117,6 +126,18 @@ enum HyroxForecastEngine {
             stationSeconds = priorStationSeconds * 0.55 + impliedStationSeconds * 0.45
             stationBasis = .impliedFromSimulations
             stationSpread = stationSeconds * 0.12
+        } else if let rowingEvidence {
+            // Una estación medida sí debe mover el forecast. Sustituimos solo
+            // el prior del remo —no fingimos conocer las otras siete— y
+            // ponderamos por comparabilidad de máquina y repetición.
+            let priorRow = priorRowingSeconds(division)
+            let personalizedRow = priorRow * (1 - rowingEvidence.weight) + rowingEvidence.seconds * rowingEvidence.weight
+            stationSeconds = priorStationSeconds - priorRow + personalizedRow
+            stationBasis = .enrichedRow
+            // Conservamos casi toda la amplitud poblacional: conocemos mejor
+            // el remo, no el trineo, lunges o wall balls.
+            let populationSpread = (stationBand.upperBound - stationBand.lowerBound) / 2
+            stationSpread = populationSpread * (1 - 0.12 * rowingEvidence.weight)
         } else {
             stationSeconds = priorStationSeconds
             stationBasis = .populationBand
@@ -152,7 +173,9 @@ enum HyroxForecastEngine {
             bottleneck = "Tu palanca real es la capacidad aeróbica: tu VO2 máx. (\(Int(vo2Max.rounded())) ml/kg/min) está por debajo de lo asociado a mejores tiempos. Brandt et al. 2025 encontraron que el VO2 máx. es lo que más correlaciona con el tiempo total en HYROX (ρ=-0,71) — más que la fuerza de agarre o la masa muscular."
         } else if let bodyFatPercentage, bodyFatPercentage > 30 {
             bottleneck = "Tu palanca real es la composición corporal: el mismo estudio encontró que el % de grasa corporal correlaciona con un tiempo peor (ρ=0,67), mientras que ni el agarre ni la masa muscular predijeron el resultado."
-        } else if stationCoverage < 4 { bottleneck = "La mayor incertidumbre está en las estaciones: solo hay \(stationCoverage)/8 observadas." }
+        } else if stationCoverage < 4 {
+            bottleneck = "La mayor incertidumbre está en las estaciones: solo hay \(stationCoverage)/8 observadas. El remo completado en Éter ya personaliza esa estación; su margen es mayor cuando la máquina no es la de competición."
+        }
         else if specific.count < 2 { bottleneck = "Falta medir cómo sostienes la carrera después de varias estaciones." }
         else if runForecast.confidence == .low { bottleneck = "La carrera base todavía procede de esfuerzos poco comparables." }
         else { bottleneck = "El siguiente salto de precisión requiere una simulación completa comparable." }
@@ -205,6 +228,54 @@ enum HyroxForecastEngine {
         let experience = max(0, min(4, specificSessions))
         let reduction = Double(coverage) * 0.004 + Double(experience) * 0.008
         return max(0.05, 0.10 - reduction)...max(0.10, 0.20 - reduction)
+    }
+
+    /// Equivalente de 1.000 m. Metros+tiempo son la señal principal; los
+    /// vatios sirven como segunda estimación o control de coherencia mediante
+    /// la relación potencia/ritmo de ergómetro. La diferencia de máquina baja
+    /// el peso, nunca descarta la sesión.
+    nonisolated static func enrichedRowingEstimate(
+        _ values: [WorkoutEnrichment], division: HyroxDivision = .open,
+        now: Date = Date()
+    ) -> (seconds: Double, weight: Double)? {
+        let recent = values.filter {
+            $0.useForHyrox && $0.workoutDate <= now &&
+                $0.workoutDate >= now.addingTimeInterval(-240 * 86_400)
+        }.compactMap { value -> (Double, Double)? in
+            let paceEstimate: Double? = {
+                guard let meters = value.distanceMeters, meters >= 250,
+                      let seconds = value.effectiveDurationSeconds, seconds >= 45 else { return nil }
+                return seconds * 1_000 / meters
+            }()
+            let powerEstimate: Double? = {
+                guard let watts = value.averagePowerWatts, watts >= 40 else { return nil }
+                // Concept2: P = 2.8 / (t/500)^3; despejado para 1.000 m.
+                return 1_000 * pow(2.8 / watts, 1.0 / 3.0)
+            }()
+            let estimate: Double
+            if let paceEstimate, let powerEstimate {
+                estimate = paceEstimate * 0.8 + powerEstimate * 0.2
+            } else if let paceEstimate { estimate = paceEstimate }
+            else if let powerEstimate { estimate = powerEstimate }
+            else { return nil }
+            guard (150...600).contains(estimate) else { return nil }
+            let machineReliability: Double = value.machine == .concept2 ? 0.82 : 0.62
+            let completeness = paceEstimate != nil && powerEstimate != nil ? 1.0 : 0.86
+            return (estimate, machineReliability * completeness)
+        }
+        guard !recent.isEmpty else { return nil }
+        let seconds = median(recent.map { $0.0 })!
+        let base = recent.map { $0.1 }.reduce(0, +) / Double(recent.count)
+        let repetitionGain = min(0.16, Double(recent.count - 1) * 0.04)
+        return (seconds, min(0.9, base + repetitionGain))
+    }
+
+    private nonisolated static func priorRowingSeconds(_ division: HyroxDivision) -> Double {
+        switch division {
+        case .open: return 270
+        case .pro: return 260
+        case .doubles: return 250
+        }
     }
 
     private nonisolated static func stationTimeBand(_ division: HyroxDivision) -> ClosedRange<Double> {

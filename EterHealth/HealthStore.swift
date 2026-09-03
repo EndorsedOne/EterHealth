@@ -1250,6 +1250,7 @@ final class HealthStore: ObservableObject {
         case .functionalStrengthTraining: return "Fuerza funcional"
         case .stairClimbing: return "Escaleras"
         case .cycling: return "Ciclismo"
+        case .rowing: return "Remo indoor"
         // Previously fell through to the generic "Entrenamiento" default — every
         // swimming session lost its identity and couldn't be told apart from
         // anything else unclassified (the one real multi-sport gap this had).
@@ -1264,6 +1265,7 @@ final class HealthStore: ObservableObject {
         case .highIntensityIntervalTraining: return ["Cuádriceps": 0.8, "Glúteos": 0.8, "Isquios": 0.6, "Gemelos": 0.5, "Core": 0.5]
         case .walking, .hiking: return ["Cuádriceps": 0.35, "Glúteos": 0.35, "Isquios": 0.25, "Gemelos": 0.3, "Core": 0.15]
         case .cycling: return ["Cuádriceps": 0.7, "Glúteos": 0.35, "Isquios": 0.25, "Gemelos": 0.2]
+        case .rowing: return ["Espalda": 0.6, "Cuádriceps": 0.65, "Glúteos": 0.55, "Isquios": 0.45, "Bíceps": 0.3, "Core": 0.35]
         case .swimming: return ["Espalda": 0.8, "Hombros": 0.7, "Core": 0.5, "Pecho": 0.4]
         // A Watch-logged strength session (no Hevy import behind it) carries
         // no per-exercise detail at all in HealthKit — this used to fall

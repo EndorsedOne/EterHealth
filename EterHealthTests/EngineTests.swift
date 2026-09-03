@@ -472,6 +472,32 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(association.samples, 3)
     }
 
+    func testCaffeineLearningUsesEstimatedBedtimeExposureNotTwoPMCutoff() {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = calendar.startOfDay(for: Date()).addingTimeInterval(-40 * 86_400)
+        let exposureDays = [10, 20, 30]
+        let events = exposureDays.map { day in
+            // 13:00 quedaba fuera del antiguo corte >=14:00, aunque una
+            // dosis grande aún deje cafeína relevante al acostarse.
+            LifestyleEvent(id: UUID(), date: start.addingTimeInterval(Double(day) * 86_400 + 13 * 3_600),
+                           alcoholDrinks: 0, saunaMinutes: 0, saunaTemperatureC: 80, coldMinutes: 0, coldTemperatureC: 12,
+                           timeZoneDifference: 0, travelDirection: .east, caffeineMg: 200, caffeineDate: nil,
+                           foodQuality: .notRecorded, fastingHours: 0, trainedFasted: false, lateDinner: false, heavyDinner: false,
+                           hydration: .notRecorded, electrolytes: false, digestiveSymptoms: [], supplements: [], note: "")
+        }
+        let sleep = (0..<36).map { day -> TrendPoint in
+            let isAfterExposure = exposureDays.contains(day - 1)
+            return TrendPoint(date: start.addingTimeInterval(Double(day) * 86_400), value: isAfterExposure ? 6.2 : 7.5)
+        }
+        let result = HabitAssociationEngine.analyze(
+            events: events, alcohol: [], hrv: [], restingHeartRate: [], sleep: sleep, now: Date()
+        )
+        let association = result.first { $0.kind == .lateCaffeine }
+        XCTAssertEqual(association?.samples, 3)
+        XCTAssertNotNil(association?.averageExposureLevel)
+        XCTAssertGreaterThan(association?.averageExposureLevel ?? 0, 1)
+    }
+
     func testSupplementsUseTheirOwnTimestampInsteadOfTheSharedEventDate() {
         // A dose logged at 1am is a different calendar day than the event's
         // own `date` (set to 8am the same "day" the entry is filed under) —
@@ -996,6 +1022,31 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(ExerciseCatalog.descriptor(for: "Ski Erg").tracksWeight, "También por nombre alternativo.")
         XCTAssertTrue(ExerciseCatalog.descriptor(for: "Sled Push").tracksWeight, "El trineo sí lleva carga.")
         XCTAssertTrue(ExerciseCatalog.descriptor(for: "Squat (Barbell)").tracksWeight)
+    }
+
+    func testMachineRowingDataPersonalizesHyroxInsteadOfBeingIgnored() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let row = WorkoutEnrichment(
+            workoutID: UUID().uuidString, workoutDate: now.addingTimeInterval(-86_400),
+            machine: .technogymSkillrow, resistanceMode: .aquaFeel,
+            resistanceLevel: 7, distanceMeters: 1_000, effectiveDurationSeconds: 240,
+            averagePowerWatts: 205, cadenceSPM: 29, perceivedEffort: 8,
+            useForHyrox: true, note: "", updatedAt: now
+        )
+
+        let estimate = HyroxForecastEngine.enrichedRowingEstimate([row], now: now)
+        XCTAssertNotNil(estimate)
+        XCTAssertEqual(estimate?.seconds ?? 0, 240, accuracy: 15)
+        XCTAssertGreaterThan(estimate?.weight ?? 0, 0.5)
+
+        let baseline = HyroxForecastEngine.forecast(running: hyroxRunning(), workouts: [], now: now)
+        let personalized = HyroxForecastEngine.forecast(
+            running: hyroxRunning(), workouts: [], now: now,
+            workoutEnrichments: [row]
+        )
+        XCTAssertEqual(personalized?.stationBasis, .enrichedRow)
+        XCTAssertTrue(personalized?.stations.first(where: { $0.name == "Row" })?.observed == true)
+        XCTAssertLessThan(personalized?.stationSeconds ?? 0, baseline?.stationSeconds ?? 0)
     }
 
     // Una serie de plancha o de trineo no tiene reps y sí es una serie hecha:

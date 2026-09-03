@@ -19,6 +19,7 @@ enum EnergyTimelineEngine {
         let sleepEndHour: Double?
         let hrv: DailyMetricContext
         let restingHeartRate: DailyMetricContext
+        let caffeine: CaffeineTimelineResult
     }
 
     struct DailyMetricContext {
@@ -44,6 +45,10 @@ enum EnergyTimelineEngine {
             lifestyle: lifestyle, now: now, currentHour: currentHour,
             sleepStartHour: sleepStart, sleepEndHour: sleepEnd, events: events
         )
+        let caffeine = caffeineTimeline(
+            lifestyle: lifestyle, sleepSchedule: health.sleepScheduleHistory,
+            now: now, currentHour: currentHour
+        )
         return Result(
             energy: model.energy, curve: model.curve, basis: model.basis, events: events,
             inputMarkers: inputMarkers(
@@ -54,8 +59,69 @@ enum EnergyTimelineEngine {
             hrv: DailyMetricContext(value: baseline.hrv.current, expected: baseline.hrv.expected),
             restingHeartRate: DailyMetricContext(
                 value: baseline.restingHeartRate.current, expected: baseline.restingHeartRate.expected
-            )
+            ), caffeine: caffeine
         )
+    }
+
+    struct CaffeineTimelineResult {
+        let points: [EterWidgetCaffeinePoint]
+        let currentMg: Double
+        let bedtimeMg: Double
+        let bedtimeHour: Double
+    }
+
+    /// Estimated caffeine still in the body across the whole day. Doses are
+    /// additive and decay independently using the disclosed population-average
+    /// half-life. Workouts are deliberately not used to alter clearance: they
+    /// are aligned on the chart as context, without inventing a causal effect.
+    static func caffeineTimeline(lifestyle: [LifestyleEvent], sleepSchedule: [NightlySleepSchedule],
+                                 now: Date, currentHour: Double) -> CaffeineTimelineResult {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: now)
+        let doses = lifestyle.compactMap { event -> (date: Date, mg: Double)? in
+            let date = event.caffeineDate ?? event.date
+            guard event.caffeineMg > 0, date <= now,
+                  date >= startOfDay.addingTimeInterval(-30 * 3_600) else { return nil }
+            return (date, Double(event.caffeineMg))
+        }
+        let bedtimeHour = habitualBedtimeHour(sleepSchedule) ?? 23
+        func remaining(at date: Date) -> Double {
+            doses.reduce(0) { total, dose in
+                guard date >= dose.date else { return total }
+                let hours = date.timeIntervalSince(dose.date) / 3_600
+                return total + dose.mg * CaffeinePharmacokinetics.residualFraction(hoursElapsed: hours)
+            }
+        }
+        let points = stride(from: 0.0, through: 24.0, by: 0.5).map { hour in
+            EterWidgetCaffeinePoint(
+                hour: hour,
+                remainingMg: remaining(at: startOfDay.addingTimeInterval(hour * 3_600))
+            )
+        }
+        return CaffeineTimelineResult(
+            points: points,
+            currentMg: remaining(at: now),
+            bedtimeMg: remaining(at: startOfDay.addingTimeInterval(bedtimeHour * 3_600)),
+            bedtimeHour: bedtimeHour
+        )
+    }
+
+    private static func habitualBedtimeHour(_ schedule: [NightlySleepSchedule]) -> Double? {
+        guard schedule.count >= 5 else { return nil }
+        let calendar = Calendar.current
+        let values = schedule.suffix(30).map { night -> Double in
+            let hour = Double(calendar.component(.hour, from: night.bedtime))
+            let minute = Double(calendar.component(.minute, from: night.bedtime)) / 60
+            let value = hour + minute
+            return value < 12 ? value + 24 : value
+        }.sorted()
+        let middle = values.count / 2
+        let median = values.count.isMultiple(of: 2)
+            ? (values[middle - 1] + values[middle]) / 2 : values[middle]
+        // Keep post-midnight bedtimes on the following-day axis (e.g. 00:30
+        // becomes 24.5). Otherwise the bedtime estimate would accidentally
+        // evaluate 00:30 from the start of today — already in the past.
+        return median
     }
 
     struct EnergyModelResult {

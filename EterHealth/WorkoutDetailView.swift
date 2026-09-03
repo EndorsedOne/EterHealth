@@ -11,7 +11,9 @@ import SwiftUI
 struct WorkoutDetailView: View {
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
+    @EnvironmentObject private var workoutEnrichments: WorkoutEnrichmentStore
     @Environment(\.dismiss) private var dismiss
+    @State private var editingMachineData = false
     let session: RecentTrainingSession
 
     private var healthWorkout: HealthWorkout? {
@@ -39,6 +41,14 @@ struct WorkoutDetailView: View {
             .navigationTitle(session.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cerrar") { dismiss() } } }
+            .sheet(isPresented: $editingMachineData) {
+                if let workout = healthWorkout {
+                    RowingEnrichmentEditor(
+                        workout: workout,
+                        existing: workoutEnrichments.enrichment(for: workout.id)
+                    ).environmentObject(workoutEnrichments)
+                }
+            }
         }
     }
 
@@ -74,7 +84,44 @@ struct WorkoutDetailView: View {
         }
         if hasRunningDynamics(workout) { runningDynamicsCard(workout) }
         if hasCyclingDynamics(workout) { cyclingDynamicsCard(workout) }
+        if workout.activity == "Remo indoor" { rowingMachineCard(workout) }
         HeartRateZonesCard(workout: workout).environmentObject(health)
+    }
+
+    private func rowingMachineCard(_ workout: HealthWorkout) -> some View {
+        let enrichment = workoutEnrichments.enrichment(for: workout.id)
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Datos de la máquina").font(.subheadline.bold())
+                    Text("Completa lo que Apple Fitness no registra")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(enrichment == nil ? "Añadir" : "Editar") { editingMachineData = true }
+                    .font(.caption.bold())
+            }
+            if let enrichment {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    if let meters = enrichment.distanceMeters { tile("Distancia máquina", "\(Int(meters.rounded())) m") }
+                    if let seconds = enrichment.effectiveDurationSeconds { tile("Tiempo efectivo", durationText(seconds)) }
+                    if let watts = enrichment.averagePowerWatts { tile("Potencia media", "\(Int(watts.rounded())) W") }
+                    if let cadence = enrichment.cadenceSPM { tile("Cadencia", "\(Int(cadence.rounded())) spm") }
+                    if let level = enrichment.resistanceLevel { tile("Resistencia", "\(level.formatted(.number.precision(.fractionLength(0...1))))/10") }
+                    if let effort = enrichment.perceivedEffort { tile("Esfuerzo", "RPE \(effort)/10") }
+                }
+                Text("\(enrichment.machine.rawValue) · \(enrichment.resistanceMode.rawValue)\(enrichment.useForHyrox ? " · referencia HYROX" : "")")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text("Puedes añadir distancia, potencia, cadencia y resistencia sin modificar ni duplicar el entrenamiento guardado en Apple Salud.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.cardStyle()
+    }
+
+    private func durationText(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private func deviceContext(_ workout: HealthWorkout) -> String? {
@@ -199,6 +246,126 @@ struct WorkoutDetailView: View {
             Text(value).font(.title3.bold()).monospacedDigit().minimumScaleFactor(0.7).lineLimit(1)
             Text(title).font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading).eterInsetStyle()
+    }
+}
+
+private struct RowingEnrichmentEditor: View {
+    @EnvironmentObject private var store: WorkoutEnrichmentStore
+    @Environment(\.dismiss) private var dismiss
+    let workout: HealthWorkout
+    let existing: WorkoutEnrichment?
+
+    @State private var machine: WorkoutMachine
+    @State private var mode: RowingResistanceMode
+    @State private var distance: String
+    @State private var duration: String
+    @State private var power: String
+    @State private var cadence: String
+    @State private var resistance: String
+    @State private var effort: Int
+    @State private var useForHyrox: Bool
+    @State private var note: String
+
+    init(workout: HealthWorkout, existing: WorkoutEnrichment?) {
+        self.workout = workout
+        self.existing = existing
+        _machine = State(initialValue: existing?.machine ?? .technogymSkillrow)
+        _mode = State(initialValue: existing?.resistanceMode ?? .aquaFeel)
+        _distance = State(initialValue: existing?.distanceMeters.map { String(Int($0.rounded())) } ?? "")
+        _duration = State(initialValue: existing?.effectiveDurationSeconds.map(Self.formatDuration) ?? "")
+        _power = State(initialValue: existing?.averagePowerWatts.map { String(Int($0.rounded())) } ?? "")
+        _cadence = State(initialValue: existing?.cadenceSPM.map { String(Int($0.rounded())) } ?? "")
+        _resistance = State(initialValue: existing?.resistanceLevel.map { $0.formatted(.number.precision(.fractionLength(0...1))) } ?? "")
+        _effort = State(initialValue: existing?.perceivedEffort ?? 5)
+        _useForHyrox = State(initialValue: existing?.useForHyrox ?? true)
+        _note = State(initialValue: existing?.note ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Máquina") {
+                    Picker("Equipo", selection: $machine) {
+                        ForEach(WorkoutMachine.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Modo de resistencia", selection: $mode) {
+                        ForEach(RowingResistanceMode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    numericField("Nivel de resistencia (1–10)", text: $resistance, suffix: nil)
+                }
+                Section("Resultado") {
+                    numericField("Distancia", text: $distance, suffix: "m")
+                    TextField("Tiempo efectivo (mm:ss)", text: $duration)
+                        .keyboardType(.numbersAndPunctuation)
+                    numericField("Potencia media", text: $power, suffix: "W")
+                    numericField("Cadencia", text: $cadence, suffix: "spm")
+                    Stepper("Esfuerzo percibido: \(effort)/10", value: $effort, in: 1...10)
+                }
+                Section {
+                    Toggle("Usar como referencia para HYROX", isOn: $useForHyrox)
+                    Text("Éter la reconocerá como evidencia de remo. No la tratará como una simulación completa ni inventará el comportamiento del trineo o la carrera.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Notas") { TextField("Sensaciones, técnica o configuración", text: $note, axis: .vertical) }
+                if existing != nil {
+                    Section {
+                        Button("Borrar datos añadidos", role: .destructive) {
+                            store.delete(workoutID: workout.id)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Completar remo")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancelar") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Guardar", action: save).bold() }
+            }
+        }
+    }
+
+    @ViewBuilder private func numericField(_ title: String, text: Binding<String>, suffix: String?) -> some View {
+        HStack {
+            TextField(title, text: text).keyboardType(.decimalPad)
+            if let suffix { Text(suffix).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func save() {
+        let enrichment = WorkoutEnrichment(
+            workoutID: workout.id.uuidString, workoutDate: workout.date,
+            machine: machine, resistanceMode: mode,
+            resistanceLevel: boundedNumber(resistance, range: 1...10),
+            distanceMeters: positiveNumber(distance),
+            effectiveDurationSeconds: parseDuration(duration),
+            averagePowerWatts: positiveNumber(power), cadenceSPM: positiveNumber(cadence),
+            perceivedEffort: effort, useForHyrox: useForHyrox,
+            note: note.trimmingCharacters(in: .whitespacesAndNewlines), updatedAt: Date()
+        )
+        store.save(enrichment)
+        dismiss()
+    }
+
+    private func positiveNumber(_ text: String) -> Double? {
+        guard let value = Double(text.replacingOccurrences(of: ",", with: ".")), value > 0 else { return nil }
+        return value
+    }
+
+    private func boundedNumber(_ text: String, range: ClosedRange<Double>) -> Double? {
+        guard let value = positiveNumber(text), range.contains(value) else { return nil }
+        return value
+    }
+
+    private func parseDuration(_ text: String) -> Double? {
+        let parts = text.split(separator: ":").compactMap { Double($0) }
+        if parts.count == 2 { return parts[0] * 60 + parts[1] }
+        return positiveNumber(text).map { $0 * 60 }
+    }
+
+    private static func formatDuration(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

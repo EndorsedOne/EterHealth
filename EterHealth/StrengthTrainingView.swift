@@ -43,15 +43,6 @@ enum StrengthRoutineBuilder {
                                lastPerformed: routine.lastPerformed, historicalVolume: routine.historicalVolume)
     }
 
-    static func routines(from imports: ImportStore) -> [StrengthRoutine] {
-        [
-            build("Push", matches: ["push", "empuje"], fallback: ["Bench Press (Barbell)", "Standing Military Press (Barbell)", "Incline Bench Press (Dumbbell)", "Lateral Raise (Dumbbell)", "Triceps Extension (Cable)"], imports: imports),
-            build("Pull", matches: ["pull", "tirón", "tiron"], fallback: ["Deadlift (Barbell)", "Lat Pulldown (Cable)", "Seated Cable Row", "Pull Up", "Biceps Curl (Dumbbell)"], imports: imports),
-            build("Pierna", matches: ["pierna", "leg"], fallback: ["Squat (Barbell)", "Leg Press (Machine)", "Romanian Deadlift (Barbell)", "Leg Extension (Machine)", "Leg Curl (Machine)"], imports: imports),
-            build("Full Body", matches: ["full body", "fullbody"], fallback: ["Squat (Barbell)", "Bench Press (Barbell)", "Pull Up", "Romanian Deadlift (Barbell)", "Standing Military Press (Barbell)"], imports: imports)
-        ]
-    }
-
     static func exerciseLibrary(from imports: ImportStore) -> [RoutineExercise] {
         var seen = Set<String>()
         var result: [RoutineExercise] = []
@@ -64,18 +55,6 @@ enum StrengthRoutineBuilder {
             result.append(RoutineExercise(name: descriptor.name, sets: defaultSets, restSeconds: defaultRest(for: descriptor.pattern)))
         }
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    static func personalized(_ routine: StrengthRoutine, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness]) -> StrengthRoutine {
-        let injuries = InjuryStore.shared.active
-        let exercises = routine.exercises.compactMap {
-            StrengthPrescriptionEngine.prescribe(
-                $0, workouts: imports.workouts, readiness: readiness,
-                muscleReadiness: muscles, injuries: injuries, goals: GoalStore.shared.profile.goals
-            )
-        }
-        return StrengthRoutine(name: routine.name, subtitle: exercises.map(\.name).joined(separator: " · "), exercises: exercises,
-                               lastPerformed: routine.lastPerformed, historicalVolume: routine.historicalVolume)
     }
 
     static func routine(from proposed: ProposedWorkout, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness]) -> StrengthRoutine {
@@ -137,26 +116,6 @@ enum StrengthRoutineBuilder {
         }
     }
 
-    private static func build(_ name: String, matches: [String], fallback: [String], imports: ImportStore) -> StrengthRoutine {
-        let matching = imports.workouts.filter { workout in
-            let title = workout.title.lowercased()
-            return matches.contains { title.contains($0) }
-        }.sorted { $0.start > $1.start }
-        let latest = matching.first
-        let exercises: [RoutineExercise]
-        if let latest {
-            exercises = latest.exercises.map(routineExercise)
-        } else {
-            let library = exerciseLibrary(from: imports)
-            exercises = fallback.map { wanted in
-                library.first { $0.name.localizedCaseInsensitiveContains(wanted.components(separatedBy: " (").first ?? wanted) }
-                    ?? RoutineExercise(name: wanted, sets: defaultSets, restSeconds: 120)
-            }
-        }
-        let volume = latest?.exercises.reduce(0) { $0 + $1.volume } ?? 0
-        return StrengthRoutine(name: name, subtitle: exercises.map(\.name).joined(separator: " · "), exercises: exercises, lastPerformed: latest?.start, historicalVolume: volume)
-    }
-
     private static func routineExercise(_ exercise: ImportedExercise) -> RoutineExercise {
         let details = exercise.setDetails?.filter { $0.reps > 0 } ?? []
         let fallbackReps = max(1, (exercise.totalReps ?? exercise.sets * 8) / max(exercise.sets, 1))
@@ -208,6 +167,15 @@ struct StrengthTrainingView: View {
     @State private var activeSheet: StrengthSheet?
     @State private var selectedProgressExercise = ""
 
+    private var context: TwinContext {
+        TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
+                    reviews: WorkoutReviewStore.shared.reviews,
+                    activeInjuries: InjuryStore.shared.active,
+                    calibration: TwinStateStore.shared.calibration,
+                    personalAnchor: TwinStateStore.shared.personalAnchor(),
+                    travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
+    }
+
     var body: some View {
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(),
                                            context: TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
@@ -215,18 +183,19 @@ struct StrengthTrainingView: View {
                                                                 calibration: TwinStateStore.shared.calibration,
                                                                 personalAnchor: TwinStateStore.shared.personalAnchor(),
                                                                 travel: travel.episodeForEvaluation(), travelHistory: travel.episodes))
-        let automatic = StrengthRoutineBuilder.routines(from: imports)
-        let routines = automatic.map {
-            StrengthRoutineBuilder.personalized(routineStore.routine(named: $0.name) ?? $0, imports: imports,
-                                                readiness: assessment.score, muscles: assessment.muscles)
-        }
+        let forecasts = TrainingPlanEngine.weekAhead(
+            health: health, imports: imports, checkIn: checkIns.entry(), context: context, days: 14
+        )
+        let strengthForecasts = Array(forecasts.filter { $0.kind == .strength }.prefix(3))
+        let plan = TrainingPlanEngine.status(
+            health: health, imports: imports, readiness: assessment.score,
+            muscles: assessment.muscles, checkIn: checkIns.entry(), context: context,
+            physiologicalAlert: assessment.physiologicalAlert
+        )
         VStack(alignment: .leading, spacing: 18) {
             EterPageHeader(eyebrow: "Fuerza", title: "Entrena y progresa")
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Éter parte de tu historial").font(.headline)
-                Text("Las series se calculan con hasta cinco sesiones, tu recuperación muscular, disponibilidad y tiempo sin practicar el ejercicio. Todo sigue siendo editable.")
-                    .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
-            }.cardStyle()
+
+            recommendedStrengthSection(strengthForecasts, assessment: assessment, plan: plan)
 
             strengthProgressSection
 
@@ -238,13 +207,6 @@ struct StrengthTrainingView: View {
             // fuerza son análisis de fuerza y su sitio es esta pestaña.
             MuscleVolumeSection()
 
-            ForEach(routines) { routine in routineCard(routine, customized: routineStore.routine(named: routine.name) != nil) }
-
-            Button {
-                activeSheet = .dayProposal
-            } label: {
-                HStack { Image(systemName: "sparkles"); Text("Crear entrenamiento del día"); Spacer() }
-            }.buttonStyle(EterPrimaryButtonStyle())
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -257,7 +219,7 @@ struct StrengthTrainingView: View {
                     .environmentObject(imports)
                     .environmentObject(routineStore)
             case .dayProposal:
-                DayWorkoutProposalView(routines: routines)
+                DayWorkoutProposalView()
                     .environmentObject(imports)
                     .environmentObject(health)
                     .environmentObject(checkIns)
@@ -265,6 +227,245 @@ struct StrengthTrainingView: View {
         }
         .onAppear { selectDefaultProgressExercise() }
         .onChange(of: imports.workoutCount) { _, _ in selectDefaultProgressExercise() }
+    }
+
+    @ViewBuilder private func recommendedStrengthSection(
+        _ forecasts: [TrainingPlanEngine.DayForecast], assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            EterSectionHeader("Tu próxima sesión", eyebrow: "Recomendación de fuerza")
+            Text("Una opción principal y dos variantes válidas para el mismo momento. La secuencia futura se muestra aparte para no confundir dos días de pierna con dos alternativas iguales.")
+                .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+
+            if forecasts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Ahora no toca forzar una sesión", systemImage: "calendar.badge.clock")
+                        .font(.headline)
+                    Text("El plan de los próximos días prioriza otros estímulos o recuperación. Cuando vuelva a encajar fuerza, aparecerá aquí con ejercicios y volumen concretos.")
+                        .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+                    Button { activeSheet = .dayProposal } label: {
+                        Label("Consultar una opción para hoy", systemImage: "sparkles")
+                    }.buttonStyle(EterAccentButtonStyle())
+                }.cardStyle()
+            } else {
+                if let primary = forecasts.first {
+                    recommendedStrengthCard(primary, rank: 0, assessment: assessment)
+
+                    let variants = strengthVariants(for: primary, assessment: assessment, plan: plan)
+                    if !variants.isEmpty {
+                        Text("OTRAS FORMAS DE CUBRIRLA").font(.caption2.bold())
+                            .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+                        ForEach(Array(variants.enumerated()), id: \.element.id) { index, routine in
+                            strengthVariantCard(routine, index: index)
+                        }
+                    }
+
+                    if forecasts.count > 1 {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("SECUENCIA PREVISTA").font(.caption2.bold())
+                                .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(forecasts) { forecast in
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(forecast.date.formatted(.dateTime.weekday(.abbreviated).day()))
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                            Text(forecast.strengthPattern?.label ?? "Fuerza")
+                                                .font(.caption.bold())
+                                        }
+                                        .padding(.horizontal, 11).padding(.vertical, 8)
+                                        .background(EterTheme.raisedSurface)
+                                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                                    }
+                                }
+                            }
+                            Text("Es una previsión cronológica: puede repetir patrón si sigue existiendo déficit y hay recuperación suficiente. Se recalcula después de cada sesión.")
+                                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func recommendedStrengthCard(
+        _ forecast: TrainingPlanEngine.DayForecast, rank: Int, assessment: TwinAssessment
+    ) -> some View {
+        let routine = routine(from: forecast, assessment: assessment)
+        let totalSets = routine.exercises.reduce(0) { $0 + $1.sets.count }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MEJOR ENCAJE")
+                        .font(.caption2.bold()).tracking(EterTheme.eyebrowTracking)
+                        .foregroundStyle(rank == 0 ? EterTheme.positive : .secondary)
+                    Text(forecast.strengthTitle ?? routine.name).font(.title3.bold())
+                    Text(forecast.date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if forecast.isDeload {
+                    Text("DESCARGA").font(.caption2.bold()).foregroundStyle(EterTheme.warning)
+                }
+            }
+
+            Text(forecast.rationale).font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+
+            HStack(spacing: 14) {
+                Label("\(routine.exercises.count) ejercicios", systemImage: "list.number")
+                Label("\(totalSets) series", systemImage: "repeat")
+                if let duration = forecast.strengthDuration { Label(duration, systemImage: "clock") }
+            }.font(.caption2).foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(routine.exercises.prefix(4)) { exercise in
+                    HStack {
+                        Text(exercise.name).font(.caption.bold()).lineLimit(1)
+                        Spacer()
+                        let working = exercise.sets.last
+                        Text("\(exercise.sets.count) × \(working?.reps ?? 0)")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+                if routine.exercises.count > 4 {
+                    Text("+ \(routine.exercises.count - 4) ejercicios").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 9) {
+                Button { activeSheet = .editRoutine(routine) } label: {
+                    Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                        .background(Color.primary.opacity(0.09))
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }
+                .accessibilityLabel("Revisar y editar \(routine.name)")
+                Button { activeSheet = .liveWorkout(routine) } label: {
+                    HStack { Text("Comenzar").bold(); Spacer(); Image(systemName: "arrow.right") }
+                        .padding(.horizontal, 14).frame(height: 44)
+                        .background(rank == 0 ? EterTheme.accent : EterTheme.raisedSurface)
+                        .foregroundStyle(rank == 0 ? EterTheme.accentInk : .primary)
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }.disabled(routine.exercises.isEmpty)
+            }
+        }.cardStyle()
+    }
+
+    private func strengthVariants(
+        for primary: TrainingPlanEngine.DayForecast, assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> [StrengthRoutine] {
+        let primaryPattern = primary.strengthPattern ?? .push
+        let remaining = StrengthPattern.allCases.filter { $0 != primaryPattern }
+        let alternatePattern = remaining.max { left, right in
+            patternReadiness(left, muscles: assessment.muscles) < patternReadiness(right, muscles: assessment.muscles)
+        }
+
+        var result: [StrengthRoutine] = []
+        if let alternatePattern {
+            let alternate = proposedStrength(
+                pattern: alternatePattern, title: "\(alternatePattern.label) como alternativa",
+                rationale: "Cambia el patrón principal para conservar la sesión de \(primaryPattern.inline) para otro día. Es útil si hoy prefieres no cargar esa zona, aunque cubre peor el déficit que ha priorizado Éter.",
+                assessment: assessment, plan: plan
+            )
+            result.append(StrengthRoutineBuilder.applyingVolumeFactor(
+                StrengthRoutineBuilder.routine(from: alternate, imports: imports,
+                                               readiness: assessment.score, muscles: assessment.muscles),
+                factor: min(1, plan.volumeFactor)
+            ))
+        }
+
+        let proposals = StrengthPattern.allCases.map {
+            proposedStrength(pattern: $0, title: $0.label, rationale: "",
+                             assessment: assessment, plan: plan)
+        }
+        let fullBodyExercises = proposals.flatMap { proposal in
+            let count = proposal.strengthPattern == primaryPattern ? 2 : 1
+            return Array(proposal.exercises.prefix(count))
+        }
+        if !fullBodyExercises.isEmpty {
+            let fullBody = ProposedWorkout(
+                title: "Full body ajustado", duration: "45–55 min",
+                intent: "Repartir el estímulo sin concentrar toda la fatiga en un único patrón.",
+                exercises: fullBodyExercises,
+                note: "Toca los tres patrones con menos volumen por zona. Da más cobertura global, pero progresa menos el déficit prioritario que la opción principal.",
+                kind: .strength, strengthPattern: nil
+            )
+            result.append(StrengthRoutineBuilder.applyingVolumeFactor(
+                StrengthRoutineBuilder.routine(from: fullBody, imports: imports,
+                                               readiness: assessment.score, muscles: assessment.muscles),
+                factor: min(0.75, plan.volumeFactor)
+            ))
+        }
+        return result
+    }
+
+    private func proposedStrength(
+        pattern: StrengthPattern, title: String, rationale: String,
+        assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> ProposedWorkout {
+        let workout = WorkoutPlanner.session(
+            for: .strength, pattern: pattern, upperBodyOnlyToday: false,
+            block: plan.block, isDeload: plan.isDeload,
+            readiness: assessment.score, rationale: rationale,
+            muscles: assessment.muscles, health: health, imports: imports,
+            context: context
+        )
+        return ProposedWorkout(
+            title: title, duration: workout.duration, intent: workout.intent,
+            exercises: workout.exercises, note: rationale,
+            kind: .strength, strengthPattern: pattern
+        )
+    }
+
+    private func patternReadiness(_ pattern: StrengthPattern, muscles: [MuscleReadiness]) -> Double {
+        let values = pattern.muscles.compactMap { name in muscles.first { $0.name == name }?.readiness }
+        return values.isEmpty ? 0 : Double(values.reduce(0, +)) / Double(values.count)
+    }
+
+    private func strengthVariantCard(_ routine: StrengthRoutine, index: Int) -> some View {
+        let totalSets = routine.exercises.reduce(0) { $0 + $1.sets.count }
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(routine.name).font(.headline)
+                    Text(index == 0 ? "Otro patrón" : "Más cobertura · menos volumen por zona")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(totalSets) series").font(.caption.bold()).monospacedDigit()
+            }
+            Text(routine.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            HStack(spacing: 9) {
+                Button { activeSheet = .editRoutine(routine) } label: {
+                    Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                        .background(Color.primary.opacity(0.09))
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }
+                Button { activeSheet = .liveWorkout(routine) } label: {
+                    HStack { Text("Elegir esta opción").bold(); Spacer(); Image(systemName: "arrow.right") }
+                        .padding(.horizontal, 14).frame(height: 44)
+                        .background(EterTheme.raisedSurface).foregroundStyle(.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }.disabled(routine.exercises.isEmpty)
+            }
+        }.cardStyle()
+    }
+
+    private func routine(
+        from forecast: TrainingPlanEngine.DayForecast, assessment: TwinAssessment
+    ) -> StrengthRoutine {
+        let proposed = ProposedWorkout(
+            title: forecast.strengthTitle ?? "Fuerza recomendada",
+            duration: forecast.strengthDuration ?? "",
+            intent: forecast.prescription,
+            exercises: forecast.strengthExercises,
+            note: forecast.rationale,
+            kind: .strength,
+            strengthPattern: nil
+        )
+        return StrengthRoutineBuilder.routine(
+            from: proposed, imports: imports,
+            readiness: assessment.score, muscles: assessment.muscles
+        )
     }
 
     @ViewBuilder private var strengthProgressSection: some View {
@@ -291,8 +492,9 @@ struct StrengthTrainingView: View {
 
             strengthCoverageCard
 
-            if let progress = selectedProgress(in: summary) {
-                exerciseProgressCard(progress, choices: summary.exercises)
+            let goalChoices = goalExerciseChoices(in: summary)
+            if let progress = selectedProgress(in: goalChoices) {
+                exerciseProgressCard(progress, choices: goalChoices)
             }
         }
     }
@@ -410,12 +612,26 @@ struct StrengthTrainingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func selectedProgress(in summary: StrengthProgressSummary) -> ExerciseStrengthProgress? {
-        summary.exercises.first { $0.name == selectedProgressExercise } ?? summary.exercises.first
+    private func selectedProgress(in choices: [ExerciseStrengthProgress]) -> ExerciseStrengthProgress? {
+        choices.first { $0.name == selectedProgressExercise } ?? choices.first
+    }
+
+    private func goalExerciseChoices(in summary: StrengthProgressSummary) -> [ExerciseStrengthProgress] {
+        let kinds = Set(goals.activeGoals.filter { $0.kind.isStrength }.map(\.kind))
+        return summary.exercises.filter { progress in
+            let name = progress.name.lowercased()
+            if kinds.contains(.benchPress),
+               name.contains("bench press (barbell)") || name.contains("press banca") { return true }
+            if kinds.contains(.squat),
+               name.contains("squat (barbell)") || name.contains("sentadilla") { return true }
+            if kinds.contains(.deadlift),
+               name.contains("deadlift (barbell)") || name.contains("peso muerto") { return true }
+            return false
+        }
     }
 
     private func selectDefaultProgressExercise() {
-        let exercises = StrengthProgressEngine.summarize(imports.workouts).exercises
+        let exercises = goalExerciseChoices(in: StrengthProgressEngine.summarize(imports.workouts))
         if !exercises.contains(where: { $0.name == selectedProgressExercise }) { selectedProgressExercise = exercises.first?.name ?? "" }
     }
 
@@ -424,45 +640,6 @@ struct StrengthTrainingView: View {
         return change >= 2 ? EterTheme.positive : change <= -4 ? EterTheme.negative : .blue
     }
 
-    private func routineCard(_ routine: StrengthRoutine, customized: Bool) -> some View {
-        let safeRoutine = InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active)
-        let removed = routine.exercises.count - safeRoutine.exercises.count
-        return VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(routine.name).font(.title3.bold())
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    if customized { Text("PERSONALIZADA").font(.caption2.bold()).foregroundStyle(EterTheme.positive) }
-                    if let date = routine.lastPerformed { Text(date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary) }
-                }
-            }
-            Text(routine.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(3).lineSpacing(3)
-            if removed > 0 {
-                Label("\(removed) ejercicio\(removed == 1 ? "" : "s") bloqueado\(removed == 1 ? "" : "s") por una restricción activa", systemImage: "exclamationmark.shield.fill")
-                    .font(.caption.bold()).foregroundStyle(EterTheme.warning)
-            }
-            HStack {
-                Label("\(safeRoutine.exercises.count) ejercicios compatibles", systemImage: "list.number")
-                if routine.historicalVolume > 0 { Label("\(Int(routine.historicalVolume.rounded())) kg", systemImage: "scalemass") }
-            }.font(.caption2).foregroundStyle(.secondary)
-            if let note = routine.exercises.first?.prescriptionNote {
-                Label("Prescripción: \(note)", systemImage: "waveform.path.ecg")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            }
-            HStack(spacing: 9) {
-                Button { activeSheet = .editRoutine(routine) } label: {
-                    Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
-                        .background(Color.primary.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
-                }
-                Button { activeSheet = .liveWorkout(safeRoutine) } label: {
-                    HStack { Text("Comenzar rutina").bold(); Spacer(); Image(systemName: "arrow.right") }
-                        .padding(.horizontal, 14).frame(height: 44)
-                        .background(EterTheme.accent).foregroundStyle(EterTheme.accentInk)
-                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
-                }.disabled(safeRoutine.exercises.isEmpty)
-            }
-        }.cardStyle()
-    }
 }
 
 struct DayWorkoutProposalView: View {
@@ -472,7 +649,6 @@ struct DayWorkoutProposalView: View {
     @EnvironmentObject private var goals: GoalStore
     @EnvironmentObject private var travel: TravelEpisodeStore
     @Environment(\.dismiss) private var dismiss
-    let routines: [StrengthRoutine]
     @State private var activeRoutine: StrengthRoutine?
 
     private var context: TwinContext {

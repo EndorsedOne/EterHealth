@@ -6,6 +6,7 @@ struct RunningPerformanceView: View {
     @EnvironmentObject private var workoutReviews: WorkoutReviewStore
     @EnvironmentObject private var goals: GoalStore
     @EnvironmentObject private var imports: ImportStore
+    @EnvironmentObject private var workoutEnrichments: WorkoutEnrichmentStore
 
     let running: RunningPerformanceSummary
     let plan: WeeklyPlanStatus
@@ -214,7 +215,8 @@ struct RunningPerformanceView: View {
                     running: running, workouts: imports.workouts,
                     division: goal.hyroxDivision ?? .open,
                     vo2Max: health.vo2MaxHistory.last?.value,
-                    bodyFatPercentage: health.bodyFatHistory.last?.value
+                    bodyFatPercentage: health.bodyFatHistory.last?.value,
+                    workoutEnrichments: workoutEnrichments.enrichments
                 ),
                 measuredAt: [health.lastUpdated, imports.workouts.first?.start].compactMap { $0 }.max(),
                 bare: true

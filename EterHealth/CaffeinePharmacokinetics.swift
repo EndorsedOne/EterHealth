@@ -30,4 +30,25 @@ enum CaffeinePharmacokinetics {
         let raw = bedtimeHour - intakeHour
         return raw >= 0 ? raw : raw + 24
     }
+
+    nonisolated static func typicalBedtimeHour(_ schedule: [NightlySleepSchedule]) -> Double {
+        let values = schedule.map { item -> Double in
+            let components = Calendar.current.dateComponents([.hour, .minute], from: item.bedtime)
+            let raw = Double(components.hour ?? 23) + Double(components.minute ?? 0) / 60
+            return raw < 12 ? raw + 24 : raw
+        }.sorted()
+        guard !values.isEmpty else { return 23 }
+        let middle = values.count / 2
+        let median = values.count.isMultiple(of: 2) ? (values[middle - 1] + values[middle]) / 2 : values[middle]
+        return median.truncatingRemainder(dividingBy: 24)
+    }
+
+    nonisolated static func estimatedRemainingAtBedtime(
+        doseMg: Double, consumed: Date, schedule: [NightlySleepSchedule]
+    ) -> Double {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: consumed)
+        let intakeHour = Double(components.hour ?? 0) + Double(components.minute ?? 0) / 60
+        let elapsed = hoursUntilBedtime(intakeHour: intakeHour, bedtimeHour: typicalBedtimeHour(schedule))
+        return doseMg * residualFraction(hoursElapsed: elapsed)
+    }
 }

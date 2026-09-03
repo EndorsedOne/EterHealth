@@ -116,6 +116,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     func updateTwinSummary(readiness: Int, state: String, recommendation: String, reason: String,
                            activity: String, confidence: Int, maximumHeartRate: Int?,
                            hrv: Int, restingHeartRate: Int, sleepHours: Double,
+                           energy: Int, energyCurve: [Double], currentHour: Double,
+                           caffeineCurve: [Double], caffeineNowMg: Double, caffeineBedtimeMg: Double,
                            updatedAt: Date = Date()) {
         let payload: [String: Any] = [
             "payloadType": "twinSummary",
@@ -128,6 +130,12 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             "hrv": hrv,
             "restingHeartRate": restingHeartRate,
             "sleepHours": sleepHours,
+            "energy": energy,
+            "energyCurve": energyCurve,
+            "currentHour": currentHour,
+            "caffeineCurve": caffeineCurve,
+            "caffeineNowMg": caffeineNowMg,
+            "caffeineBedtimeMg": caffeineBedtimeMg,
             "summaryUpdatedAt": updatedAt.timeIntervalSince1970
         ]
         var completedPayload = payload

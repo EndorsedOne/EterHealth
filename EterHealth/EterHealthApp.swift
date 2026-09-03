@@ -17,6 +17,7 @@ struct EterHealthApp: App {
     // PR14: sin .shared — el brief prohíbe singletons nuevos y el patrón
     // correcto es este (mismo que health/imports/checkIns).
     @StateObject private var travel = TravelEpisodeStore()
+    @StateObject private var workoutEnrichments = WorkoutEnrichmentStore()
 
     var body: some Scene {
         WindowGroup {
@@ -34,6 +35,7 @@ struct EterHealthApp: App {
                 .environmentObject(twinStates)
                 .environmentObject(temperatureDeviations)
                 .environmentObject(travel)
+                .environmentObject(workoutEnrichments)
                 .task {
                     // HealthKit puede despertar el proceso sin que el usuario
                     // abra la ventana. El widget se reescribe desde el store,

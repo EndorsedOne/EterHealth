@@ -17,6 +17,8 @@ struct TodayTrendsCardView: View {
         }
     }
 
+    private var caffeinePeak: Double { max(1, result.caffeine.points.map(\.remainingMg).max() ?? 1) }
+
     private let energyGradient = LinearGradient(
         colors: [Color(red: 0.90, green: 0.55, blue: 0.30), Color(red: 0.50, green: 0.78, blue: 0.39)],
         startPoint: .bottom, endPoint: .top
@@ -28,10 +30,50 @@ struct TodayTrendsCardView: View {
             physiologicalContext
             chart.frame(height: 210)
             legend
+            if result.caffeine.currentMg >= 1 || result.caffeine.bedtimeMg >= 1 {
+                caffeineRail
+            }
             Text("Curva de energía estimada (0–100). Los iconos sitúan eventos registrados que aportan contexto; no demuestran por sí solos causalidad. \(result.basis).")
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }
         .cardStyle()
+    }
+
+    private var caffeineRail: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "cup.and.saucer.fill").foregroundStyle(.brown)
+                Text("Cafeína en el sistema").font(.caption.bold())
+                Spacer()
+                Text("~\(Int(result.caffeine.currentMg.rounded())) mg ahora")
+                    .font(.caption.bold()).fontDesign(.rounded)
+            }
+            HStack(alignment: .bottom, spacing: 2) {
+                ForEach(Array(result.caffeine.points.enumerated()), id: \.offset) { _, point in
+                    Capsule()
+                        .fill(Color.brown.opacity(point.hour <= result.currentHour ? 0.82 : 0.34))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: max(2, 24 * point.remainingMg / caffeinePeak))
+                }
+            }
+            .frame(height: 24, alignment: .bottom)
+            HStack {
+                Text("00")
+                Spacer(); Text("06")
+                Spacer(); Text("12")
+                Spacer(); Text("18")
+                Spacer(); Text("24")
+            }
+            .font(.system(size: 9)).foregroundStyle(.secondary)
+            HStack {
+                Text("Descenso estimado · vida media general ~5 h")
+                Spacer()
+                Text("Al dormir (\(formattedHour(result.caffeine.bedtimeHour))) ~\(Int(result.caffeine.bedtimeMg.rounded())) mg")
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 9).padding(.horizontal, 10)
+        .background(Color.brown.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var header: some View {
@@ -166,6 +208,11 @@ struct TodayTrendsCardView: View {
         }.font(.caption2).frame(maxWidth: .infinity)
     }
 
+    private func formattedHour(_ hour: Double) -> String {
+        let totalMinutes = (Int((hour * 12).rounded()) * 5) % (24 * 60)
+        return String(format: "%02d:%02d", totalMinutes / 60, totalMinutes % 60)
+    }
+
     private var energyColor: Color {
         result.energy >= 65 ? Color(red: 0.50, green: 0.78, blue: 0.39) : result.energy >= 35 ? .yellow : .orange
     }
@@ -192,6 +239,9 @@ struct TodayTrendsCardView: View {
         if let value = result.restingHeartRate.value { parts.append("Pulso en reposo \(Int(value.rounded())) pulsaciones por minuto. \(comparison(result.restingHeartRate, percent: false)).") }
         if !result.inputMarkers.isEmpty {
             parts.append("Inputs: " + result.inputMarkers.map(\.label).joined(separator: ", ") + ".")
+        }
+        if result.caffeine.currentMg >= 1 {
+            parts.append("Cafeína estimada restante ahora \(Int(result.caffeine.currentMg.rounded())) miligramos y \(Int(result.caffeine.bedtimeMg.rounded())) miligramos a la hora habitual de dormir.")
         }
         return parts.joined(separator: " ")
     }

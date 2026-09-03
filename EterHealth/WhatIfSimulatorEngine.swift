@@ -160,14 +160,14 @@ enum WhatIfSimulatorEngine {
         return WhatIfFactorImpact(kind: .alcohol, label: "Alcohol", readinessImpact: impact, isLearned: isLearned, confidence: confidence, detail: detail)
     }
 
-    // Residual caffeine at bedtime, not a binary "was it after 14:00" —
-    // scales the learned/generic lateCaffeine effect by the REAL fraction
-    // of the dose still active at this person's own typical bedtime
-    // (CaffeinePharmacokinetics, textbook ~5h half-life).
+    // Residual caffeine at bedtime, never a binary clock-time cutoff. Learned
+    // effects are scaled against the mean bedtime exposure that produced the
+    // personal association, so 10 mg and 60 mg are not treated alike.
     static func caffeineImpact(mg: Int, hour: Int, schedule: [NightlySleepSchedule], association: HabitAssociation?) -> WhatIfFactorImpact {
         let typicalBedtimeHour = medianBedtimeHour(schedule) ?? 23.0
         let hoursUntilBed = CaffeinePharmacokinetics.hoursUntilBedtime(intakeHour: Double(hour), bedtimeHour: typicalBedtimeHour)
         let residual = CaffeinePharmacokinetics.residualFraction(hoursElapsed: hoursUntilBed)
+        let residualMg = Double(mg) * residual
         let referenceDoseMg = 80.0 // one espresso-ish reference, matches a typical single-shot serving
         let doseFactor = min(2.5, Double(mg) / referenceDoseMg)
         let referenceGenericImpact = -4.0 // same order of magnitude as this app's other same-day cautions (poorHydration -2, alcohol -6 for 2 drinks)
@@ -181,15 +181,21 @@ enum WhatIfSimulatorEngine {
         let detail: String
         if let association, hasConfidentLearning {
             let learned = HabitAssociationEngine.readinessImpact(association)
-            impact = Int((Double(learned) * doseFactor * residual).rounded())
+            let learnedReference = max(1, association.averageExposureLevel ?? referenceDoseMg)
+            let exposureRatio = min(2.5, residualMg / learnedReference)
+            impact = Int((Double(learned) * exposureRatio).rounded())
             isLearned = true
             confidence = association.confidence.level
-            detail = "Tu propio efecto aprendido de cafeína tardía, ajustado a que a tu hora habitual de dormir (~\(bedtimeText)) quedaría ~\(Int((residual * 100).rounded()))% de esta dosis activa (vida media ~5 h)."
+            let metricProjection = association.effects.prefix(3).map { effect in
+                let projected = effect.changePercent * exposureRatio
+                return "\(effect.name) \(projected >= 0 ? "+" : "")\(Int(projected.rounded()))%"
+            }.joined(separator: " · ")
+            detail = "A tu hora habitual de dormir (~\(bedtimeText)) quedarían ~\(Int(residualMg.rounded())) mg. Tu patrón personal para esta exposición estima: \(metricProjection). Asociación, no medición clínica."
         } else {
             impact = genericImpact
             isLearned = false
             confidence = .low
-            detail = "Sin suficiente historial personal todavía — a tu hora habitual de dormir (~\(bedtimeText)) quedaría ~\(Int((residual * 100).rounded()))% de esta dosis activa (vida media de la cafeína ~5 h, cifra general, no medida en ti)."
+            detail = "Sin suficiente historial personal todavía — a tu hora habitual de dormir (~\(bedtimeText)) quedarían ~\(Int(residualMg.rounded())) mg (vida media general ~5 h, no medida en ti). Éter lo observará como contexto, sin atribuir porcentajes personales aún."
         }
         return WhatIfFactorImpact(kind: .lateCaffeine, label: "Cafeína", readinessImpact: impact, isLearned: isLearned, confidence: confidence, detail: detail)
     }

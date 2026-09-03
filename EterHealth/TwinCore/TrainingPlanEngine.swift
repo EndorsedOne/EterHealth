@@ -1284,6 +1284,7 @@ enum TrainingPlanEngine {
         var weeklyImpact: String? = nil
         var strengthTitle: String? = nil
         var strengthDuration: String? = nil
+        var strengthPattern: StrengthPattern? = nil
         var strengthExercises: [ProposedExercise] = []
         var strengthVolumeTargets: [StrengthVolumeTarget] = []
     }
@@ -1572,6 +1573,7 @@ enum TrainingPlanEngine {
                                    weeklyImpact: override == nil ? weeklyImpactSummary(real.completedSessionsToday) : nil,
                                    strengthTitle: todayStrength?.title,
                                    strengthDuration: todayStrength?.duration,
+                                   strengthPattern: todayPattern,
                                    strengthExercises: displayedStrengthExercises(
                                     workout: todayStrength, goals: profile.goals,
                                     volumeFactor: real.volumeFactor, isLight: todayStrengthIsLight),
@@ -1972,6 +1974,7 @@ enum TrainingPlanEngine {
                                                                   pattern: forecastPattern),
                                        strengthTitle: strengthWorkout?.title,
                                        strengthDuration: strengthWorkout?.duration,
+                                       strengthPattern: forecastPattern,
                                        strengthExercises: displayedStrengthExercises(
                                         workout: strengthWorkout, goals: profile.goals,
                                         volumeFactor: forecastStrengthFactor, isLight: forecastStrengthIsLight),

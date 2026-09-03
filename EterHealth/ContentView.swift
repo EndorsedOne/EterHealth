@@ -45,6 +45,13 @@ private enum ContentSheet: Identifiable {
 // is unified into one dialog that shows whichever is set.
 private enum ConfirmationKind { case restoreBackup, deleteWorkout, deleteImportedWorkout }
 
+private enum PerformanceSignal: String, CaseIterable, Identifiable {
+    case hrv = "HRV"
+    case restingHeartRate = "Reposo"
+    case heartRateRecovery = "Recuperación"
+    var id: String { rawValue }
+}
+
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var health: HealthStore
@@ -59,6 +66,7 @@ struct ContentView: View {
     @EnvironmentObject private var travel: TravelEpisodeStore
     @EnvironmentObject private var watchMetrics: WatchMetricsStore
     @EnvironmentObject private var twinStates: TwinStateStore
+    @EnvironmentObject private var workoutEnrichments: WorkoutEnrichmentStore
     @State private var activeImporter: ContentImporter?
     // Set together with activeImporter at the moment each button is tapped,
     // and read inside .fileImporter's onCompletion below. Deliberately NOT
@@ -85,6 +93,7 @@ struct ContentView: View {
     @State private var todayStrengthRoutine: StrengthRoutine?
     @State private var automaticBackupRevision = 0
     @State private var dashboardRefreshTask: Task<Void, Never>?
+    @State private var selectedPerformanceSignal: PerformanceSignal = .hrv
     @StateObject private var dashboard = DashboardViewModel()
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
@@ -214,6 +223,7 @@ struct ContentView: View {
                     .environmentObject(planHistory)
             case .workoutDetail(let session):
                 WorkoutDetailView(session: session).environmentObject(health).environmentObject(imports)
+                    .environmentObject(workoutEnrichments)
             case .goalEditor:
                 GoalEditorView(profile: goals.profile).environmentObject(goals)
             case .injuryHistory:
@@ -755,7 +765,8 @@ struct ContentView: View {
     private func exportBackup() {
         let backup = EterBackupManager.make(imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                              workoutReviews: workoutReviews, planHistory: planHistory,
-                                             strengthRoutines: strengthRoutines, health: health, travel: travel)
+                                             strengthRoutines: strengthRoutines, health: health, travel: travel,
+                                             workoutEnrichments: workoutEnrichments)
         backupDocument = EterBackupDocument(backup: backup)
         showBackupExporter = true
     }
@@ -775,7 +786,8 @@ struct ContentView: View {
         pendingBackup = nil
         EterBackupManager.restore(backup, imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                   workoutReviews: workoutReviews, planHistory: planHistory,
-                                  strengthRoutines: strengthRoutines, travel: travel)
+                                  strengthRoutines: strengthRoutines, travel: travel,
+                                  workoutEnrichments: workoutEnrichments)
         backupMessage = "Restauración terminada. Se han procesado \(backup.totalRecords) registros."
     }
 
@@ -786,7 +798,8 @@ struct ContentView: View {
             try EterBackupManager.writeAutomaticBackupIfNeeded(
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
-                strengthRoutines: strengthRoutines, health: health, travel: travel, force: true
+                strengthRoutines: strengthRoutines, health: health, travel: travel,
+                workoutEnrichments: workoutEnrichments, force: true
             )
             automaticBackupRevision += 1
             backupMessage = "Copia automática activada en \(folder.lastPathComponent)."
@@ -800,7 +813,8 @@ struct ContentView: View {
             let written = try EterBackupManager.writeAutomaticBackupIfNeeded(
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
-                strengthRoutines: strengthRoutines, health: health, travel: travel, force: force
+                strengthRoutines: strengthRoutines, health: health, travel: travel,
+                workoutEnrichments: workoutEnrichments, force: force
             )
             if written { automaticBackupRevision += 1 }
         } catch {
@@ -833,11 +847,38 @@ struct ContentView: View {
             TrainingScenarioCardView()
             intensityFocusCard(summary)
             activityCalendar(summary)
-            baselineCard("HRV personal", unit: "ms", points: health.hrvHistory, favorableHigh: true, color: .purple)
-            baselineCard("Pulso en reposo personal", unit: "ppm", points: health.restingHeartRateHistory, favorableHigh: false, color: .red)
+            physiologicalPerformanceCard
             capacityCard
-            heartRateRecoveryCard
         }
+    }
+
+    private var physiologicalPerformanceCard: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Señales fisiológicas").font(.headline)
+                    Text("Selecciona una señal; solo se dibuja una gráfica cada vez.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            Picker("Señal fisiológica", selection: $selectedPerformanceSignal) {
+                ForEach(PerformanceSignal.allCases) { signal in Text(signal.rawValue).tag(signal) }
+            }.pickerStyle(.segmented)
+
+            Group {
+                switch selectedPerformanceSignal {
+                case .hrv:
+                    baselineCard("HRV personal", unit: "ms", points: health.hrvHistory,
+                                 favorableHigh: true, color: .purple, appliesCardStyle: false)
+                case .restingHeartRate:
+                    baselineCard("Pulso en reposo personal", unit: "ppm", points: health.restingHeartRateHistory,
+                                 favorableHigh: false, color: .red, appliesCardStyle: false)
+                case .heartRateRecovery:
+                    heartRateRecoveryCardContent
+                }
+            }
+        }.cardStyle()
     }
 
     private var trainingBalanceCard: some View {
@@ -1049,12 +1090,13 @@ struct ContentView: View {
         }.cardStyle()
     }
 
-    private func baselineCard(_ title: String, unit: String, points: [TrendPoint], favorableHigh: Bool, color: Color) -> some View {
+    private func baselineCard(_ title: String, unit: String, points: [TrendPoint], favorableHigh: Bool,
+                              color: Color, appliesCardStyle: Bool = true) -> some View {
         let recent = Array(points.suffix(42))
         let baselineValues = Array(recent.dropLast().suffix(28)).map(\.value)
         let mean = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
         let deviation = mean.map { average in sqrt(baselineValues.reduce(0) { $0 + pow($1 - average, 2) } / Double(max(1, baselineValues.count))) }
-        return VStack(alignment: .leading, spacing: 11) {
+        let content = VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading) { Text(title).font(.headline); Text("Tu banda habitual de 28 días").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
@@ -1098,7 +1140,11 @@ struct ContentView: View {
                     }
                 }
             }
-        }.cardStyle()
+        }
+        return Group {
+            if appliesCardStyle { content.cardStyle() }
+            else { content }
+        }
     }
 
     private var capacityCard: some View {
@@ -1116,7 +1162,7 @@ struct ContentView: View {
         }.cardStyle()
     }
 
-    private var heartRateRecoveryCard: some View {
+    private var heartRateRecoveryCardContent: some View {
         let points = health.heartRateRecoveryHistory
         return VStack(alignment: .leading, spacing: 9) {
             HStack {
@@ -1138,7 +1184,7 @@ struct ContentView: View {
                 Text("Caída del pulso entre el final de la sesión y aproximadamente 60 segundos después. Compara sobre todo sesiones de naturaleza similar.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-        }.cardStyle()
+        }
     }
 
     private func capacityMetric(_ title: String, _ value: Double?, _ unit: String) -> some View {
@@ -1437,6 +1483,11 @@ struct ContentView: View {
             return
         }
         let assessment = currentAssessment
+        let energyTimeline = EnergyTimelineEngine.build(
+            assessment: assessment, health: health, imports: imports,
+            checkIn: checkIns.entry(), lifestyle: lifestyle.recent(before: Date(), hours: 30),
+            travel: travel.episodeForEvaluation()
+        )
         // Driven by the plan's own structured PlannedSessionKind, not by
         // re-parsing the rendered Spanish recommendation text — see
         // TrainingPlanEngine.watchActivity's own comment for the two real
@@ -1451,7 +1502,13 @@ struct ContentView: View {
                                        maximumHeartRate: goals.profile.maximumHeartRate,
                                        hrv: health.snapshot.hrv,
                                        restingHeartRate: health.snapshot.restingHeartRate,
-                                       sleepHours: health.snapshot.sleepHours)
+                                       sleepHours: health.snapshot.sleepHours,
+                                       energy: energyTimeline.energy,
+                                       energyCurve: energyTimeline.curve,
+                                       currentHour: energyTimeline.currentHour,
+                                       caffeineCurve: energyTimeline.caffeine.points.map(\.remainingMg),
+                                       caffeineNowMg: energyTimeline.caffeine.currentMg,
+                                       caffeineBedtimeMg: energyTimeline.caffeine.bedtimeMg)
         WidgetSnapshotStore.update(
             assessment: assessment, health: health, imports: imports,
             checkIn: checkIns.entry(), lifestyle: lifestyle,

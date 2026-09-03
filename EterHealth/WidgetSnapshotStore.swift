@@ -47,6 +47,11 @@ struct EterWidgetSnapshot: Codable, Sendable {
     var inputMarkers: [EterWidgetInputMarker]?
     var hrvBaseline: Double?
     var restingHeartRateBaseline: Double?
+    // Optional to keep snapshots written by older app versions decodable.
+    var caffeineCurve: [EterWidgetCaffeinePoint]?
+    var caffeineNowMg: Double?
+    var caffeineBedtimeMg: Double?
+    var caffeineBedtimeHour: Double?
 }
 
 struct EterWidgetEnergyEvent: Codable, Sendable {
@@ -67,6 +72,11 @@ struct EterWidgetInputMarker: Codable, Sendable {
     /// "sauna" | "cold" | "coffee" | "alcohol" | "supplement" — decide el tinte.
     let kind: String
     let label: String
+}
+
+struct EterWidgetCaffeinePoint: Codable, Sendable {
+    let hour: Double
+    let remainingMg: Double
 }
 
 @MainActor
@@ -100,6 +110,10 @@ enum WidgetSnapshotStore {
         let inputMarkers = EnergyTimelineEngine.inputMarkers(
             from: lifestyleWindow, checkIn: checkIn, travel: travel,
             sleepHours: health.snapshot.sleepHours, sleepEndHour: sleepEnd, now: now
+        )
+        let caffeine = EnergyTimelineEngine.caffeineTimeline(
+            lifestyle: lifestyleWindow, sleepSchedule: health.sleepScheduleHistory,
+            now: now, currentHour: currentHour
         )
         let confidence = ConfidenceEngine.energy(
             baselineConfidence: baseline.confidence,
@@ -143,7 +157,9 @@ enum WidgetSnapshotStore {
             strengthShare: Int((Double(strengthSessions) / Double(sessionTotal) * 100).rounded()),
             hrvPoints: nil, inputMarkers: inputMarkers,
             hrvBaseline: baseline.hrv.expected,
-            restingHeartRateBaseline: baseline.restingHeartRate.expected
+            restingHeartRateBaseline: baseline.restingHeartRate.expected,
+            caffeineCurve: caffeine.points, caffeineNowMg: caffeine.currentMg,
+            caffeineBedtimeMg: caffeine.bedtimeMg, caffeineBedtimeHour: caffeine.bedtimeHour
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults(suiteName: suiteName)?.set(data, forKey: key)

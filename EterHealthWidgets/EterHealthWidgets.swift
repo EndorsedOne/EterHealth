@@ -46,6 +46,10 @@ private struct Snapshot: Codable {
     var inputMarkers: [InputMarker]?
     var hrvBaseline: Double?
     var restingHeartRateBaseline: Double?
+    var caffeineCurve: [CaffeinePoint]?
+    var caffeineNowMg: Double?
+    var caffeineBedtimeMg: Double?
+    var caffeineBedtimeHour: Double?
 
     static let sample = Snapshot(
         updatedAt: .now, readiness: 70, state: "Disponible", recommendation: "Recuperación",
@@ -68,7 +72,9 @@ private struct Snapshot: Codable {
         hrvPoints: [HRVPoint(hour: 6.5, value: 61), HRVPoint(hour: 7.2, value: 55), HRVPoint(hour: 9.1, value: 49)],
         inputMarkers: [InputMarker(hour: 7.0, symbol: "cup.and.saucer.fill", kind: "coffee", label: "Cafeína 95 mg"),
                        InputMarker(hour: 8.0, symbol: "snowflake", kind: "cold", label: "Frío 3 min")],
-        hrvBaseline: 49, restingHeartRateBaseline: 59
+        hrvBaseline: 49, restingHeartRateBaseline: 59,
+        caffeineCurve: [CaffeinePoint(hour: 7, remainingMg: 95), CaffeinePoint(hour: 12, remainingMg: 47.5), CaffeinePoint(hour: 23, remainingMg: 10)],
+        caffeineNowMg: 47.5, caffeineBedtimeMg: 10, caffeineBedtimeHour: 23
     )
 }
 
@@ -89,6 +95,11 @@ private struct InputMarker: Codable {
     let symbol: String
     let kind: String
     let label: String
+}
+
+private struct CaffeinePoint: Codable {
+    let hour: Double
+    let remainingMg: Double
 }
 
 private struct Entry: TimelineEntry { let date: Date; let snapshot: Snapshot }
@@ -179,6 +190,19 @@ private struct EnergyView: View {
                 contextMetric("Reposo", value: entry.snapshot.restingHeartRate,
                               baseline: entry.snapshot.restingHeartRateBaseline, percent: false, unit: "ppm")
             }
+            if let now = entry.snapshot.caffeineNowMg, now >= 1 {
+                HStack(spacing: 4) {
+                    Image(systemName: "cup.and.saucer.fill").foregroundStyle(.brown)
+                    Text("~\(Int(now.rounded())) mg ahora")
+                    CaffeineBars(points: entry.snapshot.caffeineCurve ?? [], currentHour: entry.snapshot.currentHour)
+                        .frame(height: 9)
+                    Spacer()
+                    if let night = entry.snapshot.caffeineBedtimeMg,
+                       let hour = entry.snapshot.caffeineBedtimeHour {
+                        Text("\(formattedHour(hour)) · ~\(Int(night.rounded())) mg")
+                    }
+                }.font(.system(size: 7, weight: .semibold)).foregroundStyle(.secondary)
+            }
             Text("\(label) · \(entry.snapshot.energyBasis)")
                 .font(.system(size: 7)).foregroundStyle(.secondary).lineLimit(1)
         }.containerBackground(eterBackground, for: .widget).foregroundStyle(.white)
@@ -202,6 +226,10 @@ private struct EnergyView: View {
         let comparison = delta.map { "\($0 > 0 ? "+" : "")\($0)\(percent ? "%" : "")" } ?? "sin base"
         return Text("\(name) \(value) \(unit) · \(comparison)")
             .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+    }
+    private func formattedHour(_ hour: Double) -> String {
+        let minutes = (Int((hour * 12).rounded()) * 5) % (24 * 60)
+        return String(format: "%02d:%02d", minutes / 60, minutes % 60)
     }
 }
 
@@ -315,6 +343,22 @@ private struct TimelineArea: Shape {
         result.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         result.closeSubpath()
         return result
+    }
+}
+
+private struct CaffeineBars: View {
+    let points: [CaffeinePoint]
+    let currentHour: Double
+    var body: some View {
+        let peak = max(1, points.map(\.remainingMg).max() ?? 1)
+        HStack(alignment: .bottom, spacing: 0.7) {
+            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                Capsule()
+                    .fill(Color.brown.opacity(point.hour <= currentHour ? 0.9 : 0.4))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(1, 9 * point.remainingMg / peak))
+            }
+        }
     }
 }
 
