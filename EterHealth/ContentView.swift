@@ -45,6 +45,13 @@ private enum ContentSheet: Identifiable {
 // is unified into one dialog that shows whichever is set.
 private enum ConfirmationKind { case restoreBackup, deleteWorkout, deleteImportedWorkout }
 
+private enum PerformanceSignal: String, CaseIterable, Identifiable {
+    case hrv = "HRV"
+    case restingHeartRate = "Reposo"
+    case heartRateRecovery = "Recuperación"
+    var id: String { rawValue }
+}
+
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var health: HealthStore
@@ -59,6 +66,7 @@ struct ContentView: View {
     @EnvironmentObject private var travel: TravelEpisodeStore
     @EnvironmentObject private var watchMetrics: WatchMetricsStore
     @EnvironmentObject private var twinStates: TwinStateStore
+    @EnvironmentObject private var workoutEnrichments: WorkoutEnrichmentStore
     @State private var activeImporter: ContentImporter?
     // Set together with activeImporter at the moment each button is tapped,
     // and read inside .fileImporter's onCompletion below. Deliberately NOT
@@ -84,6 +92,8 @@ struct ContentView: View {
     @State private var backupMessage: String?
     @State private var todayStrengthRoutine: StrengthRoutine?
     @State private var automaticBackupRevision = 0
+    @State private var dashboardRefreshTask: Task<Void, Never>?
+    @State private var selectedPerformanceSignal: PerformanceSignal = .hrv
     @StateObject private var dashboard = DashboardViewModel()
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
@@ -92,13 +102,29 @@ struct ContentView: View {
         TabView(selection: $selectedTab) {
             appPage { todayPage }
                 .tabItem { Label("Hoy", systemImage: "sparkles") }.tag(0)
-            appPage { performancePage }
+            // TabView monta sus hijos antes de que el usuario los vea. No
+            // dejamos que eso construya los gráficos y forecasts de todas las
+            // pestañas durante el arranque: primero Hoy, después lo que se
+            // solicite de forma explícita.
+            appPage {
+                if selectedTab == 1 { performancePage }
+                else { deferredTab(title: "Rendimiento", systemImage: "figure.run") }
+            }
                 .tabItem { Label("Rendimiento", systemImage: "figure.run") }.tag(1)
-            appPage { StrengthTrainingView() }
+            appPage {
+                if selectedTab == 2 { StrengthTrainingView() }
+                else { deferredTab(title: "Fuerza", systemImage: "dumbbell.fill") }
+            }
                 .tabItem { Label("Fuerza", systemImage: "dumbbell.fill") }.tag(2)
-            appPage { healthPage }
+            appPage {
+                if selectedTab == 3 { healthPage }
+                else { deferredTab(title: "Salud", systemImage: "heart.text.square") }
+            }
                 .tabItem { Label("Salud", systemImage: "heart.text.square") }.tag(3)
-            appPage { dataPage }
+            appPage {
+                if selectedTab == 4 { dataPage }
+                else { deferredTab(title: "Datos", systemImage: "externaldrive") }
+            }
                 .tabItem { Label("Datos", systemImage: "externaldrive") }.tag(4)
         }
         .fileImporter(
@@ -197,6 +223,7 @@ struct ContentView: View {
                     .environmentObject(planHistory)
             case .workoutDetail(let session):
                 WorkoutDetailView(session: session).environmentObject(health).environmentObject(imports)
+                    .environmentObject(workoutEnrichments)
             case .goalEditor:
                 GoalEditorView(profile: goals.profile).environmentObject(goals)
             case .injuryHistory:
@@ -217,18 +244,22 @@ struct ContentView: View {
                 .environmentObject(health)
         }
         .onChange(of: health.lastUpdated) { _, _ in
-            refreshDashboard()
-            captureCurrentPlanIfNeeded()
-            syncWatchSummary()
-            performAutomaticBackupIfNeeded()
+            scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(checkIns.objectWillChange) { _ in
-            Task { @MainActor in await Task.yield(); refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
+            scheduleDashboardRefresh()
         }
         .onReceive(lifestyle.objectWillChange) { _ in
-            Task { @MainActor in await Task.yield(); refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
+            scheduleDashboardRefresh()
         }
-        .onChange(of: imports.workoutCount) { _, _ in refreshDashboard(); captureCurrentPlanIfNeeded(); syncWatchSummary() }
+        .onChange(of: imports.workoutCount) { _, _ in scheduleDashboardRefresh() }
+        .onChange(of: selectedTab) { _, tab in
+            if tab == 1 { loadPerformanceIfNeeded() }
+        }
+        // Backfill de estabilidad de viajes pasados. En una vista aparte (no un
+        // .onChange más en esta cadena) porque el type-checker de SwiftUI no
+        // aguanta un modificador más sobre este TabView ya enorme.
+        .background(travelBackfillTrigger)
         // syncWatchSummary sólo estaba enganchado a CAMBIOS (lastUpdated,
         // check-in, estilo de vida, importaciones). Con la app abierta y nada
         // cambiando, el iPhone no enviaba nada nunca y el reloj se quedaba en
@@ -256,7 +287,13 @@ struct ContentView: View {
         // syncWatchSummary aquí también: si el permiso de Salud ya estaba
         // concedido antes de que esta vista apareciera, ningún onChange llega a
         // dispararse y el reloj se quedaría esperando igual.
-        .onAppear { refreshDashboard(); syncWatchSummary() }
+        .onAppear {
+            // En un relanzamiento Salud puede seguir preparando su primera
+            // lectura. No calculamos el gemelo con datos vacíos en el primer
+            // frame: eso era trabajo caro invisible antes de poder hacer
+            // siquiera scroll.
+            if health.lastUpdated != nil { scheduleDashboardRefresh() }
+        }
     }
 
     // Type erasure is intentional at the navigation boundary. Each tab contains a
@@ -291,6 +328,52 @@ struct ContentView: View {
                          travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
     }
 
+    private func scheduleDashboardRefresh(includeBackup: Bool = false) {
+        dashboardRefreshTask?.cancel()
+        dashboardRefreshTask = Task { @MainActor in
+            // Salud puede publicar varias señales durante la misma lectura.
+            // Un pequeño debounce convierte esa ráfaga en una sola evaluación.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            // Primera valoración: en vez de una pasada aproximada sobre
+            // históricos vacíos y otra refinada después (lo que se percibía como
+            // "carga dos veces"), esperamos a que la fase 1 del histórico esté
+            // lista y computamos UNA vez con datos reales. Si aún no está, la
+            // arrancamos (idempotente) y salimos: su re-sello de lastUpdated
+            // vuelve a invocar esto, ya con hasCriticalHistory en true. Tras la
+            // primera valoración (assessment != nil) esto nunca vuelve a frenar.
+            if dashboard.assessment == nil && !health.hasCriticalHistory {
+                Task { await health.loadExtendedHistory() }
+                return
+            }
+            refreshDashboard()
+            await Task.yield()
+            captureCurrentPlanIfNeeded()
+            await Task.yield()
+            syncWatchSummary()
+            if includeBackup {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                performAutomaticBackupIfNeeded()
+            }
+            if selectedTab == 1 { loadPerformanceIfNeeded() }
+        }
+    }
+
+    private func loadPerformanceIfNeeded() {
+        guard health.authorizationRequested else { return }
+        Task { @MainActor in
+            await health.loadExtendedHistory()
+            await dashboard.refreshPerformance(health: health, imports: imports,
+                                               reviews: workoutReviews.reviews, context: twinContext)
+        }
+    }
+
+    private func deferredTab(title: String, systemImage: String) -> some View {
+        ContentUnavailableView(title, systemImage: systemImage,
+                               description: Text("Se cargará al abrir esta pestaña."))
+    }
+
     private var currentAssessment: TwinAssessment {
         dashboard.assessment ?? TwinEngine.assess(
             health: health, imports: imports, checkIn: checkIns.entry(), context: twinContext
@@ -308,6 +391,23 @@ struct ContentView: View {
     @ViewBuilder private var todayPage: some View {
         if !health.authorizationRequested {
             permissionCard
+        } else if dashboard.assessment == nil || dashboard.plan == nil {
+            // Estructura barata e inmediatamente desplazable mientras se
+            // reciben las lecturas mínimas y se prepara el gemelo. Es mejor
+            // un estado honesto que ejecutar TwinEngine desde body y congelar
+            // la primera interacción.
+            VStack(alignment: .leading, spacing: 18) {
+                EterPageHeader(eyebrow: "Hoy", title: "Preparando tu estado")
+                ProgressView().controlSize(.large)
+                Text("Cargando primero sueño, actividad y corazón. Tu análisis y plan aparecerán enseguida.")
+                    .foregroundStyle(.secondary)
+                LazyVGrid(columns: columns, spacing: 12) {
+                    metric("Sueño", value: health.snapshot.sleepHours > 0 ? String(format: "%.1f", health.snapshot.sleepHours) : "—", unit: "h", icon: "moon.fill")
+                    metric("HRV", value: health.snapshot.hrv > 0 ? health.snapshot.hrv.formatted() : "—", unit: "ms", icon: "waveform.path.ecg")
+                    metric("Pulso", value: health.snapshot.heartRate > 0 ? health.snapshot.heartRate.formatted() : "—", unit: "ppm", icon: "heart.fill")
+                    metric("Pasos", value: health.snapshot.steps.formatted(), unit: "", icon: "figure.walk")
+                }
+            }
         } else {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Hoy", title: "Tu estado real")
@@ -315,6 +415,7 @@ struct ContentView: View {
                 lifestyleFactorCard
                 physiologicalAlertCard
                 twinCard
+                todayTrendsCard
                 currentPlanCard
                 proposedWorkoutCard
                 // Simular decisión antes de la semana: la lógica es
@@ -343,6 +444,29 @@ struct ContentView: View {
                 latestSessionCard
                 updateControl
             }
+        }
+    }
+
+    // Dispara el backfill de viajes pasados cuando el histórico ya está cargado
+    // (baseline fiable) y cada vez que se da de alta/edita un viaje. El store
+    // sólo consulta HealthKit para tramos pasados sin medir, así que repetir la
+    // llamada es barato y no re-mide lo ya medido.
+    private var travelBackfillTrigger: some View {
+        Color.clear
+            .onChange(of: health.hasLoadedHistory) { _, ready in
+                if ready { Task { await travel.backfillAllPending(health: health, imports: imports) } }
+            }
+            .onChange(of: travel.episodes) { _, _ in
+                if health.hasLoadedHistory { Task { await travel.backfillAllPending(health: health, imports: imports) } }
+            }
+    }
+
+    @ViewBuilder private var todayTrendsCard: some View {
+        // Ya calculada en DashboardViewModel.refresh (fuera de body). La curva
+        // necesita algo de día transcurrido; de madrugada recién arrancada no
+        // hay tendencia que enseñar todavía.
+        if let result = dashboard.energyTimeline, result.currentHour > 0.5, result.curve.count > 1 {
+            TodayTrendsCardView(result: result)
         }
     }
 
@@ -489,120 +613,27 @@ struct ContentView: View {
     }
 
 
-    private var performancePage: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
-            trainingRoadmapCard
-            goalDistanceCard
-            hyroxForecastCard
-            triathlonForecastCard
-            RunningPerformanceView(
-                running: dashboard.running ?? RunningPerformanceEngine.summarize(
-                    workouts: health.workoutHistory,
-                    zones: health.runningHeartRateZones,
-                    reviews: workoutReviews.reviews
-                ),
-                plan: currentPlan
-            )
-            performanceDashboard
-            heartZoneChart
-            trainingAnalytics
-            recentTraining
-        }
-    }
-
-    private var goalDistanceCard: some View {
-        let running = dashboard.running ?? RunningPerformanceEngine.summarize(
-            workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-            reviews: workoutReviews.reviews
-        )
-        let strength = StrengthProgressEngine.summarize(imports.workouts)
-        let distances = GoalDistanceEngine.evaluate(
-            goals: goals.activeGoals, running: running, strength: strength,
-            importedWorkouts: imports.workouts, healthWorkouts: health.workoutHistory
-        )
-        return VStack(alignment: .leading, spacing: 14) {
-            EterSectionHeader("Dónde estás y qué falta", eyebrow: "Distancia al objetivo")
-            ForEach(distances) { item in
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(item.goal.title).font(.headline)
-                        if let days = item.daysRemaining {
-                            Text("\(days) días").font(.caption2.bold()).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Circle().fill(item.confidence.color).frame(width: 7, height: 7)
-                        Text(item.confidence.rawValue).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        goalDistanceMetric("Actual", item.current)
-                        goalDistanceMetric("Objetivo", item.target)
-                    }
-                    if let progress = item.progress {
-                        ProgressView(value: progress).tint(goalDistanceColor(item.state))
-                        Text("Proximidad de marca \(Int((progress * 100).rounded()))% · \(item.gap)")
-                            .font(.caption.bold()).foregroundStyle(goalDistanceColor(item.state))
-                    } else {
-                        Text(item.gap).font(.caption).foregroundStyle(.secondary).lineSpacing(2)
-                    }
-                    Text(item.evidence).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                }
-                if item.id != distances.last?.id { Divider() }
+    @ViewBuilder private var performancePage: some View {
+        // Nunca calculamos estos fallbacks dentro de body: TabView puede pedir
+        // la vista antes de que el usuario pulse Rendimiento, justo el trabajo
+        // invisible que hacía pesado el arranque. La pestaña muestra primero
+        // su estado y después recibe el resultado diferido del view model.
+        if let running = dashboard.running, dashboard.performance != nil, dashboard.balance != nil {
+            VStack(alignment: .leading, spacing: 18) {
+                EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
+                GoalDistanceCard(strengthOnly: false)
+                loadIntensitySection
+                RunningPerformanceView(running: running, plan: currentPlan)
+                recentTraining
             }
-            Text("La proximidad compara la marca actual estimada con el objetivo; no representa el porcentaje de preparación total para competir.")
-                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-        }.cardStyle()
-    }
-
-    @ViewBuilder private var hyroxForecastCard: some View {
-        if let goal = goals.goal(.hyrox) {
-            let running = dashboard.running ?? RunningPerformanceEngine.summarize(
-                workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-                reviews: workoutReviews.reviews
-            )
-            let forecast = HyroxForecastEngine.forecast(
-                running: running, workouts: imports.workouts,
-                division: goal.hyroxDivision ?? .open,
-                vo2Max: health.vo2MaxHistory.last?.value,
-                bodyFatPercentage: health.bodyFatHistory.last?.value
-            )
-            HyroxForecastCard(
-                goal: goal, forecast: forecast,
-                measuredAt: [health.lastUpdated, imports.workouts.first?.start].compactMap { $0 }.max()
-            )
-        }
-    }
-
-    @ViewBuilder private var triathlonForecastCard: some View {
-        if let goal = goals.activeGoals.first(where: { $0.kind == .triathlon || $0.kind == .ironman }) {
-            let running = dashboard.running ?? RunningPerformanceEngine.summarize(
-                workouts: health.workoutHistory, zones: health.runningHeartRateZones,
-                reviews: workoutReviews.reviews
-            )
-            let forecast = TriathlonForecastEngine.forecast(
-                distance: goal.resolvedTriathlonDistance ?? .olympic,
-                running: running, workouts: health.workoutHistory, courseDetails: goal.courseDetails
-            )
-            TriathlonForecastCard(
-                goal: goal, forecast: forecast,
-                measuredAt: [health.lastUpdated, imports.workouts.first?.start].compactMap { $0 }.max()
-            )
-        }
-    }
-
-    private func goalDistanceMetric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.subheadline.bold()).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func goalDistanceColor(_ state: GoalDistanceState) -> Color {
-        switch state {
-        case .achieved: return EterTheme.positive
-        case .close: return EterTheme.primary
-        case .progressing: return EterTheme.warning
-        case .missingTarget, .insufficientData: return .secondary
+        } else {
+            VStack(alignment: .leading, spacing: 18) {
+                EterPageHeader(eyebrow: "Rendimiento", title: "Preparando tu histórico")
+                ProgressView().controlSize(.large)
+                Text("Primero cargamos tu estado de hoy. Ahora estamos preparando rendimiento, carga y previsiones.")
+                    .foregroundStyle(.secondary)
+            }
+            .task { loadPerformanceIfNeeded() }
         }
     }
 
@@ -650,6 +681,9 @@ struct ContentView: View {
                 Text("\(goals.profile.trainingDaysPerWeek) días/semana · \(goals.profile.gymAvailable ? "gimnasio disponible" : "sin gimnasio")")
                     .font(.caption2).foregroundStyle(.secondary)
             }.cardStyle()
+            // La hoja de ruta se deriva de estos objetivos, así que vive aquí,
+            // en Datos, y no en Rendimiento (donde sólo era un bloque más).
+            trainingRoadmapCard
         }
     }
 
@@ -731,7 +765,8 @@ struct ContentView: View {
     private func exportBackup() {
         let backup = EterBackupManager.make(imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                              workoutReviews: workoutReviews, planHistory: planHistory,
-                                             strengthRoutines: strengthRoutines, health: health, travel: travel)
+                                             strengthRoutines: strengthRoutines, health: health, travel: travel,
+                                             workoutEnrichments: workoutEnrichments)
         backupDocument = EterBackupDocument(backup: backup)
         showBackupExporter = true
     }
@@ -751,7 +786,8 @@ struct ContentView: View {
         pendingBackup = nil
         EterBackupManager.restore(backup, imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                   workoutReviews: workoutReviews, planHistory: planHistory,
-                                  strengthRoutines: strengthRoutines, travel: travel)
+                                  strengthRoutines: strengthRoutines, travel: travel,
+                                  workoutEnrichments: workoutEnrichments)
         backupMessage = "Restauración terminada. Se han procesado \(backup.totalRecords) registros."
     }
 
@@ -762,7 +798,8 @@ struct ContentView: View {
             try EterBackupManager.writeAutomaticBackupIfNeeded(
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
-                strengthRoutines: strengthRoutines, health: health, travel: travel, force: true
+                strengthRoutines: strengthRoutines, health: health, travel: travel,
+                workoutEnrichments: workoutEnrichments, force: true
             )
             automaticBackupRevision += 1
             backupMessage = "Copia automática activada en \(folder.lastPathComponent)."
@@ -776,7 +813,8 @@ struct ContentView: View {
             let written = try EterBackupManager.writeAutomaticBackupIfNeeded(
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
-                strengthRoutines: strengthRoutines, health: health, travel: travel, force: force
+                strengthRoutines: strengthRoutines, health: health, travel: travel,
+                workoutEnrichments: workoutEnrichments, force: force
             )
             if written { automaticBackupRevision += 1 }
         } catch {
@@ -809,11 +847,38 @@ struct ContentView: View {
             TrainingScenarioCardView()
             intensityFocusCard(summary)
             activityCalendar(summary)
-            baselineCard("HRV personal", unit: "ms", points: health.hrvHistory, favorableHigh: true, color: .purple)
-            baselineCard("Pulso en reposo personal", unit: "ppm", points: health.restingHeartRateHistory, favorableHigh: false, color: .red)
+            physiologicalPerformanceCard
             capacityCard
-            heartRateRecoveryCard
         }
+    }
+
+    private var physiologicalPerformanceCard: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Señales fisiológicas").font(.headline)
+                    Text("Selecciona una señal; solo se dibuja una gráfica cada vez.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            Picker("Señal fisiológica", selection: $selectedPerformanceSignal) {
+                ForEach(PerformanceSignal.allCases) { signal in Text(signal.rawValue).tag(signal) }
+            }.pickerStyle(.segmented)
+
+            Group {
+                switch selectedPerformanceSignal {
+                case .hrv:
+                    baselineCard("HRV personal", unit: "ms", points: health.hrvHistory,
+                                 favorableHigh: true, color: .purple, appliesCardStyle: false)
+                case .restingHeartRate:
+                    baselineCard("Pulso en reposo personal", unit: "ppm", points: health.restingHeartRateHistory,
+                                 favorableHigh: false, color: .red, appliesCardStyle: false)
+                case .heartRateRecovery:
+                    heartRateRecoveryCardContent
+                }
+            }
+        }.cardStyle()
     }
 
     private var trainingBalanceCard: some View {
@@ -1025,12 +1090,13 @@ struct ContentView: View {
         }.cardStyle()
     }
 
-    private func baselineCard(_ title: String, unit: String, points: [TrendPoint], favorableHigh: Bool, color: Color) -> some View {
+    private func baselineCard(_ title: String, unit: String, points: [TrendPoint], favorableHigh: Bool,
+                              color: Color, appliesCardStyle: Bool = true) -> some View {
         let recent = Array(points.suffix(42))
         let baselineValues = Array(recent.dropLast().suffix(28)).map(\.value)
         let mean = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
         let deviation = mean.map { average in sqrt(baselineValues.reduce(0) { $0 + pow($1 - average, 2) } / Double(max(1, baselineValues.count))) }
-        return VStack(alignment: .leading, spacing: 11) {
+        let content = VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading) { Text(title).font(.headline); Text("Tu banda habitual de 28 días").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
@@ -1074,7 +1140,11 @@ struct ContentView: View {
                     }
                 }
             }
-        }.cardStyle()
+        }
+        return Group {
+            if appliesCardStyle { content.cardStyle() }
+            else { content }
+        }
     }
 
     private var capacityCard: some View {
@@ -1092,7 +1162,7 @@ struct ContentView: View {
         }.cardStyle()
     }
 
-    private var heartRateRecoveryCard: some View {
+    private var heartRateRecoveryCardContent: some View {
         let points = health.heartRateRecoveryHistory
         return VStack(alignment: .leading, spacing: 9) {
             HStack {
@@ -1114,7 +1184,7 @@ struct ContentView: View {
                 Text("Caída del pulso entre el final de la sesión y aproximadamente 60 segundos después. Compara sobre todo sesiones de naturaleza similar.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-        }.cardStyle()
+        }
     }
 
     private func capacityMetric(_ title: String, _ value: Double?, _ unit: String) -> some View {
@@ -1413,6 +1483,11 @@ struct ContentView: View {
             return
         }
         let assessment = currentAssessment
+        let energyTimeline = EnergyTimelineEngine.build(
+            assessment: assessment, health: health, imports: imports,
+            checkIn: checkIns.entry(), lifestyle: lifestyle.recent(before: Date(), hours: 30),
+            travel: travel.episodeForEvaluation()
+        )
         // Driven by the plan's own structured PlannedSessionKind, not by
         // re-parsing the rendered Spanish recommendation text — see
         // TrainingPlanEngine.watchActivity's own comment for the two real
@@ -1427,10 +1502,17 @@ struct ContentView: View {
                                        maximumHeartRate: goals.profile.maximumHeartRate,
                                        hrv: health.snapshot.hrv,
                                        restingHeartRate: health.snapshot.restingHeartRate,
-                                       sleepHours: health.snapshot.sleepHours)
+                                       sleepHours: health.snapshot.sleepHours,
+                                       energy: energyTimeline.energy,
+                                       energyCurve: energyTimeline.curve,
+                                       currentHour: energyTimeline.currentHour,
+                                       caffeineCurve: energyTimeline.caffeine.points.map(\.remainingMg),
+                                       caffeineNowMg: energyTimeline.caffeine.currentMg,
+                                       caffeineBedtimeMg: energyTimeline.caffeine.bedtimeMg)
         WidgetSnapshotStore.update(
             assessment: assessment, health: health, imports: imports,
-            checkIn: checkIns.entry(), lifestyle: lifestyle
+            checkIn: checkIns.entry(), lifestyle: lifestyle,
+            travel: travel.episodeForEvaluation()
         )
     }
 
@@ -1626,37 +1708,16 @@ struct ContentView: View {
         }.frame(maxWidth: .infinity, alignment: .leading).cardStyle()
     }
 
-    private var trainingAnalytics: some View {
-        let calendar = Calendar.current
-        let now = Date()
-        let start = calendar.date(byAdding: .day, value: -10, to: now)!
-        let previousStart = calendar.date(byAdding: .day, value: -20, to: now)!
-        let current = combinedMuscleDistribution(from: start, to: now)
-        let previous = combinedMuscleDistribution(from: previousStart, to: start)
-        let volume = imports.weeklyVolume()
-        return VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack { VStack(alignment: .leading) { Text("Distribución muscular").font(.headline); Text("Hevy + Apple Salud · últimos 10 días frente a los 10 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
-                MuscleRadar(current: current, previous: previous, periodDays: 10).frame(height: 285)
-                HStack(spacing: 16) { Label("Actual", systemImage: "circle.fill").foregroundStyle(.blue); Label("Anterior", systemImage: "circle.fill").foregroundStyle(.gray) }.font(.caption).frame(maxWidth: .infinity)
-            }.cardStyle()
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Volumen de fuerza").font(.headline)
-                Text("Carga total semanal: peso × repeticiones").font(.caption).foregroundStyle(.secondary)
-                if volume.isEmpty { Text("Importa una exportación de Hevy para ver el histórico.").font(.caption).foregroundStyle(.secondary).frame(height: 80) }
-                else {
-                    Chart(volume) { point in
-                        BarMark(x: .value("Semana", point.date, unit: .weekOfYear), y: .value("Volumen", point.value))
-                            .foregroundStyle(EterTheme.positive.gradient).cornerRadius(3)
-                    }
-                    .chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()) } }
-                    .chartYAxis { AxisMarks(position: .leading) { _ in AxisGridLine().foregroundStyle(Color.primary.opacity(0.10)); AxisValueLabel() } }
-                    .frame(height: 165)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Volumen semanal de fuerza")
-                    .accessibilityValue(volume.map { "\($0.date.formatted(date: .abbreviated, time: .omitted)): \(Int($0.value.rounded())) kilogramos de volumen" }.joined(separator: ". "))
-                }
-            }.cardStyle()
+    // "Carga e intensidad": agrupa la carga de entrenamiento y el foco de
+    // intensidad (performanceDashboard) con la distribución por zonas de FC
+    // (heartZoneChart) bajo una sola sección, porque describen lo mismo — cómo
+    // de dura y cómo de repartida está tu carga — y antes iban como cards
+    // sueltas y salteadas.
+    private var loadIntensitySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            EterSectionHeader("Carga e intensidad", eyebrow: "Cómo entrenas")
+            performanceDashboard
+            heartZoneChart
         }
     }
 
@@ -1699,55 +1760,6 @@ struct ContentView: View {
         case 3: return .green
         case 4: return .orange
         default: return .red
-        }
-    }
-
-    private func combinedMuscleDistribution(from start: Date, to end: Date) -> [String: Double] {
-        var result = imports.muscleDistribution(from: start, to: end)
-        for workout in health.recentWorkouts where workout.date >= start && workout.date < end {
-            // Hevy can also write a summary workout to HealthKit — its detailed
-            // CSV is already counted above, so ignore that summary to avoid
-            // counting twice. But that's not the only way a duplicate shows
-            // up: éter's own live session ALSO writes its own generic
-            // HKWorkout on completion (saveStrengthWorkout, source "éter",
-            // so the "hevy" name check alone never caught it) for the exact
-            // same session already counted above via imports — every
-            // éter-logged session was silently counted twice, once with
-            // real per-exercise set data and again with a rough fixed-
-            // fraction estimate, which is exactly what inflated two modest
-            // sessions into "230% bíceps". isHealthKitMirror matches by
-            // start time + duration regardless of source name, the same
-            // general check TrainingPlanEngine's own "already trained
-            // today" logic already relies on.
-            guard !workout.source.localizedCaseInsensitiveContains("hevy"), !imports.isHealthKitMirror(workout) else { continue }
-            // muscleGroups exists for every activity type — including
-            // Carrera/Ciclismo/Senderismo/Caminata/Natación — because
-            // TwinEngine's fatigue model genuinely needs to know a run
-            // tired out your legs. But this chart counts *hypertrophy
-            // sets*, and cardio doesn't produce those: a 111-minute hike
-            // isn't ~22 leg sets. Without this, every cardio session's
-            // fatigue-oriented leg/core involvement got converted into
-            // "equivalent sets" here too — the actual mechanism behind
-            // "465% piernas" after two modest strength days: real
-            // contribution was ~32%, the other ~430 points were hikes,
-            // runs, and bike rides that have nothing to do with hypertrophy
-            // dosing. Restrict to what StrengthProgressEngine's own
-            // Watch-only merge already restricts itself to: strength
-            // activity only.
-            guard workout.activity == "Fuerza" || workout.activity == "Fuerza funcional" else { continue }
-            let equivalentSets = max(1, workout.durationMinutes / 5)
-            for (muscle, involvement) in workout.muscleGroups {
-                result[muscleBucket(muscle), default: 0] += equivalentSets * involvement
-            }
-        }
-        return result
-    }
-
-    private func muscleBucket(_ muscle: String) -> String {
-        switch muscle {
-        case "Cuádriceps", "Glúteos", "Isquios", "Gemelos": return "Piernas"
-        case "Bíceps", "Tríceps": return "Brazos"
-        default: return muscle
         }
     }
 

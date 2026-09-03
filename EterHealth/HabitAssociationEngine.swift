@@ -2,7 +2,7 @@ import Foundation
 
 enum HabitKind: String, CaseIterable, Hashable, Identifiable {
     case alcohol, lateCaffeine, sauna, cold, travel, indulgentFood, healthyFood
-    case fasting, lateOrHeavyDinner, lowHydration
+    case fasting, fastedTraining, lateOrHeavyDinner, lowHydration
     // Real, not self-reported like the others above — derived by comparing
     // each night's actual HealthKit-recorded bedtime (HealthStore.
     // sleepScheduleHistory) against this person's own recent median, not
@@ -23,13 +23,14 @@ enum HabitKind: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .alcohol: return "Alcohol"
-        case .lateCaffeine: return "Cafeína tardía"
+        case .lateCaffeine: return "Cafeína al dormir"
         case .sauna: return "Sauna"
         case .cold: return "Agua fría"
         case .travel: return "Viaje y cambio horario"
         case .indulgentFood: return "Comida libre"
         case .healthyFood: return "Comida saludable"
         case .fasting: return "Ayuno"
+        case .fastedTraining: return "Entrenamiento en ayunas"
         case .lateOrHeavyDinner: return "Cena tardía o copiosa"
         case .lowHydration: return "Hidratación baja"
         case .lateBedtime: return "Acostarse tarde"
@@ -48,6 +49,7 @@ enum HabitKind: String, CaseIterable, Hashable, Identifiable {
         case .travel: return "airplane"
         case .indulgentFood, .healthyFood, .lateOrHeavyDinner: return "fork.knife"
         case .fasting: return "clock"
+        case .fastedTraining: return "figure.run"
         case .lowHydration: return "drop"
         case .lateBedtime: return "moon.zzz.fill"
         case .magnesiumGlycinate, .melatonin, .ashwagandha, .lTheanine:
@@ -71,6 +73,16 @@ struct HabitOccurrence {
     let kind: HabitKind
     let date: Date
     let overlapsOtherFactors: Bool
+    /// Magnitud de la exposición cuando existe una dosis continua. Para
+    /// cafeína son los mg estimados que siguen en el sistema al acostarse.
+    let exposureLevel: Double?
+
+    init(kind: HabitKind, date: Date, overlapsOtherFactors: Bool, exposureLevel: Double? = nil) {
+        self.kind = kind
+        self.date = date
+        self.overlapsOtherFactors = overlapsOtherFactors
+        self.exposureLevel = exposureLevel
+    }
 }
 
 struct HabitMetricEffect: Identifiable, Equatable {
@@ -93,6 +105,19 @@ struct HabitAssociation: Identifiable {
     let direction: HabitAssociationDirection
     let confidence: ConfidenceAssessment
     let headline: String
+    /// Exposición media de los episodios que realmente alimentaron el
+    /// aprendizaje. Permite proyectar una dosis concreta sin tratar todas
+    /// las tazas como equivalentes.
+    let averageExposureLevel: Double?
+
+    init(kind: HabitKind, samples: Int, effects: [HabitMetricEffect], compositeChange: Double,
+         direction: HabitAssociationDirection, confidence: ConfidenceAssessment, headline: String,
+         averageExposureLevel: Double? = nil) {
+        self.kind = kind; self.samples = samples; self.effects = effects
+        self.compositeChange = compositeChange; self.direction = direction
+        self.confidence = confidence; self.headline = headline
+        self.averageExposureLevel = averageExposureLevel
+    }
 }
 
 enum HabitAssociationEngine {
@@ -140,7 +165,7 @@ enum HabitAssociationEngine {
         now: Date = Date()
     ) -> [HabitAssociation] {
         analyze(
-            occurrences: occurrences(events: events, alcohol: alcohol)
+            occurrences: occurrences(events: events, alcohol: alcohol, sleepSchedule: sleepSchedule)
                 + travelOccurrences(episodes: travelEpisodes, now: now)
                 + lateBedtimeOccurrences(schedule: sleepSchedule, now: now),
             hrv: hrv, restingHeartRate: restingHeartRate, sleep: sleep,
@@ -171,6 +196,7 @@ enum HabitAssociationEngine {
         return HabitKind.allCases.compactMap { kind in
             let exposures = uniqueDays(completed.filter { $0.kind == kind })
             var rows: [[String: Double]] = []
+            var exposureLevels: [Double] = []
             var overlapCount = 0
             for exposure in exposures {
                 var row: [String: Double] = [:]
@@ -186,6 +212,7 @@ enum HabitAssociationEngine {
                 if let value = relativeOutcome(after: exposure.date, points: remShare, favorableHigh: true) { row["REM"] = value }
                 guard !row.isEmpty else { continue }
                 rows.append(row)
+                if let level = exposure.exposureLevel { exposureLevels.append(level) }
                 if exposure.overlapsOtherFactors { overlapCount += 1 }
             }
             guard rows.count >= 2 else { return nil }
@@ -212,7 +239,8 @@ enum HabitAssociationEngine {
             return HabitAssociation(
                 kind: kind, samples: rows.count, effects: effects,
                 compositeChange: composite, direction: direction, confidence: confidence,
-                headline: headline(kind: kind, direction: direction, composite: composite, samples: rows.count, effects: effects)
+                headline: headline(kind: kind, direction: direction, composite: composite, samples: rows.count, effects: effects),
+                averageExposureLevel: exposureLevels.isEmpty ? nil : average(exposureLevels)
             )
         }
         .sorted {
@@ -253,23 +281,20 @@ enum HabitAssociationEngine {
         return result
     }
 
-    @MainActor private static func occurrences(events: [LifestyleEvent], alcohol: [AlcoholSample]) -> [HabitOccurrence] {
+    @MainActor private static func occurrences(events: [LifestyleEvent], alcohol: [AlcoholSample],
+                                               sleepSchedule: [NightlySleepSchedule]) -> [HabitOccurrence] {
         let calendar = Calendar.current
         var result: [HabitOccurrence] = []
         var localAlcoholDays: Set<Date> = []
         for event in events {
             var kinds: [HabitKind] = []
             if event.alcoholDrinks > 0 { kinds.append(.alcohol); localAlcoholDays.insert(calendar.startOfDay(for: event.date)) }
-            // Falls back to `event.date`, same as everywhere else
-            // caffeineDate is read — an unfilled "Hora de consumo" must not
-            // silently drop the late-caffeine signal entirely.
-            let caffeineDate = event.caffeineDate ?? event.date
-            if event.caffeineMg > 0, calendar.component(.hour, from: caffeineDate) >= 14 { kinds.append(.lateCaffeine) }
             if event.saunaMinutes > 0 { kinds.append(.sauna) }
             if event.coldMinutes > 0 { kinds.append(.cold) }
             if event.foodQuality == .indulgent { kinds.append(.indulgentFood) }
             if event.foodQuality == .healthy { kinds.append(.healthyFood) }
             if event.fastingHours >= 12 { kinds.append(.fasting) }
+            if event.trainedFasted { kinds.append(.fastedTraining) }
             if event.lateDinner || event.heavyDinner { kinds.append(.lateOrHeavyDinner) }
             if event.hydration == .low { kinds.append(.lowHydration) }
             let overlap = kinds.count + event.supplements.count > 1
@@ -287,7 +312,57 @@ enum HabitAssociationEngine {
             guard sample.drinks > 0, !localAlcoholDays.contains(day) else { continue }
             result.append(HabitOccurrence(kind: .alcohol, date: sample.date, overlapsOtherFactors: false))
         }
+        result += caffeineOccurrences(events: events, sleepSchedule: sleepSchedule)
         return result
+    }
+
+    /// Agrupa todas las tomas del día y estima cuántos miligramos siguen
+    /// presentes al acostarse. Usa la hora real de esa noche cuando existe;
+    /// si falta, recurre a la mediana personal y finalmente a las 23:00.
+    /// No existe ya ningún corte arbitrario de las 14:00.
+    @MainActor private static func caffeineOccurrences(
+        events: [LifestyleEvent], sleepSchedule: [NightlySleepSchedule]
+    ) -> [HabitOccurrence] {
+        let calendar = Calendar.current
+        let typicalBedtime = medianBedtimeHour(sleepSchedule) ?? 23.0
+        let doses = events.compactMap { event -> (Date, Double, Bool)? in
+            guard event.caffeineMg > 0 else { return nil }
+            let consumed = event.caffeineDate ?? event.date
+            let hasOtherFactor = event.alcoholDrinks > 0 || event.saunaMinutes > 0 || event.coldMinutes > 0 ||
+                event.foodQuality != .notRecorded || event.fastingHours >= 12 || event.trainedFasted ||
+                event.lateDinner || event.heavyDinner || event.hydration != .notRecorded || !event.supplements.isEmpty
+            return (consumed, Double(event.caffeineMg), hasOtherFactor)
+        }
+        let grouped = Dictionary(grouping: doses) { calendar.startOfDay(for: $0.0) }
+        return grouped.compactMap { day, dayDoses in
+            let actualBedtime = sleepSchedule
+                .map(\.bedtime)
+                .filter { bedtime in
+                    guard let first = dayDoses.map({ $0.0 }).min() else { return false }
+                    return bedtime >= first && bedtime.timeIntervalSince(first) <= 20 * 3_600
+                }.min()
+            let remaining = dayDoses.reduce(0.0) { total, dose in
+                let elapsed: Double
+                if let actualBedtime {
+                    elapsed = max(0, actualBedtime.timeIntervalSince(dose.0) / 3_600)
+                } else {
+                    let components = calendar.dateComponents([.hour, .minute], from: dose.0)
+                    let intakeHour = Double(components.hour ?? 0) + Double(components.minute ?? 0) / 60
+                    elapsed = CaffeinePharmacokinetics.hoursUntilBedtime(intakeHour: intakeHour, bedtimeHour: typicalBedtime)
+                }
+                return total + dose.1 * CaffeinePharmacokinetics.residualFraction(hoursElapsed: elapsed)
+            }
+            guard remaining >= 1 else { return nil }
+            return HabitOccurrence(kind: .lateCaffeine, date: day,
+                                   overlapsOtherFactors: dayDoses.contains(where: { $0.2 }),
+                                   exposureLevel: remaining)
+        }
+    }
+
+    private nonisolated static func medianBedtimeHour(_ schedule: [NightlySleepSchedule]) -> Double? {
+        let hours = schedule.map { nightAnchoredBedtimeHour($0.bedtime) }
+        guard let value = median(hours) else { return nil }
+        return value.truncatingRemainder(dividingBy: 24)
     }
 
     // Real, not self-reported: a night counts as ".lateBedtime" when its

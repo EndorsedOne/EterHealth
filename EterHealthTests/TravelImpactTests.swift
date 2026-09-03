@@ -185,6 +185,64 @@ final class TravelImpactTests: XCTestCase {
         )
     }
 
+    // MARK: - Backfill de viajes pasados (inferencia retroactiva por señales)
+
+    func testHistoricalTravelBaselineUsesOnlySamplesBeforeDeparture() {
+        let departure = local("Europe/Madrid", 2026, 3, 2, 11)
+        let before = (1...14).map {
+            TrendPoint(date: departure.addingTimeInterval(Double(-$0) * 86_400), value: 60)
+        }
+        let after = (1...14).map {
+            TrendPoint(date: departure.addingTimeInterval(Double($0) * 86_400), value: 100)
+        }
+        let profile = PersonalBaselineEngine.travelProfile(
+            sleep: before.map { TrendPoint(date: $0.date, value: 7.5) }
+                + after.map { TrendPoint(date: $0.date, value: 9.5) },
+            hrv: before + after, resting: [], before: departure
+        )
+        XCTAssertEqual(profile.hrv.expected ?? -1, 60, accuracy: 0.01)
+        XCTAssertEqual(profile.sleep.expected ?? -1, 7.5, accuracy: 0.01)
+        XCTAssertEqual(profile.hrv.samples, 14)
+    }
+
+    func testRetroactiveStabilityInfersAPastOutboundLegFromSignals() {
+        let episode = tokyoEpisode()
+        let arrival = episode.destinationArrival!
+        let day = { (offset: Int) in arrival.addingTimeInterval(Double(offset) * 86_400) }
+        let signals = TravelSignalContext(
+            baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+            sleepHistory: [1, 2, 3].map { TrendPoint(date: day($0), value: 7.8) },
+            hrvHistory: [1, 2, 3].map { TrendPoint(date: day($0), value: 72) },
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: .none)
+        // `now` bien después de que la ventana de gracia haya cerrado: es
+        // justo el caso que la ruta en vivo abandona y el backfill recupera.
+        let now = arrival.addingTimeInterval(120 * 86_400)
+        let outcomes = TravelImpactEngine.retroactiveStability(episode: episode, signals: signals, now: now)
+        let outbound = outcomes.first { $0.leg == .outbound }
+        XCTAssertNotNil(outbound, "Con tres noches buenas seguidas, la ida pasada debe confirmarse desde el histórico.")
+        // Confirmó en torno a la tercera noche consecutiva. El valor exacto
+        // depende de la cuantización a inicio de día y del huso, así que se
+        // acota a un rango sensato en vez de fijar un decimal frágil.
+        let days = outbound?.days ?? -1
+        XCTAssertGreaterThanOrEqual(days, 1.5)
+        XCTAssertLessThanOrEqual(days, 4)
+    }
+
+    func testRetroactiveStabilityIgnoresLegsStillWithinTheLiveGraceWindow() {
+        let episode = tokyoEpisode()
+        let arrival = episode.destinationArrival!
+        let day = { (offset: Int) in arrival.addingTimeInterval(Double(offset) * 86_400) }
+        let signals = TravelSignalContext(
+            baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+            sleepHistory: [1, 2, 3].map { TrendPoint(date: day($0), value: 7.8) },
+            hrvHistory: [1, 2, 3].map { TrendPoint(date: day($0), value: 72) },
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: .none)
+        // `now` a los dos días de llegar: la ventana sigue abierta, así que esto
+        // es trabajo de la ruta en vivo (con sus confusores reales), no del backfill.
+        let outcomes = TravelImpactEngine.retroactiveStability(episode: episode, signals: signals, now: day(2))
+        XCTAssertTrue(outcomes.isEmpty, "Un tramo cuya ventana de gracia sigue abierta no lo toca el backfill.")
+    }
+
     func testSustainedStabilityClosesTheOffsetEarlyAndOneGoodNightDoesNot() {
         let episode = tokyoEpisode()
         let arrival = episode.destinationArrival!

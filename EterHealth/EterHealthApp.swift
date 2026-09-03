@@ -17,6 +17,7 @@ struct EterHealthApp: App {
     // PR14: sin .shared — el brief prohíbe singletons nuevos y el patrón
     // correcto es este (mismo que health/imports/checkIns).
     @StateObject private var travel = TravelEpisodeStore()
+    @StateObject private var workoutEnrichments = WorkoutEnrichmentStore()
 
     var body: some Scene {
         WindowGroup {
@@ -34,7 +35,43 @@ struct EterHealthApp: App {
                 .environmentObject(twinStates)
                 .environmentObject(temperatureDeviations)
                 .environmentObject(travel)
-                .task { await health.prepare() }
+                .environmentObject(workoutEnrichments)
+                .task {
+                    // HealthKit puede despertar el proceso sin que el usuario
+                    // abra la ventana. El widget se reescribe desde el store,
+                    // no desde onAppear/onChange de ContentView.
+                    health.didRefresh = { [weak health, weak imports, weak checkIns, weak lifestyle,
+                                           weak workoutReviews, weak goals, weak injuries,
+                                           weak twinStates, weak travel] in
+                        guard let health, let imports, let checkIns, let lifestyle,
+                              let workoutReviews, let goals, let injuries,
+                              let twinStates, let travel else { return }
+                        let context = TwinContext(
+                            profile: goals.profile, events: lifestyle.events,
+                            reviews: workoutReviews.reviews, activeInjuries: injuries.active,
+                            calibration: twinStates.calibration,
+                            personalAnchor: twinStates.personalAnchor(),
+                            travel: travel.episodeForEvaluation(), travelHistory: travel.episodes
+                        )
+                        let assessment = TwinEngine.assess(
+                            health: health, imports: imports,
+                            checkIn: checkIns.entry(), context: context
+                        )
+                        WidgetSnapshotStore.update(
+                            assessment: assessment, health: health, imports: imports,
+                            checkIn: checkIns.entry(), lifestyle: lifestyle,
+                            travel: travel.episodeForEvaluation()
+                        )
+                    }
+                    // La primera interacción pertenece a Hoy. Una vez que el
+                    // primer frame y sus datos mínimos han aparecido, dejamos
+                    // que Salud prepare el histórico para las demás pestañas
+                    // sin hacer al usuario esperar a pulsarlas.
+                    await health.prepare()
+                    try? await Task.sleep(for: .seconds(1.2))
+                    guard !Task.isCancelled else { return }
+                    await health.loadExtendedHistory()
+                }
         }
     }
 }

@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import HealthKit
 import WatchConnectivity
+import WidgetKit
 
 private struct WatchTwinPayload: Sendable {
     let readiness: Int?
@@ -15,6 +16,12 @@ private struct WatchTwinPayload: Sendable {
     let hrv: Int?
     let restingHeartRate: Int?
     let sleepHours: Double?
+    let energy: Int?
+    let energyCurve: [Double]?
+    let currentHour: Double?
+    let caffeineCurve: [Double]?
+    let caffeineNowMg: Double?
+    let caffeineBedtimeMg: Double?
 
     nonisolated init(_ message: [String: Any]) {
         readiness = message["readiness"] as? Int
@@ -28,6 +35,12 @@ private struct WatchTwinPayload: Sendable {
         hrv = message["hrv"] as? Int
         restingHeartRate = message["restingHeartRate"] as? Int
         sleepHours = message["sleepHours"] as? Double
+        energy = message["energy"] as? Int
+        energyCurve = message["energyCurve"] as? [Double]
+        currentHour = message["currentHour"] as? Double
+        caffeineCurve = message["caffeineCurve"] as? [Double]
+        caffeineNowMg = message["caffeineNowMg"] as? Double
+        caffeineBedtimeMg = message["caffeineBedtimeMg"] as? Double
     }
 }
 
@@ -380,7 +393,20 @@ extension WatchWorkoutManager: WCSessionDelegate {
         hrv = payload.hrv ?? hrv
         restingHeartRate = payload.restingHeartRate ?? restingHeartRate
         sleepHours = payload.sleepHours ?? sleepHours
+        persistWidgetSnapshot(payload)
         connectionState = "Sincronizado"
+    }
+
+    private func persistWidgetSnapshot(_ payload: WatchTwinPayload) {
+        guard let defaults = UserDefaults(suiteName: "group.com.angelmartinez.eterhealth") else { return }
+        if let value = payload.energy { defaults.set(value, forKey: "watch.energy") }
+        if let value = payload.energyCurve { defaults.set(value, forKey: "watch.energyCurve") }
+        if let value = payload.currentHour { defaults.set(value, forKey: "watch.currentHour") }
+        if let value = payload.caffeineCurve { defaults.set(value, forKey: "watch.caffeineCurve") }
+        if let value = payload.caffeineNowMg { defaults.set(value, forKey: "watch.caffeineNowMg") }
+        if let value = payload.caffeineBedtimeMg { defaults.set(value, forKey: "watch.caffeineBedtimeMg") }
+        defaults.set(payload.updatedAt ?? Date(), forKey: "watch.updatedAt")
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func apply(_ payload: WatchActivePayload) {

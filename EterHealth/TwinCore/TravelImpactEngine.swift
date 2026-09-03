@@ -440,8 +440,14 @@ enum TravelImpactEngine {
         }
         guard let start else { return nil }
 
+        let leg = measuringLeg ?? (phase == .homeReadaptation ? .homeReturn : .outbound)
+        let localZone = leg == .homeReturn
+            ? TimeZone(identifier: episode.homeTimeZoneID)
+            : TimeZone(identifier: episode.destinationTimeZoneID)
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        // Las noches se agrupan en el día civil donde se estaba, no en el huso
+        // que tenga el teléfono meses después al reconstruir el viaje.
+        calendar.timeZone = localZone ?? .current
         // El horario contra el que se compara: el ANCLA PERSONAL, no la mediana
         // de las mismas noches que se están juzgando.
         //
@@ -457,9 +463,6 @@ enum TravelImpactEngine {
         // significa volver a esa misma hora de reloj pero en el huso de donde
         // estás. Así "23:30 en Tokio" cuenta como adaptado y "07:00 en Tokio"
         // (= 23:30 en Lisboa) no, que es la distinción que hace falta.
-        let localZone = (measuringLeg ?? (phase == .homeReadaptation ? .homeReturn : .outbound)) == .homeReturn
-            ? TimeZone(identifier: episode.homeTimeZoneID)
-            : TimeZone(identifier: episode.destinationTimeZoneID)
         let habitualBedtimeMinutes = habitualBedtimeMinutes(episode: episode, signals: signals)
 
         var streak = 0
@@ -478,6 +481,39 @@ enum TravelImpactEngine {
             cursor = next
         }
         return nil
+    }
+
+    /// Decisión pura del backfill de viajes pasados: qué tramos cuya ventana de
+    /// gracia ya cerró (`< now`) confirman estabilidad según las señales, y en
+    /// cuántos días desde la llegada. Sin HealthKit — el store le pasa las
+    /// señales ya leídas, así esto se testea en aislamiento igual que
+    /// stabilizedDate. Sólo mira tramos aún sin medir (stabilityMeasurableUntil
+    /// devuelve nil cuando ya hay medición). Es la misma comprobación que en
+    /// vivo, sólo que mirando atrás en vez de esperar a que pasen los días.
+    nonisolated static func retroactiveStability(
+        episode: TravelEpisode, signals: TravelSignalContext,
+        rates: ReentrainmentRates = .prior, now: Date = Date()
+    ) -> [(leg: TravelLeg, days: Double)] {
+        var result: [(leg: TravelLeg, days: Double)] = []
+        if let window = episode.stabilityMeasurableUntil(leg: .outbound, rates: rates), window < now,
+           let arrival = episode.destinationArrival {
+            // La ida no se puede medir más allá de la vuelta a casa.
+            let limit = min(window, episode.homeArrival ?? window)
+            if let stabilized = stabilizedDate(episode: episode, at: limit, signals: signals,
+                                               rates: rates, measuringLeg: .outbound),
+               stabilized >= arrival {
+                result.append((.outbound, stabilized.timeIntervalSince(arrival) / 86_400))
+            }
+        }
+        if let window = episode.stabilityMeasurableUntil(leg: .homeReturn, rates: rates), window < now,
+           let homeArrival = episode.homeArrival {
+            if let stabilized = stabilizedDate(episode: episode, at: window, signals: signals,
+                                               rates: rates, measuringLeg: .homeReturn),
+               stabilized >= homeArrival {
+                result.append((.homeReturn, stabilized.timeIntervalSince(homeArrival) / 86_400))
+            }
+        }
+        return result
     }
 
     /// Un día cuenta como estabilizado si todas las señales CON DATO están en

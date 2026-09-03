@@ -449,20 +449,41 @@ private struct CompletedTravelRow: View {
             // Con qué autoridad se cerró este viaje. Es el único sitio de la
             // app donde un episodio recuperado se muestra, así que es el único
             // sitio donde esta distinción puede llegar a leerse.
-            Label(closureDescription, systemImage: isConfirmed ? "checkmark.seal" : "questionmark.circle")
+            Label(closureDescription, systemImage: hasMeasuredLeg ? "checkmark.seal" : "questionmark.circle")
                 .font(.caption2)
-                .foregroundStyle(isConfirmed ? .secondary : EterTheme.danger)
+                .foregroundStyle(hasMeasuredLeg ? .secondary : EterTheme.danger)
         }
     }
 
-    private var isConfirmed: Bool {
-        episode.phaseBasis(at: now, rates: rates) == .measuredStability
-    }
+    private var measured: TravelMeasuredOutcome? { episode.measuredOutcome }
+    private var hasMeasuredLeg: Bool { measured?.hasAnything == true }
 
     private var closureDescription: String {
-        isConfirmed
-            ? "Cerrado con estabilidad confirmada por tus señales."
-            : "Cerrado porque se agotó la duración estimada: nadie confirmó estabilidad, así que este viaje no aporta nada al aprendizaje."
+        if episode.resolvedStayPolicy == .keepHomeSchedule {
+            return "Estancia corta: mantuviste el horario de origen. Se registra como contexto, pero no mide adaptación circadiana."
+        }
+        let outbound = measured?.destinationStabilityDays
+        let home = measured?.homeStabilityDays
+        let learningSuffix: String = {
+            guard let confounders = measured?.confounders, !confounders.isEmpty else {
+                return "utilizada para aprender"
+            }
+            return "medida, pero excluida del aprendizaje por \(confounders.descriptions.joined(separator: ", "))"
+        }()
+        switch (outbound, home) {
+        case let (.some(outboundDays), .some(homeDays)):
+            return String(format: "Ida confirmada en %.1f días · vuelta confirmada en %.1f días · %@.", outboundDays, homeDays, learningSuffix)
+        case let (.some(days), nil):
+            return String(format: "Ida confirmada en %.1f días y %@ · vuelta sin 3 días consecutivos válidos.", days, learningSuffix)
+        case let (nil, .some(days)):
+            return String(format: "Vuelta confirmada en %.1f días y %@ · ida sin 3 días consecutivos válidos.", days, learningSuffix)
+        case (nil, nil):
+            let stayDays = episode.stayDuration.map { Int(($0 / 86_400).rounded(.down)) }
+            if let stayDays, stayDays < TravelImpactEngine.stabilityDays {
+                return "Ida no evaluable: estancia de \(stayDays) día\(stayDays == 1 ? "" : "s") y se requieren \(TravelImpactEngine.stabilityDays). Vuelta sin 3 días consecutivos válidos."
+            }
+            return "Sin confirmación: no hubo 3 días consecutivos con sueño y HRV disponibles y dentro de tus bandas históricas. No se usa para aprender."
+        }
     }
 
     private var summary: String {

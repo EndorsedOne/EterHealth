@@ -116,6 +116,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     func updateTwinSummary(readiness: Int, state: String, recommendation: String, reason: String,
                            activity: String, confidence: Int, maximumHeartRate: Int?,
                            hrv: Int, restingHeartRate: Int, sleepHours: Double,
+                           energy: Int, energyCurve: [Double], currentHour: Double,
+                           caffeineCurve: [Double], caffeineNowMg: Double, caffeineBedtimeMg: Double,
                            updatedAt: Date = Date()) {
         let payload: [String: Any] = [
             "payloadType": "twinSummary",
@@ -128,6 +130,12 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             "hrv": hrv,
             "restingHeartRate": restingHeartRate,
             "sleepHours": sleepHours,
+            "energy": energy,
+            "energyCurve": energyCurve,
+            "currentHour": currentHour,
+            "caffeineCurve": caffeineCurve,
+            "caffeineNowMg": caffeineNowMg,
+            "caffeineBedtimeMg": caffeineBedtimeMg,
             "summaryUpdatedAt": updatedAt.timeIntervalSince1970
         ]
         var completedPayload = payload
@@ -154,10 +162,25 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         if let weight { payload["setWeight"] = weight }
         if let reps { payload["setReps"] = reps }
         if let restEndsAt { payload["restEndsAt"] = restEndsAt.timeIntervalSince1970 }
+        // Segunda red de seguridad contra el envío por pulsación: si el
+        // contenido es idéntico al último enviado, no se manda. La primera es
+        // que la firma que dispara esto ya sólo depende de lo que el reloj
+        // muestra (ver LiveStrengthWorkoutView.workoutContextSignature); esto
+        // cubre a cualquier otro llamante presente o futuro.
+        //
+        // Importa sobre todo con el reloj NO alcanzable: ahí cada envío es un
+        // `transferUserInfo`, que se encola en disco y se entrega más tarde.
+        // Un mensaje por tecla llenaba esa cola de estados intermedios que
+        // nadie iba a leer nunca.
+        let signature = payload.keys.sorted().map { "\($0)=\(payload[$0] ?? "")" }.joined(separator: "&")
+        guard signature != lastWorkoutContextSignature else { return }
+        lastWorkoutContextSignature = signature
         let session = WCSession.default
         if session.isReachable { session.sendMessage(payload, replyHandler: nil) }
         else { session.transferUserInfo(payload) }
     }
+
+    private var lastWorkoutContextSignature: String?
 
     private func send(command: String) {
         let payload: [String: Any] = ["command": command, "commandID": UUID().uuidString]

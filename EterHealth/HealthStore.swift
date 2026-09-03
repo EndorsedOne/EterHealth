@@ -11,6 +11,10 @@ final class HealthStore: ObservableObject {
     @Published var lastUpdated: Date?
     @Published var snapshot = HealthSnapshot.empty
     @Published var vo2MaxHistory: [TrendPoint] = []
+    /// Por qué no se abrió la app del reloj, cuando no se abre. nil = todo bien
+    /// o nadie lo ha intentado. Antes el fallo era silencioso y no se
+    /// distinguía de "esta función no existe".
+    @Published var watchStartDiagnostic: String?
     @Published var hrvHistory: [TrendPoint] = []
     @Published var restingHeartRateHistory: [TrendPoint] = []
     @Published var sleepHistory: [TrendPoint] = []
@@ -35,10 +39,29 @@ final class HealthStore: ObservableObject {
     @Published var walkingHeartRateHistory: [TrendPoint] = []
     @Published var stepsHistory: [TrendPoint] = []
     @Published var ecgHistory: [ECGReading] = []
+    // Muestras REALES de HRV de HOY (cada una con su hora), para la gráfica de
+    // tendencias del día. HealthKit escribe la HRV de forma esporádica —
+    // sobre todo de madrugada y a primera hora— así que suelen ser pocos
+    // puntos; por eso van como puntos sobre la curva modelada, no como línea.
+    // Consulta de hoy y ligera: se resuelve en refresh(), no en el histórico
+    // diferido, porque la pestaña Hoy la enseña pronto.
+    @Published var todayHRVSamples: [TrendPoint] = []
+    @Published private(set) var isHistoryLoading = false
+    @Published private(set) var hasLoadedHistory = false
+    // Fin de la FASE 1 de loadExtendedHistory: ya están las líneas base que el
+    // gemelo de Hoy lee de verdad (HRV/reposo/sueño/archivo/zonas). El gemelo se
+    // calcula UNA sola vez, cuando esto es true, en vez de una pasada aproximada
+    // con históricos vacíos + otra refinada (lo que se percibía como "carga dos
+    // veces"). hasLoadedHistory, en cambio, es el fin de la FASE 2 (pestañas
+    // secundarias).
+    @Published private(set) var hasCriticalHistory = false
 
     private let store = HKHealthStore()
     private var observerQueries: [HKObserverQuery] = []
     private var scheduledRefresh: Task<Void, Never>?
+    /// Punto de salida independiente de la UI para consumidores que deben
+    /// actualizarse cuando HealthKit despierta la app en segundo plano.
+    var didRefresh: (@MainActor () -> Void)?
 
     private var shareTypes: Set<HKSampleType> {
         var types: Set<HKSampleType> = [HKObjectType.workoutType()]
@@ -154,6 +177,12 @@ final class HealthStore: ObservableObject {
     func refresh() async {
         isLoading = true
         defer { isLoading = false }
+        // OJO: refresh() NO reinicia hasLoadedHistory ni recarga el archivo de
+        // 365 días. Antes lo hacía, y como cada foreground dispara un observer
+        // de HealthKit → refresh(), abrir la app volvía a descargar TODO el
+        // histórico y a recomputar Rendimiento desde cero — el "hace el proceso
+        // dos veces" y el arranque pesado. Este método sólo actualiza HOY; el
+        // archivo se carga una vez por proceso en loadExtendedHistory().
         let start = Calendar.current.startOfDay(for: Date())
         async let steps = cumulative(.stepCount, unit: .count(), start: start)
         async let energy = cumulative(.activeEnergyBurned, unit: .kilocalorie(), start: start)
@@ -162,30 +191,8 @@ final class HealthStore: ObservableObject {
         async let restingHeartRate = latest(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()))
         async let hrv = latest(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
         async let sleep = sleepBreakdown()
-        async let vo2Trend = dailyAverage(.vo2Max, unit: HKUnit(from: "ml/kg*min"), days: 365)
-        async let hrvTrend = dailyAverage(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli), days: 90)
-        async let restingTrend = dailyAverage(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), days: 90)
-        async let sleepTrend = sleepDurationHistory(days: 90)
-        async let sleepScheduleTrend = sleepScheduleHistory(days: 60)
-        // 60 days, not 30 — SleepArchitectureEngine now compares the last
-        // 14 nights against a personal baseline built from the ~30 days
-        // before that (up to day -45), so the fetch window needs to reach
-        // back far enough to cover both.
-        async let sleepStagesTrend = sleepStagesHistory(days: 60)
-        async let workoutArchive = loadRecentWorkouts(days: 365)
-        async let alcoholTrend = loadAlcohol(days: 365)
-        async let weightTrend = dailyAverage(.bodyMass, unit: .gramUnit(with: .kilo), days: 365)
-        async let fatTrend = dailyAverage(.bodyFatPercentage, unit: .percent(), days: 365)
-        async let leanTrend = dailyAverage(.leanBodyMass, unit: .gramUnit(with: .kilo), days: 365)
-        async let bodyEntries = loadBodyMeasurements(days: 365)
-        async let systolicTrend = dailyAverage(.bloodPressureSystolic, unit: .millimeterOfMercury(), days: 365)
-        async let diastolicTrend = dailyAverage(.bloodPressureDiastolic, unit: .millimeterOfMercury(), days: 365)
-        async let respiratoryTrend = dailyAverage(.respiratoryRate, unit: HKUnit.count().unitDivided(by: .minute()), days: 90)
-        async let oxygenTrend = dailyAverage(.oxygenSaturation, unit: .percent(), days: 90)
-        async let temperatureTrend = dailyAverage(.appleSleepingWristTemperature, unit: .degreeCelsius(), days: 90)
-        async let walkingHeartTrend = dailyAverage(.walkingHeartRateAverage, unit: HKUnit.count().unitDivided(by: .minute()), days: 180)
-        async let stepsTrend = dailySum(.stepCount, unit: .count(), days: 90)
-        async let ecgSamples = loadECGHistory(days: 365)
+        async let initialWorkouts = loadRecentWorkouts(days: 30)
+        async let todayHRV = intradaySamples(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
 
         let resolvedSleep = await sleep
         snapshot = await HealthSnapshot(
@@ -198,15 +205,14 @@ final class HealthStore: ObservableObject {
             sleepHours: resolvedSleep.asleepHours
         )
         sleepStages = resolvedSleep
-        vo2MaxHistory = await vo2Trend
-        hrvHistory = await hrvTrend
-        restingHeartRateHistory = await restingTrend
-        sleepHistory = await sleepTrend
-        sleepScheduleHistory = await sleepScheduleTrend
-        sleepStagesHistory = await sleepStagesTrend
-        workoutHistory = await workoutArchive
-        let workoutCutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
-        recentWorkouts = workoutHistory.filter { $0.date >= workoutCutoff }
+        todayHRVSamples = await todayHRV
+        recentWorkouts = await initialWorkouts
+        // Sólo se siembra el archivo con los 30 días recientes mientras el
+        // histórico completo aún no ha llegado (primer arranque). Una vez
+        // loadExtendedHistory lo ha poblado con 365 días, un refresh de HOY no
+        // debe machacarlo con la ventana corta: eso obligaba a Rendimiento a
+        // recargar el archivo entero una y otra vez.
+        if !hasLoadedHistory { workoutHistory = recentWorkouts }
         // Descent has no HealthKit metadata equivalent to elevationMeters
         // (ascent) — the only way to get it is a per-workout route query,
         // real HealthKit cost on top of everything above. Scoped to just
@@ -226,33 +232,118 @@ final class HealthStore: ObservableObject {
                 if let descent = descentByID[workoutHistory[index].id] { workoutHistory[index].elevationDescendedMeters = descent }
             }
         }
-        alcoholHistory = await alcoholTrend
-        bodyWeightHistory = await weightTrend
-        bodyFatHistory = await fatTrend.map { TrendPoint(date: $0.date, value: $0.value * 100) }
-        leanMassHistory = await leanTrend
-        bodyMeasurements = await bodyEntries
-        systolicBloodPressureHistory = await systolicTrend
-        diastolicBloodPressureHistory = await diastolicTrend
-        respiratoryRateHistory = await respiratoryTrend
-        oxygenSaturationHistory = await oxygenTrend.map { TrendPoint(date: $0.date, value: $0.value * 100) }
-        wristTemperatureHistory = await temperatureTrend
-        walkingHeartRateHistory = await walkingHeartTrend
-        stepsHistory = await stepsTrend
-        ecgHistory = await ecgSamples
+        lastUpdated = Date()
+        didRefresh?()
+    }
+
+    /// Histórico pesado diferido: nunca debe impedir que Hoy responda.
+    ///
+    /// Dos fases dentro de una misma pasada. La PRIMERA carga exactamente lo
+    /// que el gemelo de Hoy lee de verdad (assess + plan): HRV, reposo, sueño,
+    /// regularidad de sueño, alcohol, respiración, temperatura, el archivo de
+    /// entrenos y las zonas de carrera. En cuanto están, re-sellamos
+    /// `lastUpdated` para que la valoración —calculada primero de forma
+    /// aproximada sobre los escalares de hoy— se recalcule ya contra las
+    /// líneas base reales. La SEGUNDA carga lo que sólo consumen las pestañas
+    /// Salud/Datos/Composición (VO2, composición corporal, tensión, oxígeno,
+    /// temperatura de sueño por noche, pasos, FC al caminar, ECG): nunca
+    /// bloquea al gemelo. Antes esta función se dejaba fuera la mayor parte de
+    /// estos históricos, así que esas pestañas quedaban vacías y el gemelo se
+    /// congelaba con líneas base vacías.
+    func loadExtendedHistory() async {
+        guard !hasLoadedHistory, !isHistoryLoading else { return }
+        isHistoryLoading = true
+        defer { isHistoryLoading = false }
+
+        // ── Fase 1: lo que el gemelo de Hoy necesita ─────────────────────────
+        async let workouts = loadRecentWorkouts(days: 365)
+        async let hrv = dailyAverage(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli), days: 90)
+        async let resting = dailyAverage(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), days: 90)
+        async let sleep = sleepDurationHistory(days: 90)
+        async let sleepSchedule = sleepScheduleHistory(days: 60)
+        async let alcohol = loadAlcohol(days: 365)
+        async let respiratory = dailyAverage(.respiratoryRate, unit: HKUnit.count().unitDivided(by: .minute()), days: 90)
+        async let temperature = dailyAverage(.appleSleepingWristTemperature, unit: .degreeCelsius(), days: 90)
+
+        hrvHistory = await hrv
+        restingHeartRateHistory = await resting
+        sleepHistory = await sleep
+        sleepScheduleHistory = await sleepSchedule
+        alcoholHistory = await alcohol
+        respiratoryRateHistory = await respiratory
+        wristTemperatureHistory = await temperature
+
+        var archive = await workouts
+        // El descenso real ya se calculó para el subconjunto reciente en
+        // refresh(); el archivo de 365 días llega sin él. Lo copiamos por id en
+        // vez de volver a consultar las rutas (coste HealthKit real) — el resto
+        // del archivo no lo necesita (sólo la sesión de "hoy" lo lee).
+        let descentByID = Dictionary(recentWorkouts.compactMap { workout in
+            workout.elevationDescendedMeters.map { (workout.id, $0) }
+        }, uniquingKeysWith: { first, _ in first })
+        if !descentByID.isEmpty {
+            for index in archive.indices {
+                if let descent = descentByID[archive[index].id] { archive[index].elevationDescendedMeters = descent }
+            }
+        }
+        workoutHistory = archive
         heartRateZones = await loadHeartRateZones(workouts: recentWorkouts, days: 10)
         runningHeartRateZones = await loadHeartRateZones(workouts: recentWorkouts.filter { $0.activity == "Carrera" }, days: 10)
         heartRateRecoveryHistory = await loadHeartRateRecovery(workouts: recentWorkouts)
-        // Stamped only once every property above (heart rate zones and
-        // workout history included) has actually finished loading — it
-        // used to fire right after `snapshot`, well before this. ContentView
-        // treats `lastUpdated` changing as the one signal to recompute its
-        // cached PerformanceSummary (DashboardViewModel.refresh), so firing
-        // it early meant that summary's zone breakdown ("Foco de
-        // intensidad") could get permanently baked in from zero/stale
-        // zones, while views reading `health.heartRateZones` directly (the
-        // "Zonas de frecuencia cardíaca" card right below it) kept
-        // updating live — the exact split-screen mismatch this caused.
+
+        // El gemelo puede recalcularse ya contra líneas base reales. Este es el
+        // único punto donde loadExtendedHistory vuelve a tocar lastUpdated:
+        // ContentView lo trata como la señal para recomputar la valoración. Y
+        // marcamos hasCriticalHistory ANTES del sello para que la primera (y
+        // única) valoración se dispare ya con datos reales.
+        hasCriticalHistory = true
         lastUpdated = Date()
+        didRefresh?()
+        await Task.yield()
+
+        // ── Fase 2: sólo pestañas Salud/Datos/Composición ────────────────────
+        async let vo2 = dailyAverage(.vo2Max, unit: HKUnit(from: "ml/kg*min"), days: 365)
+        async let sleepStages = sleepStagesHistory(days: 60)
+        async let steps = dailySum(.stepCount, unit: .count(), days: 90)
+        async let weight = dailyAverage(.bodyMass, unit: .gramUnit(with: .kilo), days: 365)
+        async let fat = dailyAverage(.bodyFatPercentage, unit: .percent(), days: 365)
+        async let lean = dailyAverage(.leanBodyMass, unit: .gramUnit(with: .kilo), days: 365)
+        async let bodyEntries = loadBodyMeasurements(days: 365)
+        async let systolic = dailyAverage(.bloodPressureSystolic, unit: .millimeterOfMercury(), days: 365)
+        async let diastolic = dailyAverage(.bloodPressureDiastolic, unit: .millimeterOfMercury(), days: 365)
+        async let oxygen = dailyAverage(.oxygenSaturation, unit: .percent(), days: 90)
+        async let walkingHeart = dailyAverage(.walkingHeartRateAverage, unit: HKUnit.count().unitDivided(by: .minute()), days: 180)
+        async let ecg = loadECGHistory(days: 365)
+
+        vo2MaxHistory = await vo2
+        sleepStagesHistory = await sleepStages
+        stepsHistory = await steps
+        await Task.yield()
+        bodyWeightHistory = await weight
+        bodyFatHistory = await fat.map { TrendPoint(date: $0.date, value: $0.value * 100) }
+        leanMassHistory = await lean
+        bodyMeasurements = await bodyEntries
+        await Task.yield()
+        systolicBloodPressureHistory = await systolic
+        diastolicBloodPressureHistory = await diastolic
+        oxygenSaturationHistory = await oxygen.map { TrendPoint(date: $0.date, value: $0.value * 100) }
+        walkingHeartRateHistory = await walkingHeart
+        ecgHistory = await ecg
+        hasLoadedHistory = true
+    }
+
+    /// Señales de sueño, HRV, pulso en reposo y horario de sueño para una
+    /// VENTANA ARBITRARIA (no "últimos N días"). Sirve para inferir la
+    /// estabilidad de un viaje PASADO a partir de lo que Apple Salud todavía
+    /// guarde de aquellas fechas. Consulta a demanda: no toca las @Published del
+    /// arranque, así que no afecta al tiempo de arranque.
+    func travelSignalWindow(start: Date, end: Date) async
+        -> (sleep: [TrendPoint], hrv: [TrendPoint], resting: [TrendPoint], schedule: [NightlySleepSchedule]) {
+        async let hrv = dailyAverage(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli), start: start, end: end)
+        async let resting = dailyAverage(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), start: start, end: end)
+        async let sleep = sleepDurationHistory(from: start, to: end)
+        async let schedule = sleepScheduleHistory(from: start, to: end)
+        return await (sleep: sleep, hrv: hrv, resting: resting, schedule: schedule)
     }
 
     func saveStrengthWorkout(start: Date, end: Date) async {
@@ -457,14 +548,56 @@ final class HealthStore: ObservableObject {
         // there is nothing to hand off to, so this returns early instead.
         guard WCSession.isSupported() else { return false }
         let session = WCSession.default
-        guard session.isPaired, session.isWatchAppInstalled else { return false }
+        // ESPERAR la activación antes de preguntar. `isPaired` y
+        // `isWatchAppInstalled` sólo tienen valor una vez la sesión está
+        // `.activated`, y `activate()` se llama en el init de WatchMetricsStore
+        // — que es asíncrono. Al abrir la primera sesión de fuerza tras lanzar
+        // la app, este guard se evaluaba con la sesión todavía inactiva, salía
+        // por `false` y el reloj no se abría nunca. Peor: el llamante marca
+        // `requestedWatchStart = true` de entrada, así que no se reintentaba.
+        //
+        // Dos segundos como techo: si en ese tiempo no ha activado, algo va mal
+        // de verdad y es mejor decirlo que seguir esperando con la pantalla del
+        // entrenamiento ya abierta.
+        var waited = 0.0
+        while session.activationState != .activated, waited < 2.0 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 0.1
+        }
+        guard session.activationState == .activated else {
+            await MainActor.run {
+                self.watchStartDiagnostic = "La sesión con el Apple Watch no llegó a activarse."
+            }
+            return false
+        }
+        guard session.isPaired else {
+            await MainActor.run { self.watchStartDiagnostic = "No hay ningún Apple Watch emparejado." }
+            return false
+        }
+        guard session.isWatchAppInstalled else {
+            // Pasa de verdad con una instalación de desarrollo: el reloj tiene
+            // la app pero WCSession no la ve como companion instalada hasta que
+            // se instala por la vía normal. Decirlo es más útil que el silencio
+            // de antes, que se confundía con "la función no existe".
+            await MainActor.run {
+                self.watchStartDiagnostic = "éter no está instalada como app companion en el Apple Watch. Ábrela una vez desde el reloj o instálala desde la app Watch."
+            }
+            return false
+        }
+        await MainActor.run { self.watchStartDiagnostic = nil }
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .traditionalStrengthTraining
         configuration.locationType = .indoor
         return await withCheckedContinuation { continuation in
             store.startWatchApp(with: configuration) { success, error in
                 Task { @MainActor in
-                    if let error { self.errorMessage = "No se pudo iniciar el Apple Watch: \(error.localizedDescription)" }
+                    if let error {
+                        // Al diagnóstico y no a errorMessage: errorMessage abre
+                        // una alerta modal encima de la sesión de entrenamiento
+                        // que acabas de empezar, que es justo cuando menos
+                        // quieres una. La cabecera ya tiene sitio para decirlo.
+                        self.watchStartDiagnostic = "No se pudo iniciar el Apple Watch: \(error.localizedDescription)"
+                    }
                     continuation.resume(returning: success)
                 }
             }
@@ -489,6 +622,27 @@ final class HealthStore: ObservableObject {
             let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 1, sortDescriptors: [sort]) { _, samples, _ in
                 let value = (samples?.first as? HKQuantitySample)?.quantity.doubleValue(for: unit) ?? 0
                 continuation.resume(returning: value)
+            }
+            store.execute(query)
+        }
+    }
+
+    /// Muestras individuales de HOY (desde las 00:00) con su marca de tiempo,
+    /// ordenadas. A diferencia de `latest` (que trae sólo el último valor) o de
+    /// `dailyAverage` (que colapsa cada día en un punto), aquí queremos la
+    /// dispersión intradía real para dibujarla. Ligera por definición: el
+    /// predicado es sólo el día en curso.
+    private func intradaySamples(_ id: HKQuantityTypeIdentifier, unit: HKUnit) async -> [TrendPoint] {
+        guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return [] }
+        let start = Calendar.current.startOfDay(for: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
+        let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, _ in
+                let points = (samples as? [HKQuantitySample] ?? []).map {
+                    TrendPoint(date: $0.startDate, value: $0.quantity.doubleValue(for: unit))
+                }
+                continuation.resume(returning: points)
             }
             store.execute(query)
         }
@@ -537,10 +691,14 @@ final class HealthStore: ObservableObject {
     }
 
     private func sleepDurationHistory(days: Int) async -> [TrendPoint] {
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: Date()))!
+        return await sleepDurationHistory(from: start, to: Date())
+    }
+
+    private func sleepDurationHistory(from start: Date, to end: Date) async -> [TrendPoint] {
         guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
         let calendar = Calendar.current
-        let start = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: Date()))!
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         return await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
                 let values = samples as? [HKCategorySample] ?? []
@@ -574,10 +732,14 @@ final class HealthStore: ObservableObject {
     // consistent bedtime/wake time are) can be measured, not just how
     // long each night was.
     private func sleepScheduleHistory(days: Int) async -> [NightlySleepSchedule] {
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: Date()))!
+        return await sleepScheduleHistory(from: start, to: Date())
+    }
+
+    private func sleepScheduleHistory(from start: Date, to end: Date) async -> [NightlySleepSchedule] {
         guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
         let calendar = Calendar.current
-        let start = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: Date()))!
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         return await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
                 let values = samples as? [HKCategorySample] ?? []
@@ -680,10 +842,14 @@ final class HealthStore: ObservableObject {
     }
 
     private func dailyAverage(_ id: HKQuantityTypeIdentifier, unit: HKUnit, days: Int) async -> [TrendPoint] {
+        let end = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: end))!
+        return await dailyAverage(id, unit: unit, start: start, end: end)
+    }
+
+    private func dailyAverage(_ id: HKQuantityTypeIdentifier, unit: HKUnit, start: Date, end: Date) async -> [TrendPoint] {
         guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return [] }
         let calendar = Calendar.current
-        let end = Date()
-        let start = calendar.date(byAdding: .day, value: -days, to: calendar.startOfDay(for: end))!
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         return await withCheckedContinuation { continuation in
             let query = HKStatisticsCollectionQuery(
@@ -1084,6 +1250,7 @@ final class HealthStore: ObservableObject {
         case .functionalStrengthTraining: return "Fuerza funcional"
         case .stairClimbing: return "Escaleras"
         case .cycling: return "Ciclismo"
+        case .rowing: return "Remo indoor"
         // Previously fell through to the generic "Entrenamiento" default — every
         // swimming session lost its identity and couldn't be told apart from
         // anything else unclassified (the one real multi-sport gap this had).
@@ -1098,6 +1265,7 @@ final class HealthStore: ObservableObject {
         case .highIntensityIntervalTraining: return ["Cuádriceps": 0.8, "Glúteos": 0.8, "Isquios": 0.6, "Gemelos": 0.5, "Core": 0.5]
         case .walking, .hiking: return ["Cuádriceps": 0.35, "Glúteos": 0.35, "Isquios": 0.25, "Gemelos": 0.3, "Core": 0.15]
         case .cycling: return ["Cuádriceps": 0.7, "Glúteos": 0.35, "Isquios": 0.25, "Gemelos": 0.2]
+        case .rowing: return ["Espalda": 0.6, "Cuádriceps": 0.65, "Glúteos": 0.55, "Isquios": 0.45, "Bíceps": 0.3, "Core": 0.35]
         case .swimming: return ["Espalda": 0.8, "Hombros": 0.7, "Core": 0.5, "Pecho": 0.4]
         // A Watch-logged strength session (no Hevy import behind it) carries
         // no per-exercise detail at all in HealthKit — this used to fall

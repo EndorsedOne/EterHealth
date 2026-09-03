@@ -44,6 +44,38 @@ enum PersonalBaselineEngine {
         )
     }
 
+    /// Línea base que existía ANTES de un viaje histórico. El backfill no debe
+    /// juzgar marzo con la fisiología de agosto: usa únicamente las muestras
+    /// anteriores a la salida y deja fuera deliberadamente el propio viaje.
+    static func travelProfile(sleep: [TrendPoint], hrv: [TrendPoint], resting: [TrendPoint],
+                              before departure: Date) -> PersonalBaselineProfile {
+        let empty = historicalMetric(name: "Sin datos", points: [], before: departure, favorableHigh: true)
+        return PersonalBaselineProfile(
+            hrv: historicalMetric(name: "HRV", points: hrv, before: departure, favorableHigh: true),
+            restingHeartRate: historicalMetric(name: "Pulso en reposo", points: resting, before: departure, favorableHigh: false),
+            sleep: historicalMetric(name: "Sueño", points: sleep, before: departure, favorableHigh: true),
+            wristTemperature: empty, respiratoryRate: empty, muscleRecoveryHours: [:]
+        )
+    }
+
+    private static func historicalMetric(name: String, points: [TrendPoint], before date: Date,
+                                         favorableHigh: Bool) -> PersonalMetricBaseline {
+        let reference = Array(points.filter { $0.date < date }.sorted { $0.date < $1.date }.suffix(56))
+        let values = reference.map(\.value)
+        let center = median(values)
+        let deviations = center.map { c in values.map { abs($0 - c) } } ?? []
+        let mad = median(deviations)
+        let robustSigma = max((mad ?? 0) * 1.4826, (center ?? 1) * 0.035)
+        return PersonalMetricBaseline(
+            name: name, current: nil, expected: center,
+            lowerNormal: center.map { $0 - 1.5 * robustSigma },
+            upperNormal: center.map { $0 + 1.5 * robustSigma }, deviation: nil,
+            samples: values.count, confidence: min(100, Int((Double(values.count) / 28 * 100).rounded())),
+            context: "Referencia anterior al viaje · \(values.count) días válidos",
+            measuredAt: reference.last?.date
+        )
+    }
+
     private static func metric(name: String, points: [TrendPoint], now: Date, favorableHigh: Bool) -> PersonalMetricBaseline {
         let calendar = Calendar.current
         let current = points.last?.value

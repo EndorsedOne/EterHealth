@@ -40,6 +40,16 @@ private struct Snapshot: Codable {
     let dailyLoads: [Double]
     let runningShare: Int
     let strengthShare: Int
+    // Reto 1 · opcionales por el mismo motivo que loadChannel: los snapshots
+    // ya guardados no los traen y el decoder sintetizado no aplica defaults.
+    var hrvPoints: [HRVPoint]?
+    var inputMarkers: [InputMarker]?
+    var hrvBaseline: Double?
+    var restingHeartRateBaseline: Double?
+    var caffeineCurve: [CaffeinePoint]?
+    var caffeineNowMg: Double?
+    var caffeineBedtimeMg: Double?
+    var caffeineBedtimeHour: Double?
 
     static let sample = Snapshot(
         updatedAt: .now, readiness: 70, state: "Disponible", recommendation: "Recuperación",
@@ -58,7 +68,13 @@ private struct Snapshot: Codable {
         loadConfidence: "Alta", loadConfidenceScore: 82,
         loadConfidenceReason: "28 días de carga observados y 8 sesiones recientes.",
         dailyLoads: [12, 0, 18, 9, 0, 31, 8, 15, 0, 24, 10, 6, 0, 28, 12, 7, 0, 20, 35, 8, 0, 16, 11, 26, 0, 14, 20, 9],
-        runningShare: 72, strengthShare: 28
+        runningShare: 72, strengthShare: 28,
+        hrvPoints: [HRVPoint(hour: 6.5, value: 61), HRVPoint(hour: 7.2, value: 55), HRVPoint(hour: 9.1, value: 49)],
+        inputMarkers: [InputMarker(hour: 7.0, symbol: "cup.and.saucer.fill", kind: "coffee", label: "Cafeína 95 mg"),
+                       InputMarker(hour: 8.0, symbol: "snowflake", kind: "cold", label: "Frío 3 min")],
+        hrvBaseline: 49, restingHeartRateBaseline: 59,
+        caffeineCurve: [CaffeinePoint(hour: 7, remainingMg: 95), CaffeinePoint(hour: 12, remainingMg: 47.5), CaffeinePoint(hour: 23, remainingMg: 10)],
+        caffeineNowMg: 47.5, caffeineBedtimeMg: 10, caffeineBedtimeHour: 23
     )
 }
 
@@ -69,13 +85,30 @@ private struct EnergyEvent: Codable {
     let drain: Double
 }
 
+private struct HRVPoint: Codable {
+    let hour: Double
+    let value: Double
+}
+
+private struct InputMarker: Codable {
+    let hour: Double
+    let symbol: String
+    let kind: String
+    let label: String
+}
+
+private struct CaffeinePoint: Codable {
+    let hour: Double
+    let remainingMg: Double
+}
+
 private struct Entry: TimelineEntry { let date: Date; let snapshot: Snapshot }
 
 private struct Provider: TimelineProvider {
     func placeholder(in context: Context) -> Entry { Entry(date: .now, snapshot: .sample) }
     func getSnapshot(in context: Context, completion: @escaping (Entry) -> Void) { completion(load()) }
     func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> Void) {
-        completion(Timeline(entries: [load()], policy: .after(Date().addingTimeInterval(30 * 60))))
+        completion(Timeline(entries: [load()], policy: .after(Date().addingTimeInterval(20 * 60))))
     }
     private func load() -> Entry {
         guard let data = UserDefaults(suiteName: suite)?.data(forKey: snapshotKey),
@@ -152,10 +185,25 @@ private struct EnergyView: View {
             }
             EnergyTimeline(snapshot: entry.snapshot, color: energyColor)
             HStack(spacing: 5) {
-                Text(label).font(.caption2.bold()).foregroundStyle(energyColor)
-                Text("· \(entry.snapshot.energyBasis)").font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                contextMetric("HRV", value: entry.snapshot.hrv, baseline: entry.snapshot.hrvBaseline, percent: true, unit: "ms")
+                Spacer(minLength: 4)
+                contextMetric("Reposo", value: entry.snapshot.restingHeartRate,
+                              baseline: entry.snapshot.restingHeartRateBaseline, percent: false, unit: "ppm")
             }
-            Text(entry.snapshot.energyConfidenceReason ?? "Confianza limitada hasta actualizar las señales personales.")
+            if let now = entry.snapshot.caffeineNowMg, now >= 1 {
+                HStack(spacing: 4) {
+                    Image(systemName: "cup.and.saucer.fill").foregroundStyle(.brown)
+                    Text("~\(Int(now.rounded())) mg ahora")
+                    CaffeineBars(points: entry.snapshot.caffeineCurve ?? [], currentHour: entry.snapshot.currentHour)
+                        .frame(height: 9)
+                    Spacer()
+                    if let night = entry.snapshot.caffeineBedtimeMg,
+                       let hour = entry.snapshot.caffeineBedtimeHour {
+                        Text("\(formattedHour(hour)) · ~\(Int(night.rounded())) mg")
+                    }
+                }.font(.system(size: 7, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            Text("\(label) · \(entry.snapshot.energyBasis)")
                 .font(.system(size: 7)).foregroundStyle(.secondary).lineLimit(1)
         }.containerBackground(eterBackground, for: .widget).foregroundStyle(.white)
             .accessibilityHint("Confianza \(entry.snapshot.energyConfidence ?? "baja"). \(entry.snapshot.energyConfidenceReason ?? "Faltan señales personales.")")
@@ -168,6 +216,20 @@ private struct EnergyView: View {
         case "Media": return .orange
         default: return .red
         }
+    }
+    private func contextMetric(_ name: String, value: Int, baseline: Double?, percent: Bool, unit: String) -> some View {
+        let delta: Int? = baseline.flatMap { expected in
+            guard expected > 0 else { return nil }
+            let raw = percent ? (Double(value) - expected) / expected * 100 : Double(value) - expected
+            return Int(raw.rounded())
+        }
+        let comparison = delta.map { "\($0 > 0 ? "+" : "")\($0)\(percent ? "%" : "")" } ?? "sin base"
+        return Text("\(name) \(value) \(unit) · \(comparison)")
+            .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+    }
+    private func formattedHour(_ hour: Double) -> String {
+        let minutes = (Int((hour * 12).rounded()) * 5) % (24 * 60)
+        return String(format: "%02d:%02d", minutes / 60, minutes % 60)
     }
 }
 
@@ -214,6 +276,12 @@ private struct EnergyTimeline: View {
                         x: plotWidth * min(24, max(0, snapshot.currentHour)) / 24,
                         y: plotHeight * (1 - min(100, max(0, snapshot.energyCurve.last ?? Double(snapshot.energy))) / 100)
                     )
+                // Reto 1 · inputs de estilo de vida con su hora, abajo.
+                ForEach(Array((snapshot.inputMarkers ?? []).enumerated()), id: \.offset) { _, marker in
+                    Image(systemName: marker.symbol).font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(inputColor(marker.kind))
+                        .position(x: min(plotWidth - 4, max(4, plotWidth * marker.hour / 24)), y: plotHeight - 6)
+                }
                 Text("100").font(.system(size: 8)).foregroundStyle(.secondary)
                     .position(x: plotWidth + 15, y: 5)
                 Text("0").font(.system(size: 8)).foregroundStyle(.secondary)
@@ -228,6 +296,22 @@ private struct EnergyTimeline: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Banco de energía durante el día")
         .accessibilityValue("\(snapshot.energy) a las \(snapshot.updatedAt.formatted(date: .omitted, time: .shortened))")
+    }
+
+    private func inputColor(_ kind: String) -> Color {
+        switch kind {
+        case "sauna": return .red
+        case "cold": return .cyan
+        case "coffee": return .brown
+        case "alcohol": return .purple
+        case "supplement": return .teal
+        case "food": return .green
+        case "stress": return .pink
+        case "rest": return .blue
+        case "sleep": return .indigo
+        case "travel": return .mint
+        default: return .gray
+        }
     }
 }
 
@@ -259,6 +343,22 @@ private struct TimelineArea: Shape {
         result.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
         result.closeSubpath()
         return result
+    }
+}
+
+private struct CaffeineBars: View {
+    let points: [CaffeinePoint]
+    let currentHour: Double
+    var body: some View {
+        let peak = max(1, points.map(\.remainingMg).max() ?? 1)
+        HStack(alignment: .bottom, spacing: 0.7) {
+            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                Capsule()
+                    .fill(Color.brown.opacity(point.hour <= currentHour ? 0.9 : 0.4))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(1, 9 * point.remainingMg / peak))
+            }
+        }
     }
 }
 

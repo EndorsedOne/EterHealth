@@ -472,6 +472,32 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(association.samples, 3)
     }
 
+    func testCaffeineLearningUsesEstimatedBedtimeExposureNotTwoPMCutoff() {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = calendar.startOfDay(for: Date()).addingTimeInterval(-40 * 86_400)
+        let exposureDays = [10, 20, 30]
+        let events = exposureDays.map { day in
+            // 13:00 quedaba fuera del antiguo corte >=14:00, aunque una
+            // dosis grande aún deje cafeína relevante al acostarse.
+            LifestyleEvent(id: UUID(), date: start.addingTimeInterval(Double(day) * 86_400 + 13 * 3_600),
+                           alcoholDrinks: 0, saunaMinutes: 0, saunaTemperatureC: 80, coldMinutes: 0, coldTemperatureC: 12,
+                           timeZoneDifference: 0, travelDirection: .east, caffeineMg: 200, caffeineDate: nil,
+                           foodQuality: .notRecorded, fastingHours: 0, trainedFasted: false, lateDinner: false, heavyDinner: false,
+                           hydration: .notRecorded, electrolytes: false, digestiveSymptoms: [], supplements: [], note: "")
+        }
+        let sleep = (0..<36).map { day -> TrendPoint in
+            let isAfterExposure = exposureDays.contains(day - 1)
+            return TrendPoint(date: start.addingTimeInterval(Double(day) * 86_400), value: isAfterExposure ? 6.2 : 7.5)
+        }
+        let result = HabitAssociationEngine.analyze(
+            events: events, alcohol: [], hrv: [], restingHeartRate: [], sleep: sleep, now: Date()
+        )
+        let association = result.first { $0.kind == .lateCaffeine }
+        XCTAssertEqual(association?.samples, 3)
+        XCTAssertNotNil(association?.averageExposureLevel)
+        XCTAssertGreaterThan(association?.averageExposureLevel ?? 0, 1)
+    }
+
     func testSupplementsUseTheirOwnTimestampInsteadOfTheSharedEventDate() {
         // A dose logged at 1am is a different calendar day than the event's
         // own `date` (set to 8am the same "day" the entry is filed under) —
@@ -528,6 +554,56 @@ final class EngineTests: XCTestCase {
                                            now: now)
         XCTAssertTrue(assessment.signals.contains { $0.name == "Cafeína" },
                       "Caffeine with no explicit caffeineDate override must still be counted, falling back to the event's own date instead of being silently skipped.")
+    }
+
+    func testFastedTrainingIsVisibleAndReachesTwinWithoutFastingHours() {
+        let now = Date()
+        let event = LifestyleEvent(
+            id: UUID(), date: now.addingTimeInterval(-3_600), alcoholDrinks: 0,
+            saunaMinutes: 0, saunaTemperatureC: 80, coldMinutes: 0, coldTemperatureC: 12,
+            timeZoneDifference: 0, travelDirection: .east, caffeineMg: 0, caffeineDate: nil,
+            foodQuality: .notRecorded, fastingHours: 0, trainedFasted: true,
+            lateDinner: false, heavyDinner: false, hydration: .notRecorded, electrolytes: false,
+            digestiveSymptoms: [], supplements: [], note: "")
+
+        XCTAssertEqual(event.summary, "entrenamiento en ayunas")
+        let assessment = TwinEngine.assess(
+            health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil,
+            context: TwinContext(profile: neutralProfile, events: [event], reviews: [], activeInjuries: [],
+                                 calibration: neutralCalibration, personalAnchor: neutralAnchor), now: now)
+        let signal = assessment.signals.first { $0.name == "Entrenamiento en ayunas" }
+        XCTAssertNotNil(signal)
+        XCTAssertEqual(signal?.impact, 0,
+                       "Sin aprendizaje personal suficiente debe aportar contexto, no una penalización genérica.")
+
+        let markers = EnergyTimelineEngine.inputMarkers(from: [event], now: now)
+        XCTAssertTrue(markers.contains { $0.kind == "fastedTraining" && $0.label == "Entrenamiento en ayunas" })
+    }
+
+    func testFastedTrainingLearnsSeparatelyFromGeneralFasting() {
+        let calendar = Calendar(identifier: .gregorian)
+        let start = calendar.startOfDay(for: Date()).addingTimeInterval(-40 * 86_400)
+        let exposureDays = [10, 20, 30]
+        let events = exposureDays.map { day in
+            LifestyleEvent(
+                id: UUID(), date: start.addingTimeInterval(Double(day) * 86_400 + 8 * 3_600),
+                alcoholDrinks: 0, saunaMinutes: 0, saunaTemperatureC: 80,
+                coldMinutes: 0, coldTemperatureC: 12, timeZoneDifference: 0,
+                travelDirection: .east, caffeineMg: 0, caffeineDate: nil,
+                foodQuality: .notRecorded, fastingHours: 0, trainedFasted: true,
+                lateDinner: false, heavyDinner: false, hydration: .notRecorded,
+                electrolytes: false, digestiveSymptoms: [], supplements: [], note: "")
+        }
+        let sleep = (0..<36).map { day in
+            TrendPoint(date: start.addingTimeInterval(Double(day) * 86_400),
+                       value: exposureDays.contains(day - 1) ? 7.8 : 7.0)
+        }
+        let associations = HabitAssociationEngine.analyze(
+            events: events, alcohol: [], hrv: [], restingHeartRate: [], sleep: sleep, now: Date())
+
+        XCTAssertNotNil(associations.first { $0.kind == .fastedTraining })
+        XCTAssertNil(associations.first { $0.kind == .fasting },
+                     "Entrenar en ayunas no debe contaminar el aprendizaje de un ayuno prolongado sin ejercicio.")
     }
 
     func testHabitAssociationLearnsFromRespiratoryRateAndWristTemperature() {
@@ -840,6 +916,73 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(ExerciseCatalog.descriptor(for: "Squat (Barbell)").measurement, .reps)
     }
 
+    // La columna de KG en la sesión en vivo se decide con `tracksWeight`, y
+    // antes era un flag almacenado que venía `true` por defecto: cualquier
+    // ejercicio que no lo pusiera a mano — incluidas todas las planchas y todo
+    // el peso corporal que cae en el descriptor de fallback — pedía kilos que
+    // no existen. Ahora se deriva del equipamiento, así que la respuesta es
+    // correcta por construcción y no por haber acertado a rellenar un campo.
+    func testBodyweightAndTimedHoldsDoNotTrackWeight() {
+        for name in ["Push Up", "Flexiones", "Pull Up", "Dominadas", "Chin Up",
+                     "Plank", "Plancha lateral", "Air Squat", "Sentadilla al aire",
+                     "Burpee", "Mountain Climber", "Hollow Hold", "Dead Bug",
+                     "L-Sit", "Wall Sit", "Dead Hang", "Glute Bridge", "Dip",
+                     "Fondos en paralelas", "Sit Up", "Crunch abdominal", "Pike Push Up"] {
+            let descriptor = ExerciseCatalog.descriptor(for: name)
+            XCTAssertEqual(descriptor.equipment, ExerciseDescriptor.bodyweightEquipment, name)
+            XCTAssertFalse(descriptor.tracksWeight, "\(name) no se carga con kilos: la columna KG sobra")
+        }
+        // Los ergómetros no son peso corporal, pero tampoco llevan kilos: son
+        // el caso que justifica mantener el override explícito.
+        for name in ["Rowing Machine", "SkiErg"] {
+            XCTAssertFalse(ExerciseCatalog.descriptor(for: name).tracksWeight, name)
+        }
+    }
+
+    // Cada variante que el planificador propone debe tener una atribución
+    // explícita. Si una traducción o una regla genérica la convierte en
+    // "Cuerpo completo", el gemelo pierde tanto volumen como recuperación.
+    func testPrescribedBodyweightExercisesHaveTheirIntendedMuscleProfiles() {
+        XCTAssertEqual(MuscleMap.involvement(for: "Flexiones"), ["Pecho": 1.0, "Tríceps": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Flexiones pike"), ["Hombros": 1.0, "Tríceps": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Flexiones cerradas"), ["Tríceps": 1.0, "Pecho": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Fondos en banco estable"), ["Tríceps": 1.0, "Pecho": 0.5])
+        XCTAssertEqual(MuscleMap.involvement(for: "Plancha lateral"), ["Core": 1.0])
+        XCTAssertEqual(MuscleMap.involvement(for: "Hollow hold"), ["Core": 1.0])
+        XCTAssertNotEqual(MuscleMap.groups(for: "Fondos en banco estable"), ["Cuerpo completo"])
+    }
+
+    func testEveryExerciseInEterCatalogResolvesToACanonicalMuscleProfile() {
+        for descriptor in ExerciseCatalog.descriptors {
+            XCTAssertNotNil(MuscleMap.profile(for: descriptor.name), descriptor.name)
+        }
+    }
+
+    func testEveryBodyweightExerciseProposedByEterResolvesToACanonicalProfile() {
+        let prescribedNames = [
+            "Sentadilla búlgara", "Zancada inversa", "Puente de glúteo unilateral",
+            "Curl femoral deslizante", "Gemelo unilateral", "Plancha lateral",
+            "Remo con mochila", "Remo invertido bajo mesa segura", "Pájaros con botellas",
+            "Curl con mochila", "Dead bug", "Flexiones", "Flexiones pike",
+            "Fondos en banco estable", "Flexiones cerradas", "Hollow hold"
+        ]
+        for name in prescribedNames {
+            XCTAssertNotNil(MuscleMap.profile(for: name), name)
+        }
+    }
+
+    // El contrapunto: derivar `tracksWeight` del equipamiento no debe apagar la
+    // columna de KG donde sí hace falta, incluido el peso corporal LASTRADO y
+    // el trineo (que se mide en tiempo y distancia, pero se carga con discos).
+    func testLoadedMovementsStillTrackWeight() {
+        for name in ["Squat (Barbell)", "Bench Press (Barbell)", "Deadlift (Barbell)",
+                     "Weighted Pull Up", "Dominadas lastradas", "Weighted Dip",
+                     "Farmer Carry", "Sled Push", "Sled Pull",
+                     "Kettlebell Swing", "Dumbbell Row"] {
+            XCTAssertTrue(ExerciseCatalog.descriptor(for: name).tracksWeight, name)
+        }
+    }
+
     // Y con eso una simulación registrada en éter ya alimenta el componente de
     // estaciones del forecast. Antes sólo llegaba 1 de 8 (los acarreos), por
     // debajo del umbral de 4, así que la tubería existía pero no servía.
@@ -879,6 +1022,31 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(ExerciseCatalog.descriptor(for: "Ski Erg").tracksWeight, "También por nombre alternativo.")
         XCTAssertTrue(ExerciseCatalog.descriptor(for: "Sled Push").tracksWeight, "El trineo sí lleva carga.")
         XCTAssertTrue(ExerciseCatalog.descriptor(for: "Squat (Barbell)").tracksWeight)
+    }
+
+    func testMachineRowingDataPersonalizesHyroxInsteadOfBeingIgnored() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let row = WorkoutEnrichment(
+            workoutID: UUID().uuidString, workoutDate: now.addingTimeInterval(-86_400),
+            machine: .technogymSkillrow, resistanceMode: .aquaFeel,
+            resistanceLevel: 7, distanceMeters: 1_000, effectiveDurationSeconds: 240,
+            averagePowerWatts: 205, cadenceSPM: 29, perceivedEffort: 8,
+            useForHyrox: true, note: "", updatedAt: now
+        )
+
+        let estimate = HyroxForecastEngine.enrichedRowingEstimate([row], now: now)
+        XCTAssertNotNil(estimate)
+        XCTAssertEqual(estimate?.seconds ?? 0, 240, accuracy: 15)
+        XCTAssertGreaterThan(estimate?.weight ?? 0, 0.5)
+
+        let baseline = HyroxForecastEngine.forecast(running: hyroxRunning(), workouts: [], now: now)
+        let personalized = HyroxForecastEngine.forecast(
+            running: hyroxRunning(), workouts: [], now: now,
+            workoutEnrichments: [row]
+        )
+        XCTAssertEqual(personalized?.stationBasis, .enrichedRow)
+        XCTAssertTrue(personalized?.stations.first(where: { $0.name == "Row" })?.observed == true)
+        XCTAssertLessThan(personalized?.stationSeconds ?? 0, baseline?.stationSeconds ?? 0)
     }
 
     // Una serie de plancha o de trineo no tiene reps y sí es una serie hecha:
@@ -1856,6 +2024,42 @@ final class EngineTests: XCTestCase {
     func testLoadGuidanceSeparatesAccumulatedDeloadFromAcuteOverload() {
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: 1.12, sustainedWeeks: 3, observedDays: 24), .deload)
         XCTAssertEqual(PerformanceEngine.loadGuidance(ratio: 1.60, sustainedWeeks: 1, observedDays: 12), .overload)
+    }
+
+    func testHistoricalCapacityTurnsARecentSpikeIntoControlledReturnNotOverload() {
+        let summary = DualLoadSummary(
+            acuteAerobic: 40, habitualAerobic: 40,
+            acuteStrength: 120, habitualStrength: 60,
+            observedDays: 20, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 1,
+            historicalAerobicCapacity: 0, historicalStrengthCapacity: 150
+        )
+        XCTAssertEqual(summary.strengthRatio, 2, accuracy: 0.001)
+        XCTAssertEqual(summary.strengthGuidance, .returning,
+                       "Una subida grande frente al último mes sigue exigiendo margen, pero no es capacidad desconocida cuando cabe en un volumen sostenido anterior.")
+    }
+
+    func testHistoricalCapacityNeverHidesARealAllTimeSpike() {
+        let summary = DualLoadSummary(
+            acuteAerobic: 40, habitualAerobic: 40,
+            acuteStrength: 190, habitualStrength: 60,
+            observedDays: 20, sustainedAerobicWeeks: 1, sustainedStrengthWeeks: 1,
+            historicalAerobicCapacity: 0, historicalStrengthCapacity: 150
+        )
+        XCTAssertEqual(summary.strengthGuidance, .overload,
+                       "Superar claramente incluso la capacidad histórica debe conservar el aviso de sobrecarga.")
+    }
+
+    func testHistoricalCapacityRequiresFourActiveWeeksAndUsesTheirMedian() {
+        var history: [DailyDualTraining] = []
+        for day in 0..<84 {
+            let olderWeek = day / 7
+            let strength = day < 56 && day.isMultiple(of: 7) ? Double(80 + olderWeek * 10) : 0
+            history.append(DailyDualTraining(date: Date(timeIntervalSince1970: Double(day) * 86_400),
+                                             sessions: strength > 0 ? 1 : 0,
+                                             aerobic: 0, strength: strength))
+        }
+        let capacity = PerformanceEngine.historicalWeeklyCapacity(history: history)
+        XCTAssertEqual(capacity.strength, 115, accuracy: 0.001)
     }
 
     func testDeloadRewritesWeeklyTargetsAndRemovesQuality() {
@@ -2841,7 +3045,14 @@ final class EngineTests: XCTestCase {
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
 
         let imports = ImportStore(persistToDisk: false)
-        let now = Date()
+        // `now` FIJO y no Date(). Con la hora real, el resultado dependía del
+        // día y de la hora a la que se ejecutara la suite: `lateWeek` mira el
+        // día de la semana, y las ventanas de separación miran horas. Este test
+        // pasó por la mañana y falló por la tarde del MISMO día sin que nada
+        // del código cambiara — comprobado haciendo stash de los cambios en
+        // curso y volviéndolo a ejecutar. Es la convención que el resto de la
+        // suite ya sigue (Date(timeIntervalSince1970:)), y aquí faltaba.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
         // A real, heavy leg day logged an hour ago — 4 leg exercises × 4
         // working sets each, all at a real working RPE so effort-weighting
         // doesn't discount them. Real quads/glutes/hamstring readiness
@@ -6242,6 +6453,9 @@ final class EngineTests: XCTestCase {
         let strengthDays = week.prefix(3)
         XCTAssertTrue(strengthDays.allSatisfy { $0.kind == .strength },
                      "Sanity check: this scenario must actually produce three consecutive real strength days, or the test proves nothing.")
+        XCTAssertTrue(strengthDays.allSatisfy { !$0.strengthExercises.isEmpty })
+        XCTAssertTrue(strengthDays.flatMap(\.strengthExercises).allSatisfy { !$0.prescription.isEmpty && !$0.cue.isEmpty },
+                      "Cada día de fuerza de la semana debe transportar ejercicios, series/repeticiones y una pauta ejecutable, no sólo la etiqueta Fuerza.")
         let patterns = strengthDays.map(\.rationale)
         XCTAssertTrue(patterns[0].localizedCaseInsensitiveContains("pierna"))
         XCTAssertTrue(patterns[1].localizedCaseInsensitiveContains("empuje"))

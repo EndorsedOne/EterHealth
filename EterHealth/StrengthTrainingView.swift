@@ -43,15 +43,6 @@ enum StrengthRoutineBuilder {
                                lastPerformed: routine.lastPerformed, historicalVolume: routine.historicalVolume)
     }
 
-    static func routines(from imports: ImportStore) -> [StrengthRoutine] {
-        [
-            build("Push", matches: ["push", "empuje"], fallback: ["Bench Press (Barbell)", "Standing Military Press (Barbell)", "Incline Bench Press (Dumbbell)", "Lateral Raise (Dumbbell)", "Triceps Extension (Cable)"], imports: imports),
-            build("Pull", matches: ["pull", "tirón", "tiron"], fallback: ["Deadlift (Barbell)", "Lat Pulldown (Cable)", "Seated Cable Row", "Pull Up", "Biceps Curl (Dumbbell)"], imports: imports),
-            build("Pierna", matches: ["pierna", "leg"], fallback: ["Squat (Barbell)", "Leg Press (Machine)", "Romanian Deadlift (Barbell)", "Leg Extension (Machine)", "Leg Curl (Machine)"], imports: imports),
-            build("Full Body", matches: ["full body", "fullbody"], fallback: ["Squat (Barbell)", "Bench Press (Barbell)", "Pull Up", "Romanian Deadlift (Barbell)", "Standing Military Press (Barbell)"], imports: imports)
-        ]
-    }
-
     static func exerciseLibrary(from imports: ImportStore) -> [RoutineExercise] {
         var seen = Set<String>()
         var result: [RoutineExercise] = []
@@ -64,18 +55,6 @@ enum StrengthRoutineBuilder {
             result.append(RoutineExercise(name: descriptor.name, sets: defaultSets, restSeconds: defaultRest(for: descriptor.pattern)))
         }
         return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    static func personalized(_ routine: StrengthRoutine, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness]) -> StrengthRoutine {
-        let injuries = InjuryStore.shared.active
-        let exercises = routine.exercises.compactMap {
-            StrengthPrescriptionEngine.prescribe(
-                $0, workouts: imports.workouts, readiness: readiness,
-                muscleReadiness: muscles, injuries: injuries, goals: GoalStore.shared.profile.goals
-            )
-        }
-        return StrengthRoutine(name: routine.name, subtitle: exercises.map(\.name).joined(separator: " · "), exercises: exercises,
-                               lastPerformed: routine.lastPerformed, historicalVolume: routine.historicalVolume)
     }
 
     static func routine(from proposed: ProposedWorkout, imports: ImportStore, readiness: Int, muscles: [MuscleReadiness]) -> StrengthRoutine {
@@ -137,26 +116,6 @@ enum StrengthRoutineBuilder {
         }
     }
 
-    private static func build(_ name: String, matches: [String], fallback: [String], imports: ImportStore) -> StrengthRoutine {
-        let matching = imports.workouts.filter { workout in
-            let title = workout.title.lowercased()
-            return matches.contains { title.contains($0) }
-        }.sorted { $0.start > $1.start }
-        let latest = matching.first
-        let exercises: [RoutineExercise]
-        if let latest {
-            exercises = latest.exercises.map(routineExercise)
-        } else {
-            let library = exerciseLibrary(from: imports)
-            exercises = fallback.map { wanted in
-                library.first { $0.name.localizedCaseInsensitiveContains(wanted.components(separatedBy: " (").first ?? wanted) }
-                    ?? RoutineExercise(name: wanted, sets: defaultSets, restSeconds: 120)
-            }
-        }
-        let volume = latest?.exercises.reduce(0) { $0 + $1.volume } ?? 0
-        return StrengthRoutine(name: name, subtitle: exercises.map(\.name).joined(separator: " · "), exercises: exercises, lastPerformed: latest?.start, historicalVolume: volume)
-    }
-
     private static func routineExercise(_ exercise: ImportedExercise) -> RoutineExercise {
         let details = exercise.setDetails?.filter { $0.reps > 0 } ?? []
         let fallbackReps = max(1, (exercise.totalReps ?? exercise.sets * 8) / max(exercise.sets, 1))
@@ -208,6 +167,15 @@ struct StrengthTrainingView: View {
     @State private var activeSheet: StrengthSheet?
     @State private var selectedProgressExercise = ""
 
+    private var context: TwinContext {
+        TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
+                    reviews: WorkoutReviewStore.shared.reviews,
+                    activeInjuries: InjuryStore.shared.active,
+                    calibration: TwinStateStore.shared.calibration,
+                    personalAnchor: TwinStateStore.shared.personalAnchor(),
+                    travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
+    }
+
     var body: some View {
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(),
                                            context: TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
@@ -215,28 +183,30 @@ struct StrengthTrainingView: View {
                                                                 calibration: TwinStateStore.shared.calibration,
                                                                 personalAnchor: TwinStateStore.shared.personalAnchor(),
                                                                 travel: travel.episodeForEvaluation(), travelHistory: travel.episodes))
-        let automatic = StrengthRoutineBuilder.routines(from: imports)
-        let routines = automatic.map {
-            StrengthRoutineBuilder.personalized(routineStore.routine(named: $0.name) ?? $0, imports: imports,
-                                                readiness: assessment.score, muscles: assessment.muscles)
-        }
+        let forecasts = TrainingPlanEngine.weekAhead(
+            health: health, imports: imports, checkIn: checkIns.entry(), context: context, days: 14
+        )
+        let strengthForecasts = Array(forecasts.filter { $0.kind == .strength }.prefix(3))
+        let plan = TrainingPlanEngine.status(
+            health: health, imports: imports, readiness: assessment.score,
+            muscles: assessment.muscles, checkIn: checkIns.entry(), context: context,
+            physiologicalAlert: assessment.physiologicalAlert
+        )
         VStack(alignment: .leading, spacing: 18) {
             EterPageHeader(eyebrow: "Fuerza", title: "Entrena y progresa")
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Éter parte de tu historial").font(.headline)
-                Text("Las series se calculan con hasta cinco sesiones, tu recuperación muscular, disponibilidad y tiempo sin practicar el ejercicio. Todo sigue siendo editable.")
-                    .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
-            }.cardStyle()
+
+            recommendedStrengthSection(strengthForecasts, assessment: assessment, plan: plan)
 
             strengthProgressSection
 
-            ForEach(routines) { routine in routineCard(routine, customized: routineStore.routine(named: routine.name) != nil) }
+            // Objetivos de fuerza (press banca, sentadilla, peso muerto,
+            // hipertrofia). Los de carrera/híbridos viven en Rendimiento.
+            GoalDistanceCard(strengthOnly: true)
 
-            Button {
-                activeSheet = .dayProposal
-            } label: {
-                HStack { Image(systemName: "sparkles"); Text("Crear entrenamiento del día"); Spacer() }
-            }.buttonStyle(EterPrimaryButtonStyle())
+            // Movidas desde Rendimiento: distribución muscular y volumen de
+            // fuerza son análisis de fuerza y su sitio es esta pestaña.
+            MuscleVolumeSection()
+
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -249,7 +219,7 @@ struct StrengthTrainingView: View {
                     .environmentObject(imports)
                     .environmentObject(routineStore)
             case .dayProposal:
-                DayWorkoutProposalView(routines: routines)
+                DayWorkoutProposalView()
                     .environmentObject(imports)
                     .environmentObject(health)
                     .environmentObject(checkIns)
@@ -257,6 +227,245 @@ struct StrengthTrainingView: View {
         }
         .onAppear { selectDefaultProgressExercise() }
         .onChange(of: imports.workoutCount) { _, _ in selectDefaultProgressExercise() }
+    }
+
+    @ViewBuilder private func recommendedStrengthSection(
+        _ forecasts: [TrainingPlanEngine.DayForecast], assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            EterSectionHeader("Tu próxima sesión", eyebrow: "Recomendación de fuerza")
+            Text("Una opción principal y dos variantes válidas para el mismo momento. La secuencia futura se muestra aparte para no confundir dos días de pierna con dos alternativas iguales.")
+                .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+
+            if forecasts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Ahora no toca forzar una sesión", systemImage: "calendar.badge.clock")
+                        .font(.headline)
+                    Text("El plan de los próximos días prioriza otros estímulos o recuperación. Cuando vuelva a encajar fuerza, aparecerá aquí con ejercicios y volumen concretos.")
+                        .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+                    Button { activeSheet = .dayProposal } label: {
+                        Label("Consultar una opción para hoy", systemImage: "sparkles")
+                    }.buttonStyle(EterAccentButtonStyle())
+                }.cardStyle()
+            } else {
+                if let primary = forecasts.first {
+                    recommendedStrengthCard(primary, rank: 0, assessment: assessment)
+
+                    let variants = strengthVariants(for: primary, assessment: assessment, plan: plan)
+                    if !variants.isEmpty {
+                        Text("OTRAS FORMAS DE CUBRIRLA").font(.caption2.bold())
+                            .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+                        ForEach(Array(variants.enumerated()), id: \.element.id) { index, routine in
+                            strengthVariantCard(routine, index: index)
+                        }
+                    }
+
+                    if forecasts.count > 1 {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("SECUENCIA PREVISTA").font(.caption2.bold())
+                                .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(forecasts) { forecast in
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(forecast.date.formatted(.dateTime.weekday(.abbreviated).day()))
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                            Text(forecast.strengthPattern?.label ?? "Fuerza")
+                                                .font(.caption.bold())
+                                        }
+                                        .padding(.horizontal, 11).padding(.vertical, 8)
+                                        .background(EterTheme.raisedSurface)
+                                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                                    }
+                                }
+                            }
+                            Text("Es una previsión cronológica: puede repetir patrón si sigue existiendo déficit y hay recuperación suficiente. Se recalcula después de cada sesión.")
+                                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func recommendedStrengthCard(
+        _ forecast: TrainingPlanEngine.DayForecast, rank: Int, assessment: TwinAssessment
+    ) -> some View {
+        let routine = routine(from: forecast, assessment: assessment)
+        let totalSets = routine.exercises.reduce(0) { $0 + $1.sets.count }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MEJOR ENCAJE")
+                        .font(.caption2.bold()).tracking(EterTheme.eyebrowTracking)
+                        .foregroundStyle(rank == 0 ? EterTheme.positive : .secondary)
+                    Text(forecast.strengthTitle ?? routine.name).font(.title3.bold())
+                    Text(forecast.date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if forecast.isDeload {
+                    Text("DESCARGA").font(.caption2.bold()).foregroundStyle(EterTheme.warning)
+                }
+            }
+
+            Text(forecast.rationale).font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+
+            HStack(spacing: 14) {
+                Label("\(routine.exercises.count) ejercicios", systemImage: "list.number")
+                Label("\(totalSets) series", systemImage: "repeat")
+                if let duration = forecast.strengthDuration { Label(duration, systemImage: "clock") }
+            }.font(.caption2).foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(routine.exercises.prefix(4)) { exercise in
+                    HStack {
+                        Text(exercise.name).font(.caption.bold()).lineLimit(1)
+                        Spacer()
+                        let working = exercise.sets.last
+                        Text("\(exercise.sets.count) × \(working?.reps ?? 0)")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+                if routine.exercises.count > 4 {
+                    Text("+ \(routine.exercises.count - 4) ejercicios").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 9) {
+                Button { activeSheet = .editRoutine(routine) } label: {
+                    Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                        .background(Color.primary.opacity(0.09))
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }
+                .accessibilityLabel("Revisar y editar \(routine.name)")
+                Button { activeSheet = .liveWorkout(routine) } label: {
+                    HStack { Text("Comenzar").bold(); Spacer(); Image(systemName: "arrow.right") }
+                        .padding(.horizontal, 14).frame(height: 44)
+                        .background(rank == 0 ? EterTheme.accent : EterTheme.raisedSurface)
+                        .foregroundStyle(rank == 0 ? EterTheme.accentInk : .primary)
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }.disabled(routine.exercises.isEmpty)
+            }
+        }.cardStyle()
+    }
+
+    private func strengthVariants(
+        for primary: TrainingPlanEngine.DayForecast, assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> [StrengthRoutine] {
+        let primaryPattern = primary.strengthPattern ?? .push
+        let remaining = StrengthPattern.allCases.filter { $0 != primaryPattern }
+        let alternatePattern = remaining.max { left, right in
+            patternReadiness(left, muscles: assessment.muscles) < patternReadiness(right, muscles: assessment.muscles)
+        }
+
+        var result: [StrengthRoutine] = []
+        if let alternatePattern {
+            let alternate = proposedStrength(
+                pattern: alternatePattern, title: "\(alternatePattern.label) como alternativa",
+                rationale: "Cambia el patrón principal para conservar la sesión de \(primaryPattern.inline) para otro día. Es útil si hoy prefieres no cargar esa zona, aunque cubre peor el déficit que ha priorizado Éter.",
+                assessment: assessment, plan: plan
+            )
+            result.append(StrengthRoutineBuilder.applyingVolumeFactor(
+                StrengthRoutineBuilder.routine(from: alternate, imports: imports,
+                                               readiness: assessment.score, muscles: assessment.muscles),
+                factor: min(1, plan.volumeFactor)
+            ))
+        }
+
+        let proposals = StrengthPattern.allCases.map {
+            proposedStrength(pattern: $0, title: $0.label, rationale: "",
+                             assessment: assessment, plan: plan)
+        }
+        let fullBodyExercises = proposals.flatMap { proposal in
+            let count = proposal.strengthPattern == primaryPattern ? 2 : 1
+            return Array(proposal.exercises.prefix(count))
+        }
+        if !fullBodyExercises.isEmpty {
+            let fullBody = ProposedWorkout(
+                title: "Full body ajustado", duration: "45–55 min",
+                intent: "Repartir el estímulo sin concentrar toda la fatiga en un único patrón.",
+                exercises: fullBodyExercises,
+                note: "Toca los tres patrones con menos volumen por zona. Da más cobertura global, pero progresa menos el déficit prioritario que la opción principal.",
+                kind: .strength, strengthPattern: nil
+            )
+            result.append(StrengthRoutineBuilder.applyingVolumeFactor(
+                StrengthRoutineBuilder.routine(from: fullBody, imports: imports,
+                                               readiness: assessment.score, muscles: assessment.muscles),
+                factor: min(0.75, plan.volumeFactor)
+            ))
+        }
+        return result
+    }
+
+    private func proposedStrength(
+        pattern: StrengthPattern, title: String, rationale: String,
+        assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> ProposedWorkout {
+        let workout = WorkoutPlanner.session(
+            for: .strength, pattern: pattern, upperBodyOnlyToday: false,
+            block: plan.block, isDeload: plan.isDeload,
+            readiness: assessment.score, rationale: rationale,
+            muscles: assessment.muscles, health: health, imports: imports,
+            context: context
+        )
+        return ProposedWorkout(
+            title: title, duration: workout.duration, intent: workout.intent,
+            exercises: workout.exercises, note: rationale,
+            kind: .strength, strengthPattern: pattern
+        )
+    }
+
+    private func patternReadiness(_ pattern: StrengthPattern, muscles: [MuscleReadiness]) -> Double {
+        let values = pattern.muscles.compactMap { name in muscles.first { $0.name == name }?.readiness }
+        return values.isEmpty ? 0 : Double(values.reduce(0, +)) / Double(values.count)
+    }
+
+    private func strengthVariantCard(_ routine: StrengthRoutine, index: Int) -> some View {
+        let totalSets = routine.exercises.reduce(0) { $0 + $1.sets.count }
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(routine.name).font(.headline)
+                    Text(index == 0 ? "Otro patrón" : "Más cobertura · menos volumen por zona")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("\(totalSets) series").font(.caption.bold()).monospacedDigit()
+            }
+            Text(routine.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            HStack(spacing: 9) {
+                Button { activeSheet = .editRoutine(routine) } label: {
+                    Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                        .background(Color.primary.opacity(0.09))
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }
+                Button { activeSheet = .liveWorkout(routine) } label: {
+                    HStack { Text("Elegir esta opción").bold(); Spacer(); Image(systemName: "arrow.right") }
+                        .padding(.horizontal, 14).frame(height: 44)
+                        .background(EterTheme.raisedSurface).foregroundStyle(.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                }.disabled(routine.exercises.isEmpty)
+            }
+        }.cardStyle()
+    }
+
+    private func routine(
+        from forecast: TrainingPlanEngine.DayForecast, assessment: TwinAssessment
+    ) -> StrengthRoutine {
+        let proposed = ProposedWorkout(
+            title: forecast.strengthTitle ?? "Fuerza recomendada",
+            duration: forecast.strengthDuration ?? "",
+            intent: forecast.prescription,
+            exercises: forecast.strengthExercises,
+            note: forecast.rationale,
+            kind: .strength,
+            strengthPattern: nil
+        )
+        return StrengthRoutineBuilder.routine(
+            from: proposed, imports: imports,
+            readiness: assessment.score, muscles: assessment.muscles
+        )
     }
 
     @ViewBuilder private var strengthProgressSection: some View {
@@ -283,8 +492,9 @@ struct StrengthTrainingView: View {
 
             strengthCoverageCard
 
-            if let progress = selectedProgress(in: summary) {
-                exerciseProgressCard(progress, choices: summary.exercises)
+            let goalChoices = goalExerciseChoices(in: summary)
+            if let progress = selectedProgress(in: goalChoices) {
+                exerciseProgressCard(progress, choices: goalChoices)
             }
         }
     }
@@ -402,12 +612,26 @@ struct StrengthTrainingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func selectedProgress(in summary: StrengthProgressSummary) -> ExerciseStrengthProgress? {
-        summary.exercises.first { $0.name == selectedProgressExercise } ?? summary.exercises.first
+    private func selectedProgress(in choices: [ExerciseStrengthProgress]) -> ExerciseStrengthProgress? {
+        choices.first { $0.name == selectedProgressExercise } ?? choices.first
+    }
+
+    private func goalExerciseChoices(in summary: StrengthProgressSummary) -> [ExerciseStrengthProgress] {
+        let kinds = Set(goals.activeGoals.filter { $0.kind.isStrength }.map(\.kind))
+        return summary.exercises.filter { progress in
+            let name = progress.name.lowercased()
+            if kinds.contains(.benchPress),
+               name.contains("bench press (barbell)") || name.contains("press banca") { return true }
+            if kinds.contains(.squat),
+               name.contains("squat (barbell)") || name.contains("sentadilla") { return true }
+            if kinds.contains(.deadlift),
+               name.contains("deadlift (barbell)") || name.contains("peso muerto") { return true }
+            return false
+        }
     }
 
     private func selectDefaultProgressExercise() {
-        let exercises = StrengthProgressEngine.summarize(imports.workouts).exercises
+        let exercises = goalExerciseChoices(in: StrengthProgressEngine.summarize(imports.workouts))
         if !exercises.contains(where: { $0.name == selectedProgressExercise }) { selectedProgressExercise = exercises.first?.name ?? "" }
     }
 
@@ -416,45 +640,6 @@ struct StrengthTrainingView: View {
         return change >= 2 ? EterTheme.positive : change <= -4 ? EterTheme.negative : .blue
     }
 
-    private func routineCard(_ routine: StrengthRoutine, customized: Bool) -> some View {
-        let safeRoutine = InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active)
-        let removed = routine.exercises.count - safeRoutine.exercises.count
-        return VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(routine.name).font(.title3.bold())
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    if customized { Text("PERSONALIZADA").font(.caption2.bold()).foregroundStyle(EterTheme.positive) }
-                    if let date = routine.lastPerformed { Text(date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary) }
-                }
-            }
-            Text(routine.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(3).lineSpacing(3)
-            if removed > 0 {
-                Label("\(removed) ejercicio\(removed == 1 ? "" : "s") bloqueado\(removed == 1 ? "" : "s") por una restricción activa", systemImage: "exclamationmark.shield.fill")
-                    .font(.caption.bold()).foregroundStyle(EterTheme.warning)
-            }
-            HStack {
-                Label("\(safeRoutine.exercises.count) ejercicios compatibles", systemImage: "list.number")
-                if routine.historicalVolume > 0 { Label("\(Int(routine.historicalVolume.rounded())) kg", systemImage: "scalemass") }
-            }.font(.caption2).foregroundStyle(.secondary)
-            if let note = routine.exercises.first?.prescriptionNote {
-                Label("Prescripción: \(note)", systemImage: "waveform.path.ecg")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            }
-            HStack(spacing: 9) {
-                Button { activeSheet = .editRoutine(routine) } label: {
-                    Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
-                        .background(Color.primary.opacity(0.09)).clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
-                }
-                Button { activeSheet = .liveWorkout(safeRoutine) } label: {
-                    HStack { Text("Comenzar rutina").bold(); Spacer(); Image(systemName: "arrow.right") }
-                        .padding(.horizontal, 14).frame(height: 44)
-                        .background(EterTheme.accent).foregroundStyle(EterTheme.accentInk)
-                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
-                }.disabled(safeRoutine.exercises.isEmpty)
-            }
-        }.cardStyle()
-    }
 }
 
 struct DayWorkoutProposalView: View {
@@ -464,7 +649,6 @@ struct DayWorkoutProposalView: View {
     @EnvironmentObject private var goals: GoalStore
     @EnvironmentObject private var travel: TravelEpisodeStore
     @Environment(\.dismiss) private var dismiss
-    let routines: [StrengthRoutine]
     @State private var activeRoutine: StrengthRoutine?
 
     private var context: TwinContext {
@@ -480,24 +664,14 @@ struct DayWorkoutProposalView: View {
                                   muscles: assessment.muscles, checkIn: checkIns.entry(), context: context,
                                   physiologicalAlert: assessment.physiologicalAlert)
     }
-    // PR8: el patrón del día sale de plan.strengthPattern, no de buscar
-    // "pierna"/"tirón"/"empuje" dentro del titular ya renderizado. El
-    // `|| recommendation.contains("tiron")` que había aquí es la prueba de
-    // por qué: alguien ya se encontró con que la versión sin tilde no
-    // entraba, y el arreglo fue añadir la otra ortografía en vez de dejar de
-    // parsear texto. Un plan sin patrón (no es día de fuerza, o ninguno es
-    // compatible con las restricciones activas) ya no cae en la rutina de
-    // empuje por omisión: cae en lo que WorkoutPlanner proponga de verdad.
-    private static let routineName: [StrengthPattern: String] = [.legs: "Pierna", .pull: "Pull", .push: "Push"]
-
     private var proposal: StrengthRoutine {
-        // Imported gym templates are only reused when the athlete has declared
-        // gym access. Without it, WorkoutPlanner builds the bodyweight variant
-        // appropriate to the same pattern and readiness.
-        if goals.profile.gymAvailable, let pattern = plan.strengthPattern,
-           let name = Self.routineName[pattern], let routine = routines.first(where: { $0.name == name }) {
-            return StrengthRoutineBuilder.applyingVolumeFactor(InjurySafetyEngine.filter(routine, injuries: InjuryStore.shared.active), factor: plan.volumeFactor)
-        }
+        // Siempre parte de la decisión estructurada del entrenador. Antes,
+        // si existía una plantilla Push/Pull/Pierna, se copiaba simplemente
+        // la última rutina completa: conservaba ejercicios familiares, pero
+        // ignoraba qué músculos estaban ya cubiertos, qué levantamiento era
+        // prioritario y qué selección acababa de hacer WorkoutPlanner.
+        // WorkoutPlanner ya reutiliza ejercicios y cargas de Hevy; no hace
+        // falta saltarse su selección para conservar el historial.
         let generated = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry(), context: context)
         let routine = StrengthRoutineBuilder.routine(
             from: generated, imports: imports,
@@ -637,6 +811,25 @@ struct RoutineEditorView: View {
         }
     }
 
+    /// Mismo borrador que la vista en vivo (ver NumericDraftField): el editor
+    /// tenía los mismos TextField(value:format:) que reformatean por tecla.
+    private func editorWeightField(value: Binding<Double>) -> some View {
+        let format: (Double) -> String = {
+            $0 == $0.rounded() ? String(Int($0)) : String(format: "%.1f", $0)
+        }
+        let parse: (String) -> Double? = {
+            Double($0.replacingOccurrences(of: ",", with: ".")).map { max(0, $0) }
+        }
+        return NumericDraftField(value: value, format: format, parse: parse,
+                                 keyboard: .decimalPad, minWidth: 44)
+    }
+
+    private func editorNumberField(value: Binding<Int>) -> some View {
+        let format: (Int) -> String = { String($0) }
+        let parse: (String) -> Int? = { Int($0).map { max(0, $0) } }
+        return NumericDraftField(value: value, format: format, parse: parse, minWidth: 44)
+    }
+
     private func editorExerciseCard(_ exercise: Binding<RoutineExercise>) -> some View {
         let index = exercises.firstIndex { $0.id == exercise.wrappedValue.id } ?? 0
         return VStack(alignment: .leading, spacing: 12) {
@@ -654,19 +847,23 @@ struct RoutineEditorView: View {
                 Text("Descanso: \(exercise.wrappedValue.restSeconds / 60):\(String(format: "%02d", exercise.wrappedValue.restSeconds % 60))")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            // El editor mostraba KG y REPS a pelo, sin mirar el ejercicio: una
+            // plancha pedía kilos y repeticiones aquí igual que en la sesión.
+            // Mismo descriptor y mismas reglas que la vista en vivo.
+            let editorDescriptor = ExerciseCatalog.descriptor(for: exercise.wrappedValue.name)
             HStack {
                 Text("SERIE").frame(width: 42, alignment: .leading)
-                Text("KG").frame(maxWidth: .infinity)
-                Text("REPS").frame(maxWidth: .infinity)
+                if editorDescriptor.tracksWeight { Text("KG").frame(maxWidth: .infinity) }
+                Text(editorDescriptor.measurement == .reps ? "REPS" : "SEG").frame(maxWidth: .infinity)
                 Spacer().frame(width: 27)
             }.font(.caption2.bold()).foregroundStyle(.secondary)
             ForEach(exercise.sets.indices, id: \.self) { setIndex in
                 HStack(spacing: 9) {
                     Text("\(setIndex + 1)").font(.caption.bold()).frame(width: 42, alignment: .leading)
-                    TextField("0", value: exercise.sets[setIndex].weight, format: .number.precision(.fractionLength(0...1)))
-                        .keyboardType(.decimalPad).multilineTextAlignment(.center).fieldBox()
-                    TextField("0", value: exercise.sets[setIndex].reps, format: .number)
-                        .keyboardType(.numberPad).multilineTextAlignment(.center).fieldBox()
+                    if editorDescriptor.tracksWeight {
+                        editorWeightField(value: exercise.sets[setIndex].weight)
+                    }
+                    editorNumberField(value: exercise.sets[setIndex].reps)
                     Button(role: .destructive) { exercise.wrappedValue.sets.remove(at: setIndex) } label: { Image(systemName: "minus.circle") }
                         .eterTouchTarget().accessibilityLabel("Eliminar serie \(setIndex + 1)")
                 }
@@ -758,24 +955,363 @@ private struct LiveExercise: Identifiable {
     var tracksTime = false
 }
 
+private struct StrengthSessionMuscleRow: Identifiable {
+    var id: String { muscle }
+    let muscle: String
+    let sessionShare: Int
+    let cycleProgress: Int
+    let sessionSets: Double
+    let cycleSets: Double
+    let targetSets: Double
+}
+
+private struct StrengthSessionSummary: Identifiable {
+    let id = UUID()
+    let title: String
+    let duration: TimeInterval
+    let externalVolume: Double
+    let completedSets: Int
+    let muscles: [StrengthSessionMuscleRow]
+
+    static func make(for workout: ImportedWorkout, allWorkouts: [ImportedWorkout], endedAt: Date) -> Self {
+        let session = workout.effectiveMuscleSets.filter { $0.value > 0 }
+        let totalStimulus = session.values.reduce(0, +)
+        let cycleStart = Calendar.current.date(byAdding: .day, value: -7, to: endedAt) ?? endedAt
+        let cycle = allWorkouts.filter { $0.start >= cycleStart && $0.start <= endedAt }
+        let landmarkContext = VolumeLandmarkLearning.context(workouts: allWorkouts, now: endedAt)
+
+        let rows = session.map { muscle, sets -> StrengthSessionMuscleRow in
+            let accumulated = cycle.reduce(0.0) { $0 + ($1.effectiveMuscleSets[muscle] ?? 0) }
+            let target = MuscleVolumeLandmarkTable.landmarks(
+                for: muscle,
+                learned: landmarkContext.learnedMRV,
+                sustained: landmarkContext.sustainedWeeklySets
+            ).mav
+            return StrengthSessionMuscleRow(
+                muscle: muscle,
+                sessionShare: totalStimulus > 0 ? Int((sets / totalStimulus * 100).rounded()) : 0,
+                cycleProgress: target > 0 ? Int((accumulated / target * 100).rounded()) : 0,
+                sessionSets: sets,
+                cycleSets: accumulated,
+                targetSets: target
+            )
+        }.sorted { $0.sessionSets > $1.sessionSets }
+
+        return StrengthSessionSummary(
+            title: workout.title,
+            duration: workout.end.timeIntervalSince(workout.start),
+            externalVolume: workout.exercises.reduce(0) { $0 + $1.volume },
+            completedSets: workout.exercises.reduce(0) { $0 + $1.sets },
+            muscles: rows
+        )
+    }
+}
+
+private struct StrengthSessionSummaryView: View {
+    let summary: StrengthSessionSummary
+    let onDone: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    EterPageHeader(eyebrow: "Sesión guardada", title: "Entrenamiento completado")
+                    Text(summary.title).font(.title3.bold()).foregroundStyle(EterTheme.positive)
+
+                    HStack(spacing: 10) {
+                        summaryMetric(value: duration(summary.duration), label: "Duración")
+                        summaryMetric(value: "\(Int(summary.externalVolume.rounded()).formatted()) kg", label: "Tonelaje externo")
+                        summaryMetric(value: "\(summary.completedSets)", label: "Series")
+                    }
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Impacto muscular").font(.title2.bold())
+                        HStack {
+                            Text("Músculo").frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Sesión").frame(width: 70, alignment: .trailing)
+                            Text("Ciclo").frame(width: 70, alignment: .trailing)
+                        }.font(.caption.bold()).foregroundStyle(.secondary)
+
+                        ForEach(summary.muscles) { row in
+                            VStack(spacing: 7) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(row.muscle).font(.subheadline.bold())
+                                        Text("Hoy \(number(row.sessionSets)) · ciclo \(number(row.cycleSets))/\(number(row.targetSets)) series")
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                    Text("\(row.sessionShare)%").frame(width: 70, alignment: .trailing)
+                                    Text("\(row.cycleProgress)%").bold()
+                                        .foregroundStyle(cycleColor(row.cycleProgress))
+                                        .frame(width: 70, alignment: .trailing)
+                                }
+                                ProgressView(value: min(1.5, Double(row.cycleProgress) / 100))
+                                    .tint(cycleColor(row.cycleProgress))
+                            }
+                            if row.id != summary.muscles.last?.id { Divider() }
+                        }
+                    }.cardStyle()
+
+                    Text("Sesión indica cómo se repartió el estímulo efectivo de hoy. Ciclo compara las series efectivas acumuladas en los últimos 7 días con tu volumen semanal óptimo personal; puede superar el 100 %. El tonelaje excluye ejercicios de peso corporal.")
+                        .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+
+                    Button("Cerrar resumen", action: onDone).buttonStyle(EterPrimaryButtonStyle())
+                }.padding(18)
+            }.background(EterTheme.canvas)
+        }
+    }
+
+    private func summaryMetric(value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value).font(.headline).minimumScaleFactor(0.7)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            .background(Color.primary.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func duration(_ interval: TimeInterval) -> String {
+        let minutes = max(1, Int(interval / 60))
+        return minutes >= 60 ? "\(minutes / 60)h \(minutes % 60)m" : "\(minutes) min"
+    }
+
+    private func number(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1)))
+    }
+
+    private func cycleColor(_ percent: Int) -> Color {
+        if percent > 125 { return EterTheme.danger }
+        if percent >= 75 { return EterTheme.positive }
+        return .orange
+    }
+}
+
+/// Campo numérico con BORRADOR propio, para kilos y repeticiones.
+///
+/// Resuelve dos problemas que compartían la misma causa, los dos reportados
+/// desde el uso real ("escribir las reps o los kilos es una tortura", "va como
+/// congelada la pantalla"):
+///
+///  1. `TextField(value:format:)` reparsea y REFORMATEA el texto en cada
+///     pulsación. Teclear "12" pasa por el valor 1, que se reescribe como "1";
+///     borrar hasta vacío salta a "0"; y "0.5" es imposible porque "0." no es
+///     un número válido todavía. El formateador pelea con quien escribe. El
+///     propio archivo ya había resuelto esto para el campo de tiempo con un
+///     borrador de texto — esto es el mismo patrón, aplicado donde faltaba.
+///  2. Escribir en el binding del modelo en cada tecla mutaba el `@State` de
+///     la vista de entrenamiento entera, así que CADA PULSACIÓN reevaluaba el
+///     body completo: todas las tarjetas de ejercicio, todas las filas de
+///     serie. Con el borrador dentro de esta vista pequeña, teclear invalida
+///     sólo este campo y el modelo se toca una vez, al terminar.
+///
+/// El commit es al perder el foco y al pulsar "hecho", nunca por carácter.
+/// La cabecera de la sesión, en su propia vista.
+///
+/// Lee las métricas del reloj (pulso, calorías, estado), que llegan cada
+/// segundo mientras el Watch graba. Cuando esto vivía dentro del body de
+/// LiveStrengthWorkoutView, CADA uno de esos avisos invalidaba el body entero:
+/// todas las tarjetas de ejercicio y todos los campos de todas las series se
+/// reevaluaban una vez por segundo, encima de los dos TimelineView que ya
+/// repintan solos. Separarlo acota el repintado a esta tarjeta.
+private struct LiveSessionHeader: View {
+    @EnvironmentObject private var watchMetrics: WatchMetricsStore
+    @EnvironmentObject private var health: HealthStore
+    let startedAt: Date
+    let restEndsAt: Date?
+    let onAdjustRest: (Int) -> Void
+
+    /// h:mm:ss del tiempo de sesión. Copia local del helper de
+    /// LiveStrengthWorkoutView, que es privado a esa vista.
+    private func duration(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval))
+        let hours = total / 3_600, minutes = (total % 3_600) / 60, seconds = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            : String(format: "%d:%02d", minutes, seconds)
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+        HStack {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("TIEMPO").font(.caption2.bold()).foregroundStyle(.secondary)
+                    Text(duration(context.date.timeIntervalSince(startedAt))).font(.title3.monospacedDigit().bold())
+                }
+            }
+            Spacer()
+            if let restEndsAt {
+                HStack(spacing: 8) {
+                    restAdjustmentButton("−15", seconds: -15)
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        VStack(alignment: .center, spacing: 3) {
+                            Text("DESCANSO").font(.caption2.bold()).foregroundStyle(.secondary)
+                            Text(max(0, Int(restEndsAt.timeIntervalSince(context.date))).formatted() + " s")
+                                .font(.title3.monospacedDigit().bold()).foregroundStyle(.orange)
+                        }
+                    }
+                    restAdjustmentButton("+15", seconds: 15)
+                }
+            }
+        }
+        if watchMetrics.isRunning {
+            Divider()
+            HStack {
+                Label("\(Int(watchMetrics.heartRate.rounded())) ppm", systemImage: "heart.fill").foregroundStyle(.red)
+                Spacer()
+                Label("\(Int(watchMetrics.activeEnergy.rounded())) kcal", systemImage: "flame.fill").foregroundStyle(.orange)
+                Spacer()
+                Text(watchMetrics.isPaused ? "Watch en pausa" : "Watch conectado").font(.caption2.bold()).foregroundStyle(watchMetrics.isPaused ? EterTheme.negative : EterTheme.positive)
+            }.font(.caption)
+            Button {
+                watchMetrics.isPaused ? watchMetrics.resume() : watchMetrics.pause()
+            } label: {
+                Label(watchMetrics.isPaused ? "Reanudar en Watch" : "Pausar en Watch", systemImage: watchMetrics.isPaused ? "play.fill" : "pause.fill")
+                    .font(.caption.bold()).frame(maxWidth: .infinity)
+            }
+        } else {
+            // El motivo real cuando lo hay, y el texto genérico cuando no:
+            // "inícialo tú" es un consejo inútil si lo que pasa es que la app
+            // companion no está instalada.
+            if let diagnostic = health.watchStartDiagnostic {
+                Label(diagnostic, systemImage: "applewatch.slash")
+                    .font(.caption2).foregroundStyle(EterTheme.danger)
+            } else {
+                Text("Abriendo “Fuerza” en el Apple Watch para añadir pulso y calorías reales. Si no se abre, inícialo desde el reloj.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        }.cardStyle()
+    }
+
+    private func restAdjustmentButton(_ title: String, seconds: Int) -> some View {
+        Button { onAdjustRest(seconds) } label: {
+            Text(title).font(.caption.bold()).frame(minWidth: 35, minHeight: 38)
+        }
+        .buttonStyle(.plain)
+        .background(Color.orange.opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .accessibilityLabel(seconds < 0 ? "Restar 15 segundos al descanso" : "Añadir 15 segundos al descanso")
+    }
+}
+
+private struct NumericDraftField<Value: Equatable>: View {
+    @Binding var value: Value
+    let format: (Value) -> String
+    let parse: (String) -> Value?
+    var keyboard: UIKeyboardType = .numberPad
+    var minWidth: CGFloat = 52
+
+    @State private var draft: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("0", text: $draft)
+            .keyboardType(keyboard)
+            .multilineTextAlignment(.center)
+            .font(.title3.bold().monospacedDigit())
+            .lineLimit(1).minimumScaleFactor(0.6)
+            .frame(minWidth: minWidth)
+            .fieldBox()
+            .focused($isFocused)
+            .onAppear { draft = format(value) }
+            // Un cambio del modelo desde FUERA (los botones +/-, repetir la
+            // serie anterior) sí tiene que verse — pero sólo cuando el campo
+            // no está enfocado, o le pisaría el texto a quien escribe.
+            .onChange(of: value) { _, newValue in
+                guard !isFocused else { return }
+                draft = format(newValue)
+            }
+            .onChange(of: isFocused) { wasFocused, nowFocused in
+                if nowFocused { return }
+                if wasFocused { commit() }
+            }
+            .onSubmit { commit() }
+    }
+
+    private func commit() {
+        // Un borrador ilegible no borra el dato: se descarta y se repinta el
+        // valor real. Vaciar el campo a propósito sí cuenta como cero, que es
+        // lo que alguien espera al borrarlo todo.
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty, let zero = parse("0") { value = zero }
+        else if let parsed = parse(trimmed) { value = parsed }
+        draft = format(value)
+    }
+}
+
+/// Equivalente de `NumericDraftField` para una duración manual. El cronómetro
+/// puede actualizar `durationSeconds` en directo, pero al teclear no hay razón
+/// para mutar la serie ni para invalidar toda la sesión por cada dígito.
+///
+/// Se escribe como un cronómetro: "410" significa 4:10 y "45", 0:45. El
+/// texto queda local hasta perder el foco o pulsar Hecho; entonces, y sólo
+/// entonces, se guarda el número de segundos en la serie.
+private struct TimedDurationDraftField: View {
+    @Binding var durationSeconds: Double?
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("mm:ss", text: $draft)
+            .keyboardType(.numberPad)
+            .multilineTextAlignment(.center)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .frame(minWidth: 30)
+            .fieldBox()
+            .focused($isFocused)
+            .onAppear { draft = formatted(durationSeconds) }
+            // Si el cronómetro termina o se repite una serie, el valor del
+            // modelo debe reflejarse aquí. Mientras alguien escribe, nunca se
+            // le pisa su borrador.
+            .onChange(of: durationSeconds) { _, newValue in
+                guard !isFocused else { return }
+                draft = formatted(newValue)
+            }
+            .onChange(of: isFocused) { wasFocused, nowFocused in
+                if !nowFocused, wasFocused { commit() }
+            }
+            .onSubmit { commit() }
+            .accessibilityLabel("Tiempo de la serie, minutos y segundos")
+    }
+
+    private func commit() {
+        let digits = String(draft.filter(\.isNumber).suffix(5))
+        durationSeconds = digits.isEmpty ? nil : seconds(from: digits)
+        draft = formatted(durationSeconds)
+    }
+
+    private func seconds(from digits: String) -> Double {
+        guard let value = Int(digits) else { return 0 }
+        return Double(value / 100 * 60 + value % 100)
+    }
+
+    private func formatted(_ seconds: Double?) -> String {
+        guard let seconds, seconds > 0 else { return "" }
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
 struct LiveStrengthWorkoutView: View {
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var watchMetrics: WatchMetricsStore
+    @EnvironmentObject private var routineStore: StrengthRoutineStore
     @Environment(\.dismiss) private var dismiss
     let routine: StrengthRoutine
     @State private var exercises: [LiveExercise]
     @State private var startedAt = Date()
     @State private var restEndsAt: Date?
     @State private var showExercisePicker = false
+    @State private var exerciseSearch = ""
     @State private var showDiscardConfirmation = false
+    @State private var completionSummary: StrengthSessionSummary?
+    @State private var hasCompleted = false
     @State private var requestedWatchStart = false
     // Only one set can realistically be timed at once, so a single shared
     // pair of state covers every exercise card.
-    // Borrador de entrada de tiempo por serie: mientras se teclea manda el
-    // texto crudo, y sólo al salir se formatea desde el modelo. Sin esto,
-    // reformatear en cada pulsación pelea con quien está escribiendo.
-    @State private var timeDrafts: [UUID: String] = [:]
     @State private var timingSetID: UUID?
     @State private var timingStartedAt: Date?
 
@@ -795,7 +1331,13 @@ struct LiveStrengthWorkoutView: View {
             // the moment you scrolled down to see the next one. It's now a
             // fixed bar above the scrolling content instead.
             VStack(spacing: 0) {
-                sessionHeader.padding(18).padding(.bottom, 0)
+                // En su propia vista, y no inline: lee pulso, calorías y
+                // estado del reloj, que llegan cada segundo mientras el Watch
+                // graba. Inline, cada uno de esos avisos invalidaba el body
+                // COMPLETO — todas las tarjetas y todos los campos de todas
+                // las series. Extraerlo acota el repintado a la cabecera.
+                LiveSessionHeader(startedAt: startedAt, restEndsAt: restEndsAt, onAdjustRest: adjustRest)
+                    .padding(18).padding(.bottom, 0)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         ForEach($exercises) { $exercise in exerciseCard($exercise) }
@@ -818,6 +1360,10 @@ struct LiveStrengthWorkoutView: View {
                 Button("Continuar", role: .cancel) {}
             }
             .sheet(isPresented: $showExercisePicker) { exercisePicker }
+            .fullScreenCover(item: $completionSummary) { summary in
+                StrengthSessionSummaryView(summary: summary) { dismiss() }
+                    .interactiveDismissDisabled()
+            }
             .onChange(of: watchMetrics.terminalAction) { _, action in
                 guard let action else { return }
                 watchMetrics.clearTerminalAction()
@@ -845,48 +1391,6 @@ struct LiveStrengthWorkoutView: View {
         }
     }
 
-    private var sessionHeader: some View {
-        VStack(spacing: 12) {
-        HStack {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("TIEMPO").font(.caption2.bold()).foregroundStyle(.secondary)
-                    Text(duration(context.date.timeIntervalSince(startedAt))).font(.title3.monospacedDigit().bold())
-                }
-            }
-            Spacer()
-            if let restEndsAt {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text("DESCANSO").font(.caption2.bold()).foregroundStyle(.secondary)
-                        Text(max(0, Int(restEndsAt.timeIntervalSince(context.date))).formatted() + " s")
-                            .font(.title3.monospacedDigit().bold()).foregroundStyle(.orange)
-                    }
-                }
-            }
-        }
-        if watchMetrics.isRunning {
-            Divider()
-            HStack {
-                Label("\(Int(watchMetrics.heartRate.rounded())) ppm", systemImage: "heart.fill").foregroundStyle(.red)
-                Spacer()
-                Label("\(Int(watchMetrics.activeEnergy.rounded())) kcal", systemImage: "flame.fill").foregroundStyle(.orange)
-                Spacer()
-                Text(watchMetrics.isPaused ? "Watch en pausa" : "Watch conectado").font(.caption2.bold()).foregroundStyle(watchMetrics.isPaused ? EterTheme.negative : EterTheme.positive)
-            }.font(.caption)
-            Button {
-                watchMetrics.isPaused ? watchMetrics.resume() : watchMetrics.pause()
-            } label: {
-                Label(watchMetrics.isPaused ? "Reanudar en Watch" : "Pausar en Watch", systemImage: watchMetrics.isPaused ? "play.fill" : "pause.fill")
-                    .font(.caption.bold()).frame(maxWidth: .infinity)
-            }
-        } else {
-            Text("Inicia “Fuerza” en el Apple Watch para añadir pulso y calorías reales a esta sesión.")
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-        }.cardStyle()
-    }
-
     private func exerciseCard(_ exercise: Binding<LiveExercise>) -> some View {
         let descriptor = ExerciseCatalog.descriptor(for: exercise.wrappedValue.name)
         return VStack(alignment: .leading, spacing: 12) {
@@ -899,8 +1403,7 @@ struct LiveStrengthWorkoutView: View {
                             Text("\(descriptor.pattern) · \(descriptor.equipment)").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    Text("Descanso \(exercise.wrappedValue.restSeconds / 60):\(String(format: "%02d", exercise.wrappedValue.restSeconds % 60))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    restMenu(exercise)
                 }
                 Spacer()
                 // Sólo en los ejercicios de repeticiones: en una plancha o un
@@ -943,6 +1446,31 @@ struct LiveStrengthWorkoutView: View {
         }.cardStyle()
     }
 
+    private func restMenu(_ exercise: Binding<LiveExercise>) -> some View {
+        Menu {
+            ForEach(Array(stride(from: 30, through: 300, by: 15)), id: \.self) { seconds in
+                Button {
+                    exercise.wrappedValue.restSeconds = seconds
+                    persistRoutinePreferences()
+                } label: {
+                    if seconds == exercise.wrappedValue.restSeconds {
+                        Label(restLabel(seconds), systemImage: "checkmark")
+                    } else {
+                        Text(restLabel(seconds))
+                    }
+                }
+            }
+        } label: {
+            Label("Descanso \(restLabel(exercise.wrappedValue.restSeconds))", systemImage: "timer")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .accessibilityHint("Toca para cambiarlo; Éter lo recordará para este ejercicio en esta rutina")
+    }
+
+    private func restLabel(_ seconds: Int) -> String {
+        String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
     // A plain TextField with a live-editable numeric value is fiddly to hit
     // precisely mid-workout — these +/- buttons cover the common case (repeat
     // or nudge the previous set) without needing to type at all. Sized up
@@ -952,9 +1480,7 @@ struct LiveStrengthWorkoutView: View {
     private func stepperField(value: Binding<Double>, step: Double, minimum: Double, decimalPlaces: ClosedRange<Int> = 0...1) -> some View {
         HStack(spacing: 3) {
             stepButton(systemImage: "minus") { value.wrappedValue = max(minimum, value.wrappedValue - step) }
-            TextField("0", value: value, format: .number.precision(.fractionLength(decimalPlaces)))
-                .keyboardType(.decimalPad).multilineTextAlignment(.center).font(.title3.bold().monospacedDigit())
-                .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 60).fieldBox()
+            weightField(value: value)
             stepButton(systemImage: "plus") { value.wrappedValue += step }
         }.frame(maxWidth: .infinity)
     }
@@ -962,9 +1488,7 @@ struct LiveStrengthWorkoutView: View {
     private func stepperField(value: Binding<Int>, step: Int, minimum: Int) -> some View {
         HStack(spacing: 3) {
             stepButton(systemImage: "minus") { value.wrappedValue = max(minimum, value.wrappedValue - step) }
-            TextField("0", value: value, format: .number)
-                .keyboardType(.numberPad).multilineTextAlignment(.center).font(.title3.bold().monospacedDigit())
-                .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 52).fieldBox()
+            plainNumberField(value: value, minWidth: 52)
             stepButton(systemImage: "plus") { value.wrappedValue += step }
         }.frame(maxWidth: .infinity)
     }
@@ -1042,19 +1566,34 @@ struct LiveStrengthWorkoutView: View {
         }
     }
 
-    private func plainNumberField(value: Binding<Int>) -> some View {
-        TextField("0", value: value, format: .number)
-            .keyboardType(.numberPad).multilineTextAlignment(.center)
-            .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
+    private func plainNumberField(value: Binding<Int>, minWidth: CGFloat = 30) -> some View {
+        let format: (Int) -> String = { String($0) }
+        let parse: (String) -> Int? = { Int($0).map { max(0, $0) } }
+        return NumericDraftField(value: value, format: format, parse: parse, minWidth: minWidth)
+    }
+
+    /// Kilos: acepta coma o punto decimal y muestra el entero sin ".0".
+    private func weightField(value: Binding<Double>) -> some View {
+        let format: (Double) -> String = {
+            $0 == $0.rounded() ? String(Int($0)) : String(format: "%.1f", $0)
+        }
+        let parse: (String) -> Double? = {
+            Double($0.replacingOccurrences(of: ",", with: ".")).map { max(0, $0) }
+        }
+        return NumericDraftField(value: value, format: format, parse: parse,
+                                 keyboard: .decimalPad, minWidth: 60)
     }
 
     private func distanceField(_ set: Binding<LiveSet>) -> some View {
-        TextField("0", value: Binding(
+        // El Binding y los closures con su tipo explícito: en línea, el
+        // inferidor no resolvía la expresión en tiempo razonable.
+        let meters = Binding<Int>(
             get: { Int(set.wrappedValue.distanceMeters ?? 0) },
-            set: { set.wrappedValue.distanceMeters = $0 > 0 ? Double($0) : nil }
-        ), format: .number)
-            .keyboardType(.numberPad).multilineTextAlignment(.center)
-            .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
+            set: { newValue in set.wrappedValue.distanceMeters = newValue > 0 ? Double(newValue) : nil }
+        )
+        let format: (Int) -> String = { $0 > 0 ? String($0) : "" }
+        let parse: (String) -> Int? = { Int($0).map { max(0, $0) } }
+        return NumericDraftField(value: meters, format: format, parse: parse, minWidth: 30)
     }
 
     /// "250" -> "4:10". Cadena vacía para nil, nunca "0:00": un cero se leería
@@ -1139,20 +1678,7 @@ struct LiveStrengthWorkoutView: View {
                         .frame(maxWidth: .infinity).fieldBox()
                 }
             } else {
-                // mm:ss, como se piensa un ski de 4:10 — no "250 s". Se teclean
-                // dígitos y los dos últimos son los segundos, igual que en un
-                // cronómetro: no hay que escribir los dos puntos.
-                let id = set.wrappedValue.id
-                TextField("mm:ss", text: Binding(
-                    get: { timeDrafts[id] ?? Self.minutesSeconds(set.wrappedValue.durationSeconds) },
-                    set: { text in
-                        let digits = String(text.filter(\.isNumber).suffix(5))
-                        timeDrafts[id] = digits.isEmpty ? "" : Self.minutesSeconds(Self.secondsFromDigits(digits))
-                        set.wrappedValue.durationSeconds = digits.isEmpty ? nil : Self.secondsFromDigits(digits)
-                    }
-                ))
-                    .keyboardType(.numberPad).multilineTextAlignment(.center)
-                    .lineLimit(1).minimumScaleFactor(0.6).frame(minWidth: 30).fieldBox()
+                TimedDurationDraftField(durationSeconds: set.durationSeconds)
             }
         }.frame(maxWidth: .infinity)
     }
@@ -1161,27 +1687,86 @@ struct LiveStrengthWorkoutView: View {
         let compatible = StrengthRoutineBuilder.exerciseLibrary(from: imports).filter {
             InjurySafetyEngine.exerciseSafety($0.name, injuries: InjuryStore.shared.active).allowed
         }
+        let filtered = exerciseSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? compatible
+            : compatible.filter { exerciseMatchesSearch($0.name, query: exerciseSearch) }
         return NavigationStack {
-            List(compatible) { exercise in
+            List(filtered) { exercise in
                 Button {
                     exercises.append(LiveExercise(name: exercise.name, restSeconds: exercise.restSeconds, sets: exercise.sets.map { LiveSet(weight: $0.weight, reps: $0.reps, type: $0.type) }))
                     showExercisePicker = false
                 } label: {
-                    VStack(alignment: .leading) { Text(exercise.name); Text("\(exercise.sets.count) series desde tu historial").font(.caption).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading) {
+                        Text(exercise.name)
+                        if exercise.name == "Lat Pulldown (Cable)" {
+                            Text("Pull down · Jalón al pecho · Polea")
+                                .font(.caption).foregroundStyle(EterTheme.positive)
+                        } else {
+                            Text("\(exercise.sets.count) series desde tu historial").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }.navigationTitle("Añadir ejercicio").navigationBarTitleDisplayMode(.inline)
+                .searchable(text: $exerciseSearch, prompt: "Ejercicio, pull down, jalón…")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancelar") { showExercisePicker = false } } }
         }
+    }
+
+    private func exerciseMatchesSearch(_ name: String, query: String) -> Bool {
+        let normalizedQuery = query.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        var terms = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        if name == "Lat Pulldown (Cable)" { terms += " pull down pulldown jalon jalon al pecho polea" }
+        return normalizedQuery.split(separator: " ").allSatisfy { terms.contains($0) }
+    }
+
+    /// El descanso es parte de la receta de una rutina, no una preferencia
+    /// global. Guardar la lista viva conserva también los ejercicios añadidos
+    /// durante la sesión y hace que el próximo inicio de ESTA rutina recuerde
+    /// su descanso sin alterar Push/Pull/Full Body entre sí.
+    private func persistRoutinePreferences() {
+        let updatedExercises = exercises.map { exercise in
+            RoutineExercise(
+                name: exercise.name,
+                sets: exercise.sets.map {
+                    ImportedSet(weight: $0.weight, reps: $0.reps, type: $0.type, rpe: nil,
+                                durationSeconds: $0.durationSeconds, distanceMeters: $0.distanceMeters)
+                },
+                restSeconds: exercise.restSeconds,
+                prescriptionNote: routine.exercises.first { $0.name == exercise.name }?.prescriptionNote,
+                historySessions: routine.exercises.first { $0.name == exercise.name }?.historySessions
+            )
+        }
+        routineStore.save(StrengthRoutine(name: routine.name,
+                                          subtitle: updatedExercises.map(\.name).joined(separator: " · "),
+                                          exercises: updatedExercises,
+                                          lastPerformed: routine.lastPerformed,
+                                          historicalVolume: routine.historicalVolume))
     }
 
     private func finish() {
         completeSession(notifyWatch: true)
     }
 
+    /// La firma que dispara el envío al reloj: SÓLO lo que el reloj muestra.
+    ///
+    /// Antes recorría todas las series de todos los ejercicios y las unía en
+    /// una cadena. Como `.onChange` la evalúa en cada reevaluación del body, y
+    /// el body se reevaluaba en cada pulsación de kilos o reps, eso significaba
+    /// construir esa cadena y —al cambiar— MANDAR UN MENSAJE POR WATCHCONNECTIVITY
+    /// EN CADA TECLA. Con el reloj no alcanzable, `transferUserInfo` además
+    /// encola cada envío en disco. Eso es el "va como congelada la pantalla".
+    ///
+    /// Ahora depende de la serie siguiente, el recuento y el descanso, que es
+    /// exactamente lo que la pantalla del reloj pinta: editar el peso de una
+    /// serie ya hecha, o de una que no es la siguiente, no le dice nada nuevo
+    /// al reloj y por tanto no manda nada.
     private var workoutContextSignature: String {
-        exercises.flatMap { exercise in
-            exercise.sets.map { "\(exercise.name)|\($0.weight)|\($0.reps)|\($0.completed)" }
-        }.joined(separator: ";") + "|\(restEndsAt?.timeIntervalSince1970 ?? 0)"
+        let flattened = exercises.flatMap { exercise in exercise.sets.map { (exercise.name, $0) } }
+        let completed = flattened.filter { $0.1.completed }.count
+        let next = flattened.first { !$0.1.completed }
+        return [next?.0 ?? "", "\(next?.1.weight ?? 0)", "\(next?.1.reps ?? 0)",
+                "\(completed)", "\(flattened.count)",
+                "\(restEndsAt?.timeIntervalSince1970 ?? 0)"].joined(separator: "|")
     }
 
     private func syncWorkoutContext() {
@@ -1222,6 +1807,8 @@ struct LiveStrengthWorkoutView: View {
     }
 
     private func completeSession(notifyWatch: Bool) {
+        guard !hasCompleted else { return }
+        hasCompleted = true
         let saved = exercises.compactMap { exercise -> ImportedExercise? in
             let selected = exercise.sets.filter(\.completed)
             let source = selected.isEmpty ? exercise.sets : selected
@@ -1257,13 +1844,17 @@ struct LiveStrengthWorkoutView: View {
             return ImportedExercise(name: exercise.name, sets: working.count, volume: volume, totalReps: reps, averageWeight: reps > 0 ? volume / Double(reps) : nil, setDetails: details)
         }
         let endedAt = Date()
+        let completedWorkout = ImportedWorkout(title: routine.name, start: startedAt, end: endedAt,
+                                               exercises: saved, muscleSets: [:])
         imports.addStrengthWorkout(title: routine.name, start: startedAt, end: endedAt, exercises: saved)
         if notifyWatch && watchMetrics.isRunning {
             watchMetrics.finish()
         } else if !watchMetrics.isRunning && notifyWatch {
             Task { await health.saveStrengthWorkout(start: startedAt, end: endedAt) }
         }
-        dismiss()
+        completionSummary = StrengthSessionSummary.make(for: completedWorkout,
+                                                        allWorkouts: imports.workouts,
+                                                        endedAt: endedAt)
     }
 
     private func discard() {

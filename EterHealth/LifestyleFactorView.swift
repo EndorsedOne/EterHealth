@@ -142,6 +142,10 @@ struct LifestyleFactorView: View {
                     }
                     Stepper("Ayuno: \(event.fastingHours == 0 ? "No" : "\(event.fastingHours) h")", value: $event.fastingHours, in: 0...36, step: 2)
                     Toggle("Entrenamiento en ayunas", isOn: $event.trainedFasted)
+                    if event.trainedFasted {
+                        Text("Se mostrará como contexto de la sesión. No suma ni resta disponibilidad por defecto; Éter aprenderá tu respuesta cuando haya suficientes registros comparables.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     Toggle("Cena tardía", isOn: $event.lateDinner)
                     Toggle("Cena o comida copiosa", isOn: $event.heavyDinner)
                 }

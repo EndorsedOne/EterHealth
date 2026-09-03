@@ -52,7 +52,7 @@ struct PerformanceSummary {
 }
 
 enum LoadGuidance: Equatable {
-    case learning, low, productive, absorb, deload, overload
+    case learning, low, productive, absorb, returning, deload, overload
 
     var title: String {
         switch self {
@@ -60,6 +60,7 @@ enum LoadGuidance: Equatable {
         case .low: return "Carga por debajo de tu base"
         case .productive: return "Carga productiva"
         case .absorb: return "Conviene absorber carga"
+        case .returning: return "Retorno sobre capacidad previa"
         case .deload: return "Descarga aconsejable"
         case .overload: return "Sobrecarga probable"
         }
@@ -71,6 +72,7 @@ enum LoadGuidance: Equatable {
         case .low: return "Estás por debajo de tu carga reciente; puede ser recuperación útil o pérdida de continuidad según el plan."
         case .productive: return "La carga reciente está cerca de tu capacidad habitual y permite progresar gradualmente."
         case .absorb: return "Evita sumar otra sesión dura seguida; conserva estímulo con intensidad suave o menor volumen."
+        case .returning: return "Has subido rápido frente al último mes, pero este volumen cabe en una capacidad que ya demostraste. Reconstrúyelo con margen, sin tratarlo como una capacidad nueva ni volver de golpe al máximo anterior."
         case .deload: return "Llevas varias semanas sosteniendo carga. Reduce aproximadamente un 25–35% el volumen durante unos días y conserva algo de intensidad técnica."
         case .overload: return "El pico reciente supera claramente tu carga habitual. Prioriza recuperación y reevalúa antes de otra sesión exigente."
         }

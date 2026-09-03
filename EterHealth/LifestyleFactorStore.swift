@@ -185,6 +185,7 @@ struct LifestyleEvent: Codable, Identifiable {
         if caffeineMg > 0 { parts.append("cafeína \(caffeineMg) mg") }
         if foodQuality != .notRecorded { parts.append(foodQuality.rawValue.lowercased()) }
         if fastingHours > 0 { parts.append("ayuno \(fastingHours) h") }
+        if trainedFasted { parts.append("entrenamiento en ayunas") }
         if hydration != .notRecorded { parts.append("hidratación \(hydration.rawValue.lowercased())") }
         if !digestiveSymptoms.isEmpty { parts.append("digestión: \(digestiveSymptoms.joined(separator: ", ").lowercased())") }
         if !supplements.isEmpty { parts.append(supplements.map(\.rawValue).sorted().joined(separator: ", ").lowercased()) }

@@ -4,6 +4,9 @@ struct HyroxForecastCard: View {
     let goal: TrainingGoal
     let forecast: HyroxForecast?
     let measuredAt: Date?
+    /// true cuando va incrustado dentro de otra card (Performance forecast): no
+    /// pinta su propio fondo de tarjeta.
+    var bare: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -46,7 +49,7 @@ struct HyroxForecastCard: View {
                 Text("Necesitamos al menos una carrera con distancia y duración. Después podremos construir los 8 km y mantener una banda amplia para las estaciones hasta que registres sesiones específicas.")
                     .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
             }
-        }.cardStyle()
+        }.cardStyle(active: !bare)
     }
 
     private func forecastHeadline(_ forecast: HyroxForecast) -> some View {

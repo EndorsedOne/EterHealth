@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct EterBackup: Codable {
-    static let currentSchemaVersion = 7
+    static let currentSchemaVersion = 8
 
     let format: String
     let schemaVersion: Int
@@ -30,6 +30,9 @@ struct EterBackup: Codable {
     // los dos campos anteriores: una copia vieja tiene que seguir
     // restaurándose sin este dato, no fallar por él.
     let travelEpisodes: [TravelEpisode]?
+    // Schema 8: variables de máquina enlazadas a entrenamientos de Apple
+    // Salud. Son datos propios de Éter y sí deben poder restaurarse.
+    let workoutEnrichments: [WorkoutEnrichment]?
 
     var totalRecords: Int {
         // Cada término con su tipo explícito y sumados con reduce, en vez de
@@ -42,7 +45,8 @@ struct EterBackup: Codable {
             importedWorkouts.count, labResults.count, checkIns.count, lifestyleEvents.count,
             workoutReviews.count, planSnapshots.count, strengthRoutines.count,
             injuryRecords?.count ?? 0, dailyTwinStates?.count ?? 0,
-            temperatureDeviationLogs?.count ?? 0, travelEpisodes?.count ?? 0
+            temperatureDeviationLogs?.count ?? 0, travelEpisodes?.count ?? 0,
+            workoutEnrichments?.count ?? 0
         ]
         return counts.reduce(0, +)
     }
@@ -62,7 +66,8 @@ struct EterBackup: Codable {
             "\(injuryRecords?.count ?? 0) registros de lesiones",
             "\(dailyTwinStates?.count ?? 0) estados diarios del gemelo",
             "\(temperatureDeviationLogs?.count ?? 0) respuestas de temperatura de muñeca",
-            "\(travelEpisodes?.count ?? 0) viajes registrados"
+            "\(travelEpisodes?.count ?? 0) viajes registrados",
+            "\(workoutEnrichments?.count ?? 0) entrenamientos completados con datos de máquina"
         ]
         return parts.joined(separator: ", ") + "."
     }
@@ -141,7 +146,8 @@ enum EterBackupManager {
     static func make(imports: ImportStore, checkIns: DailyCheckInStore,
                      lifestyle: LifestyleFactorStore, workoutReviews: WorkoutReviewStore,
                      planHistory: PlanHistoryStore, strengthRoutines: StrengthRoutineStore,
-                     health: HealthStore, travel: TravelEpisodeStore) -> EterBackup {
+                     health: HealthStore, travel: TravelEpisodeStore,
+                     workoutEnrichments: WorkoutEnrichmentStore) -> EterBackup {
         EterBackup(
             format: "eter-health-backup", schemaVersion: EterBackup.currentSchemaVersion,
             createdAt: Date(), importedWorkouts: imports.workouts, labResults: imports.labs,
@@ -151,14 +157,15 @@ enum EterBackupManager {
             injuryRecords: InjuryStore.shared.records, dailyTwinStates: TwinStateStore.shared.states,
             health: HealthExportSnapshot.capture(from: health),
             temperatureDeviationLogs: TemperatureDeviationStore.shared.logs,
-            travelEpisodes: travel.episodes
+            travelEpisodes: travel.episodes,
+            workoutEnrichments: workoutEnrichments.enrichments
         )
     }
 
     static func restore(_ backup: EterBackup, imports: ImportStore, checkIns: DailyCheckInStore,
                         lifestyle: LifestyleFactorStore, workoutReviews: WorkoutReviewStore,
                         planHistory: PlanHistoryStore, strengthRoutines: StrengthRoutineStore,
-                        travel: TravelEpisodeStore) {
+                        travel: TravelEpisodeStore, workoutEnrichments: WorkoutEnrichmentStore) {
         imports.restore(workouts: backup.importedWorkouts, labs: backup.labResults)
         checkIns.restore(backup.checkIns)
         lifestyle.restore(backup.lifestyleEvents)
@@ -170,6 +177,7 @@ enum EterBackupManager {
         if let dailyTwinStates = backup.dailyTwinStates { TwinStateStore.shared.restore(dailyTwinStates) }
         if let temperatureDeviationLogs = backup.temperatureDeviationLogs { TemperatureDeviationStore.shared.restore(temperatureDeviationLogs) }
         if let travelEpisodes = backup.travelEpisodes { travel.restore(travelEpisodes) }
+        if let values = backup.workoutEnrichments { workoutEnrichments.restore(values) }
         // backup.health is intentionally not restored: HealthKit itself stays the
         // on-device source of truth, this field only ever flows outward.
     }
@@ -199,6 +207,7 @@ enum EterBackupManager {
         lifestyle: LifestyleFactorStore, workoutReviews: WorkoutReviewStore,
         planHistory: PlanHistoryStore, strengthRoutines: StrengthRoutineStore,
         health: HealthStore, travel: TravelEpisodeStore,
+        workoutEnrichments: WorkoutEnrichmentStore,
         force: Bool = false, now: Date = Date()
     ) throws -> Bool {
         guard automaticBackupEnabled else { return false }
@@ -211,7 +220,8 @@ enum EterBackupManager {
         let backup = make(
             imports: imports, checkIns: checkIns, lifestyle: lifestyle,
             workoutReviews: workoutReviews, planHistory: planHistory,
-            strengthRoutines: strengthRoutines, health: health, travel: travel
+            strengthRoutines: strengthRoutines, health: health, travel: travel,
+            workoutEnrichments: workoutEnrichments
         )
         let destination = folder.appendingPathComponent(automaticFilename, isDirectory: false)
         try EterBackupCodec.encode(backup).write(to: destination, options: .atomic)

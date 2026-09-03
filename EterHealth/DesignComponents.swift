@@ -234,6 +234,13 @@ extension View {
             .shadow(color: Color.black.opacity(0.045), radius: 10, y: 4)
     }
 
+    /// cardStyle sólo cuando `active`. Para incrustar una card dentro de otra
+    /// (p. ej. el forecast de HYROX/triatlón dentro de "Performance forecast")
+    /// sin duplicar el fondo/borde de tarjeta.
+    @ViewBuilder func cardStyle(active: Bool) -> some View {
+        if active { cardStyle() } else { self }
+    }
+
     func eterInsetStyle() -> some View {
         self.padding(12)
             .background(EterTheme.raisedSurface)
@@ -244,6 +251,14 @@ extension View {
 struct MuscleRadar: View {
     let current: [String: Double]
     let previous: [String: Double]
+    // Estímulo de cardio (carrera, ciclismo, senderismo) traducido a
+    // series-equivalentes por el MISMO modelo de fatiga que usa el gemelo
+    // (TrainingPlanEngine.cardioMuscleLoad). Se dibuja como una capa aparte,
+    // discontinua, NUNCA sumada a `current`: el % de hipertrofia sigue siendo
+    // sólo de fuerza, pero así se ve que correr también carga las piernas en
+    // vez de fingir que no cuenta. Vacío = no dibuja nada (comportamiento y
+    // llamadas antiguas intactos).
+    var cardio: [String: Double] = [:]
     // The window `current`/`previous` were actually summed over — the
     // targets below are per-week, so a 10-day window (this view's one
     // real caller) needs them scaled up ~1.43x, not compared directly
@@ -291,6 +306,14 @@ struct MuscleRadar: View {
                 // muscle pushed past its target visibly pokes past the
                 // ring instead of reading identically to "exactly enough".
                 drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1.3, (previous[$0] ?? 0) / target($0)) }, color: .gray)
+                // El cardio va DEBAJO del actual y sin relleno sólido: es
+                // contexto ("esto también te cargó las piernas"), no el dato
+                // principal. Sólo se dibuja si hay algún estímulo real.
+                if axes.contains(where: { (cardio[$0] ?? 0) > 0 }) {
+                    drawSeries(context: &context, center: center, radius: radius,
+                               values: axes.map { min(1.3, (cardio[$0] ?? 0) / target($0)) },
+                               color: .orange, dashed: true, fillOpacity: 0.06)
+                }
                 drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1.3, (current[$0] ?? 0) / target($0)) }, color: .blue)
             }
             ForEach(axes.indices, id: \.self) { index in
@@ -311,7 +334,9 @@ struct MuscleRadar: View {
         axes.map { muscle in
             let currentSets = current[muscle] ?? 0
             let percent = Int((currentSets / target(muscle) * 100).rounded())
-            return "\(muscle): actual \(Int(currentSets.rounded())) series de \(Int(target(muscle))) objetivo (\(percent)%), anterior \(Int((previous[muscle] ?? 0).rounded()))"
+            let cardioSets = cardio[muscle] ?? 0
+            let cardioNote = cardioSets > 0 ? ", más \(Int(cardioSets.rounded())) series-equivalentes de cardio" : ""
+            return "\(muscle): actual \(Int(currentSets.rounded())) series de \(Int(target(muscle))) objetivo (\(percent)%)\(cardioNote), anterior \(Int((previous[muscle] ?? 0).rounded()))"
         }.joined(separator: ". ")
     }
 
@@ -330,9 +355,13 @@ struct MuscleRadar: View {
         return CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
     }
 
-    private func drawSeries(context: inout GraphicsContext, center: CGPoint, radius: Double, values: [Double], color: Color) {
+    private func drawSeries(context: inout GraphicsContext, center: CGPoint, radius: Double, values: [Double],
+                            color: Color, dashed: Bool = false, fillOpacity: Double = 0.20) {
         let path = polygon(center: center, radius: radius, values: values)
-        context.fill(path, with: .color(color.opacity(0.20)))
-        context.stroke(path, with: .color(color.opacity(0.85)), lineWidth: 2.5)
+        context.fill(path, with: .color(color.opacity(fillOpacity)))
+        let style = dashed
+            ? StrokeStyle(lineWidth: 2, lineJoin: .round, dash: [4, 3])
+            : StrokeStyle(lineWidth: 2.5, lineJoin: .round)
+        context.stroke(path, with: .color(color.opacity(0.85)), style: style)
     }
 }

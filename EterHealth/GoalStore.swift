@@ -18,6 +18,15 @@ enum TrainingGoalKind: String, Codable, CaseIterable, Identifiable {
     case hypertrophy = "Hipertrofia"
     case custom = "Otro reto"
     var id: String { rawValue }
+    // Objetivo de fuerza (una barra o hipertrofia) frente a carrera/híbrido
+    // (running, triatlón, HYROX). Sirve para repartir la tarjeta "Distancia al
+    // objetivo": los de fuerza van a la pestaña Fuerza, el resto a Rendimiento.
+    var isStrength: Bool {
+        switch self {
+        case .benchPress, .squat, .deadlift, .hypertrophy: return true
+        case .marathon, .halfMarathon, .fiveK, .tenK, .hyrox, .triathlon, .ironman, .custom: return false
+        }
+    }
     var usesDate: Bool {
         switch self {
         case .marathon, .halfMarathon, .fiveK, .tenK, .hyrox, .triathlon, .ironman, .custom: return true

@@ -168,6 +168,12 @@ struct DualLoadSummary: Equatable {
     // que loadGuidance leyera "sobrecarga" con la evidencia del otro canal.
     var sustainedAerobicWeeks: Int
     var sustainedStrengthWeeks: Int
+    // Capacidad demostrada antes de la ventana reciente: mediana de las
+    // semanas activas entre 4 y 12 semanas atrás. No sustituye la preparación
+    // actual (EWMA 28 d); permite distinguir una carga nueva de un retorno a
+    // un volumen que esta persona ya sostuvo.
+    var historicalAerobicCapacity: Double = 0
+    var historicalStrengthCapacity: Double = 0
 
     static let none = DualLoadSummary(acuteAerobic: 0, habitualAerobic: 0, acuteStrength: 0, habitualStrength: 0,
                                       observedDays: 0, sustainedAerobicWeeks: 0, sustainedStrengthWeeks: 0)
@@ -188,6 +194,9 @@ struct DualLoadSummary: Equatable {
     // pico que ninguno de los dos tenía. Es estrictamente más sensible que el
     // combinado, y eso es la corrección, no un efecto secundario.
     var governingRatio: Double { Swift.max(aerobicRatio, strengthRatio) }
+    var planningRatio: Double {
+        guidance == .returning ? min(governingRatio, 1.29) : governingRatio
+    }
 
     // Qué canal manda, para poder decirlo en el rationale en vez de hablar de
     // "la carga" en abstracto.
@@ -196,11 +205,25 @@ struct DualLoadSummary: Equatable {
     var acuteChannels: DualLoad { DualLoad(aerobic: acuteAerobic, strength: acuteStrength) }
     var habitualChannels: DualLoad { DualLoad(aerobic: habitualAerobic, strength: habitualStrength) }
 
-    var aerobicGuidance: LoadGuidance {
-        PerformanceEngine.loadGuidance(ratio: aerobicRatio, sustainedWeeks: sustainedAerobicWeeks, observedDays: observedDays)
-    }
     var strengthGuidance: LoadGuidance {
-        PerformanceEngine.loadGuidance(ratio: strengthRatio, sustainedWeeks: sustainedStrengthWeeks, observedDays: observedDays)
+        contextualGuidance(acute: acuteStrength, habitual: habitualStrength,
+                           historical: historicalStrengthCapacity,
+                           base: PerformanceEngine.loadGuidance(ratio: strengthRatio, sustainedWeeks: sustainedStrengthWeeks, observedDays: observedDays))
+    }
+
+    var aerobicGuidance: LoadGuidance {
+        contextualGuidance(acute: acuteAerobic, habitual: habitualAerobic,
+                           historical: historicalAerobicCapacity,
+                           base: PerformanceEngine.loadGuidance(ratio: aerobicRatio, sustainedWeeks: sustainedAerobicWeeks, observedDays: observedDays))
+    }
+
+    private func contextualGuidance(acute: Double, habitual: Double, historical: Double,
+                                    base: LoadGuidance) -> LoadGuidance {
+        guard historical >= DualLoad.minimumTrustedHabitual,
+              habitual < historical * 0.72,
+              acute <= historical * 1.10,
+              base == .absorb || base == .overload else { return base }
+        return .returning
     }
 
     // Regla explícita, no un promedio mudo: manda el canal que pide más
@@ -249,6 +272,7 @@ extension LoadGuidance {
         case .low: return 1
         case .productive: return 2
         case .absorb: return 3
+        case .returning: return 3
         case .deload: return 4
         case .overload: return 5
         }
@@ -301,6 +325,7 @@ extension PerformanceEngine {
         let strengthLoads = history.map(\.strength)
         let habitualAerobic = ewmaWeeklyEquivalent(loads: aerobicLoads, timeConstant: 28)
         let habitualStrength = ewmaWeeklyEquivalent(loads: strengthLoads, timeConstant: 28)
+        let historical = historicalWeeklyCapacity(history: history)
         return DualLoadSummary(
             acuteAerobic: ewmaWeeklyEquivalent(loads: aerobicLoads, timeConstant: 7),
             habitualAerobic: habitualAerobic,
@@ -308,8 +333,38 @@ extension PerformanceEngine {
             habitualStrength: habitualStrength,
             observedDays: history.filter { $0.sessions > 0 }.count,
             sustainedAerobicWeeks: sustainedWeeks(loads: aerobicLoads, habitualWeekly: habitualAerobic),
-            sustainedStrengthWeeks: sustainedWeeks(loads: strengthLoads, habitualWeekly: habitualStrength)
+            sustainedStrengthWeeks: sustainedWeeks(loads: strengthLoads, habitualWeekly: habitualStrength),
+            historicalAerobicCapacity: historical.aerobic,
+            historicalStrengthCapacity: historical.strength
         )
+    }
+
+    /// Mediana de semanas activas anteriores al último mes. Las semanas a
+    /// cero no desaparecen de la preparación actual —ya están dentro del
+    /// EWMA de 28 días—, pero tampoco borran la prueba de que el atleta
+    /// sostuvo un volumen anteriormente. Exige cuatro semanas reales para
+    /// no convertir un pico aislado en "capacidad".
+    nonisolated static func historicalWeeklyCapacity(history: [DailyDualTraining]) -> DualLoad {
+        guard history.count > 28 else { return .none }
+        let older = history.dropLast(28)
+        var aerobicWeeks: [Double] = [], strengthWeeks: [Double] = []
+        var index = older.startIndex
+        while index < older.endIndex {
+            let end = older.index(index, offsetBy: 7, limitedBy: older.endIndex) ?? older.endIndex
+            let slice = older[index..<end]
+            let aerobic = slice.reduce(0) { $0 + $1.aerobic }
+            let strength = slice.reduce(0) { $0 + $1.strength }
+            if aerobic > 0 { aerobicWeeks.append(aerobic) }
+            if strength > 0 { strengthWeeks.append(strength) }
+            index = end
+        }
+        func capacity(_ values: [Double]) -> Double {
+            guard values.count >= 4 else { return 0 }
+            let sorted = values.sorted(), middle = sorted.count / 2
+            return sorted.count.isMultiple(of: 2)
+                ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+        }
+        return DualLoad(aerobic: capacity(aerobicWeeks), strength: capacity(strengthWeeks))
     }
 
     // Extraído tal cual de summarize (mismas 4 semanas rodantes, mismo 0.85)

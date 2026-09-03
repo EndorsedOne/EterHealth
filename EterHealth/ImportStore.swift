@@ -566,8 +566,97 @@ enum ImportError: LocalizedError, Equatable {
 }
 
 enum MuscleMap {
+    private final class ProfileLookup: NSObject {
+        let profile: ExerciseProfile?
+        init(_ profile: ExerciseProfile?) { self.profile = profile }
+    }
+
+    struct ExerciseProfile: Identifiable {
+        let id: String
+        let aliases: [String]
+        let groups: [String]
+        let involvement: [String: Double]
+        private let normalizedAliases: [String]
+
+        init(id: String, aliases: [String], groups: [String], involvement: [String: Double]) {
+            self.id = id
+            self.aliases = aliases
+            self.groups = groups
+            self.involvement = involvement
+            // Resolver un alias sucede en cada serie histórica. Normalizar los
+            // alias dentro de matches() multiplicaba este trabajo por cada
+            // sesión y terminaba bloqueando la UI al cargar datos reales.
+            normalizedAliases = aliases.map {
+                $0.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+            }
+        }
+
+        func matches(_ normalizedName: String) -> Bool {
+            normalizedAliases.contains { alias in
+                normalizedName == alias || normalizedName.contains(alias)
+            }
+        }
+    }
+
+    /// Catálogo estable de los ejercicios que Éter propone o ya reconoce de
+    /// Hevy. Aquí vive la semántica muscular; la UI, el radar, la fatiga y la
+    /// recuperación consultan este mismo perfil, nunca una copia por nombre.
+    static let knownProfiles: [ExerciseProfile] = [
+        .init(id: "benchDip", aliases: ["Bench Dip", "Fondos en banco"], groups: ["Tríceps", "Pecho"], involvement: ["Tríceps": 1.0, "Pecho": 0.5]),
+        .init(id: "closePushUp", aliases: ["Close Push Up", "Diamond Push Up", "Flexiones cerradas"], groups: ["Tríceps", "Pecho"], involvement: ["Tríceps": 1.0, "Pecho": 0.5]),
+        .init(id: "pikePushUp", aliases: ["Pike Push Up", "Flexiones pike"], groups: ["Hombros", "Tríceps"], involvement: ["Hombros": 1.0, "Tríceps": 0.5]),
+        .init(id: "pushUp", aliases: ["Push Up", "Flexiones"], groups: ["Pecho", "Tríceps"], involvement: ["Pecho": 1.0, "Tríceps": 0.5]),
+        .init(id: "dip", aliases: ["Dip", "Fondos en paralelas", "Fondos"], groups: ["Tríceps", "Pecho"], involvement: ["Tríceps": 1.0, "Pecho": 0.5]),
+        .init(id: "chestFly", aliases: ["Chest Fly", "Cable Fly"], groups: ["Pecho"], involvement: ["Pecho": 1.0]),
+        .init(id: "chestPress", aliases: ["Bench Press", "Press banca", "Chest Press"], groups: ["Pecho", "Tríceps"], involvement: ["Pecho": 1.0, "Tríceps": 0.5]),
+        .init(id: "shoulderPress", aliases: ["Shoulder Press", "Military Press", "Press militar", "Landmine Press"], groups: ["Hombros", "Tríceps"], involvement: ["Hombros": 1.0, "Tríceps": 0.5]),
+        .init(id: "lateralRaise", aliases: ["Lateral Raise", "Elevaciones laterales"], groups: ["Hombros"], involvement: ["Hombros": 1.0]),
+        .init(id: "rearDeltFly", aliases: ["Rear Delt Fly", "Pájaros", "Pajaros con botellas"], groups: ["Hombros"], involvement: ["Hombros": 1.0]),
+        .init(id: "tricepsIsolation", aliases: ["Triceps Extension", "Skullcrusher"], groups: ["Tríceps"], involvement: ["Tríceps": 1.0]),
+        .init(id: "row", aliases: ["Seated Cable Row", "Bent Over Row", "One Arm Row", "Remo con mochila", "Remo invertido", "Remo con barra"], groups: ["Espalda", "Bíceps"], involvement: ["Espalda": 1.0, "Bíceps": 0.5]),
+        .init(id: "facePull", aliases: ["Face Pull"], groups: ["Espalda", "Hombros"], involvement: ["Espalda": 0.75, "Hombros": 0.75]),
+        .init(id: "verticalPull", aliases: ["Lat Pulldown", "Pull Up", "Chin Up", "Dominadas", "Pullover"], groups: ["Espalda", "Bíceps"], involvement: ["Espalda": 1.0, "Bíceps": 0.5]),
+        .init(id: "bicepsCurl", aliases: ["Biceps Curl", "Hammer Curl", "Preacher Curl", "Curl con mochila"], groups: ["Bíceps"], involvement: ["Bíceps": 1.0]),
+        .init(id: "bulgarianOrLunge", aliases: ["Bulgarian Split Squat", "Sentadilla búlgara", "Walking Lunge", "Zancada inversa"], groups: ["Cuádriceps", "Glúteos"], involvement: ["Cuádriceps": 1.0, "Glúteos": 0.6]),
+        .init(id: "legExtension", aliases: ["Leg Extension"], groups: ["Cuádriceps"], involvement: ["Cuádriceps": 1.0]),
+        .init(id: "squat", aliases: ["Squat", "Sentadilla", "Leg Press", "Goblet", "Wall Ball"], groups: ["Cuádriceps", "Glúteos"], involvement: ["Cuádriceps": 1.0, "Glúteos": 0.6]),
+        .init(id: "deadlift", aliases: ["Deadlift", "Peso muerto"], groups: ["Isquios", "Glúteos", "Espalda"], involvement: ["Isquios": 1.0, "Glúteos": 0.75, "Espalda": 0.5]),
+        .init(id: "legCurl", aliases: ["Leg Curl", "Curl femoral"], groups: ["Isquios"], involvement: ["Isquios": 1.0]),
+        .init(id: "glute", aliases: ["Hip Thrust", "Glute Bridge", "Puente de glúteo", "Hip Abduction"], groups: ["Glúteos"], involvement: ["Glúteos": 1.0]),
+        .init(id: "calf", aliases: ["Calf Raise", "Gemelo"], groups: ["Gemelos"], involvement: ["Gemelos": 1.0]),
+        .init(id: "core", aliases: ["Plank", "Plancha", "Hollow Hold", "Dead Bug", "Crunch", "Knee Raise", "Leg Raise", "Pallof", "Dragon", "Bird Dog"], groups: ["Core"], involvement: ["Core": 1.0]),
+        .init(id: "farmerCarry", aliases: ["Farmer Carry", "Farmers Carry"], groups: ["Core"], involvement: ["Core": 0.5]),
+        .init(id: "kettlebellSwing", aliases: ["Kettlebell Swing"], groups: ["Glúteos", "Isquios"], involvement: ["Glúteos": 1.0, "Isquios": 0.75]),
+        .init(id: "thruster", aliases: ["Thruster"], groups: ["Cuádriceps", "Glúteos", "Hombros"], involvement: ["Cuádriceps": 0.75, "Glúteos": 0.5, "Hombros": 0.75]),
+        .init(id: "sledPush", aliases: ["Sled Push", "Trineo empuje"], groups: ["Cuádriceps", "Glúteos", "Hombros"], involvement: ["Cuádriceps": 0.75, "Glúteos": 0.5, "Hombros": 0.5]),
+        .init(id: "sledPull", aliases: ["Sled Pull", "Trineo arrastre"], groups: ["Espalda", "Bíceps", "Glúteos"], involvement: ["Espalda": 0.75, "Bíceps": 0.5, "Glúteos": 0.5]),
+        .init(id: "rowing", aliases: ["Rowing Machine", "Row Erg", "Concept2 Row", "Remo ergómetro"], groups: ["Espalda", "Cuádriceps", "Glúteos", "Core"], involvement: ["Espalda": 0.5, "Cuádriceps": 0.5, "Glúteos": 0.5, "Core": 0.25]),
+        .init(id: "skiErg", aliases: ["SkiErg", "Ski Erg"], groups: ["Espalda", "Hombros", "Core"], involvement: ["Espalda": 0.5, "Hombros": 0.5, "Core": 0.25])
+    ]
+
+    // Los historiales contienen muchas repeticiones del mismo nombre. NSCache
+    // es seguro entre hilos y evita recorrer los perfiles en cada render,
+    // cálculo de fatiga y gráfico. También cachea que un nombre sea desconocido.
+    // NSCache sincroniza internamente sus accesos; Swift no puede expresar esa
+    // garantía Foundation, por eso la marcamos explícitamente aquí.
+    private nonisolated(unsafe) static let profileCache = NSCache<NSString, ProfileLookup>()
+
+    static func profile(for raw: String) -> ExerciseProfile? {
+        let name = normalized(raw)
+        let key = name as NSString
+        if let cached = profileCache.object(forKey: key) { return cached.profile }
+        let resolved = knownProfiles.first { $0.matches(name) }
+        profileCache.setObject(ProfileLookup(resolved), forKey: key)
+        return resolved
+    }
+
+    private static func normalized(_ raw: String) -> String {
+        raw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current).lowercased()
+    }
+
     static func groups(for raw: String) -> [String] {
-        let name = raw.lowercased()
+        let name = normalized(raw)
+        if let profile = profile(for: raw) { return profile.groups }
         if name.contains("squat") || name.contains("leg press") || name.contains("leg extension") || name.contains("lunge") || name.contains("bulgarian") || name.contains("wall ball") || name.contains("goblet") { return ["Cuádriceps", "Glúteos"] }
         if name.contains("deadlift") || name.contains("leg curl") { return ["Isquios", "Glúteos", "Espalda"] }
         if name.contains("hip thrust") || name.contains("glute bridge") || name.contains("hip abduction") { return ["Glúteos"] }
@@ -594,7 +683,8 @@ enum MuscleMap {
     // same as a dedicated curl or extension set overstates real arm
     // volume substantially.
     static func involvement(for raw: String) -> [String: Double] {
-        let name = raw.lowercased()
+        let name = normalized(raw)
+        if let profile = profile(for: raw) { return profile.involvement }
         if name.contains("squat") || name.contains("leg press") || name.contains("leg extension") || name.contains("lunge") || name.contains("bulgarian") || name.contains("wall ball") || name.contains("goblet") {
             return ["Cuádriceps": 1.0, "Glúteos": 0.6]
         }
