@@ -135,6 +135,29 @@ valoraciones y objetivos. Importar Hevy, terminar o valorar una sesión, o
 cambiar un objetivo invalida el resultado aunque `health.lastUpdated` no
 cambie.
 
+### Una sola fuente de verdad entre iPhone, reloj y gemelo
+
+El Apple Watch no ejecuta un segundo gemelo ni mantiene una recomendación
+independiente. El iPhone construye el `TwinContext`, obtiene un único
+`TwinAssessment` y `WatchMetricsStore` envía al reloj un resumen versionado por
+fecha con readiness, recomendación, confianza, señales, energía y cafeína. El
+reloj conserva esa última instantánea para poder mostrarla sin conexión; por
+eso puede estar temporalmente atrasada, pero nunca se recalcula con otra lógica.
+
+La comunicación de entrenamiento sí es bidireccional: pausa, finalización y
+descarte se propagan como comandos, y la valoración posterior registrada en el
+reloj vuelve a `WorkoutReviewStore`. En el siguiente refresco, esa valoración
+forma parte del mismo `TwinContext` que usa el iPhone y, además, invalida el
+sello de Rendimiento.
+
+Los datos de `WorkoutEnrichmentStore` no son otro entrenamiento ni otro estado
+fisiológico. Se enlazan por UUID al `HKWorkout` original y sólo completan la
+evidencia que Apple Salud no contiene. El gemelo sigue tomando HealthKit e
+`ImportStore` como historial de sesiones; los motores específicos —por ejemplo
+la predicción HYROX de remo— consultan el enriquecimiento cuando esa variable
+es relevante. `effectiveMuscleSets` es, de forma separada, la única lectura
+canónica del volumen muscular de una sesión importada o creada en Éter.
+
 ### Entrenamientos HealthKit enriquecidos
 
 `WorkoutEnrichmentStore` conserva datos que Apple Salud no incluye —máquina,
@@ -711,9 +734,11 @@ struct TwinContext {
 }
 ```
 
-Un `TwinContext` se construye **una vez** en el call site (la vista) desde
+Un `TwinContext` se construye **una vez** en la capa coordinadora
+(`DashboardViewModel`, o el callback de actualización en segundo plano) desde
 los stores reales y se reutiliza para `assess`, `status`, `weekAhead` y
-`balance`. `TwinCore` nunca construye uno. No se añaden defaults a estos
+`balance`. Las vistas sólo consumen resultados preparados y `TwinCore` nunca
+construye el contexto. No se añaden defaults a estos
 parámetros: un call site que se olvide debe **no compilar**, no caer
 silenciosamente a un store global.
 
