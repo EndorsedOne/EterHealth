@@ -211,9 +211,6 @@ enum EterBackupManager {
         force: Bool = false, now: Date = Date()
     ) throws -> Bool {
         guard automaticBackupEnabled else { return false }
-        if !force, let last = automaticLastSuccess, Calendar.current.isDate(last, inSameDayAs: now) {
-            return false
-        }
         guard let folder = try automaticFolderURL() else { throw EterBackupError.automaticFolderUnavailable }
         let access = folder.startAccessingSecurityScopedResource()
         defer { if access { folder.stopAccessingSecurityScopedResource() } }
@@ -224,9 +221,38 @@ enum EterBackupManager {
             workoutEnrichments: workoutEnrichments
         )
         let destination = folder.appendingPathComponent(automaticFilename, isDirectory: false)
-        try EterBackupCodec.encode(backup).write(to: destination, options: .atomic)
+        let encoded = try EterBackupCodec.encode(backup)
+        // "Una copia al día" used to mean "never touch today's file again".
+        // That left the dashboard stale after a later workout, check-in,
+        // enrichment or even a schema upgrade. Keep one replaceable file, but
+        // skip the disk/iCloud write only when its actual payload is unchanged.
+        // createdAt/capturedAt are volatile metadata and must not make otherwise
+        // identical content look new on every HealthKit observer callback.
+        if !force,
+           let last = automaticLastSuccess,
+           Calendar.current.isDate(last, inSameDayAs: now),
+           let existing = try? Data(contentsOf: destination),
+           payloadsAreEquivalentIgnoringCaptureTime(existing, encoded) {
+            return false
+        }
+        try encoded.write(to: destination, options: .atomic)
         defaults.set(now, forKey: lastSuccessKey)
         return true
+    }
+
+    nonisolated static func payloadsAreEquivalentIgnoringCaptureTime(_ lhs: Data, _ rhs: Data) -> Bool {
+        guard let left = normalizedPayload(lhs), let right = normalizedPayload(rhs) else { return false }
+        return left == right
+    }
+
+    nonisolated private static func normalizedPayload(_ data: Data) -> Data? {
+        guard var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        root.removeValue(forKey: "createdAt")
+        if var health = root["health"] as? [String: Any] {
+            health.removeValue(forKey: "capturedAt")
+            root["health"] = health
+        }
+        return try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
     }
 
     private static func automaticFolderURL() throws -> URL? {

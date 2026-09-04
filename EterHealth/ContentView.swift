@@ -261,21 +261,21 @@ struct ContentView: View {
             scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(checkIns.objectWillChange) { _ in
-            scheduleDashboardRefresh()
+            scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(lifestyle.objectWillChange) { _ in
-            scheduleDashboardRefresh()
+            scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(workoutReviews.objectWillChange) { _ in
-            scheduleDashboardRefresh()
+            scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(goals.objectWillChange) { _ in
-            scheduleDashboardRefresh()
+            scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(imports.objectWillChange) { _ in
-            scheduleDashboardRefresh()
+            scheduleDashboardRefresh(includeBackup: true)
         }
-        .onChange(of: imports.workoutCount) { _, _ in scheduleDashboardRefresh() }
+        .onChange(of: imports.workoutCount) { _, _ in scheduleDashboardRefresh(includeBackup: true) }
         .onChange(of: selectedTab) { _, tab in
             if tab == 1 || tab == 2 { loadPerformanceIfNeeded() }
         }
@@ -612,13 +612,11 @@ struct ContentView: View {
             }
             if EterBackupManager.automaticBackupEnabled {
                 HStack {
-                    Text("Un único archivo se reemplaza una vez al día al abrir o actualizar Éter.")
+                    Text("Un único archivo se reemplaza cuando cambian tus datos; si no hay cambios, no vuelve a escribirse.")
                         .font(.caption2).foregroundStyle(.secondary)
                     Spacer()
-                    // The once-a-day throttle means new imports or fixes made
-                    // after today's automatic write won't reach the file (and
-                    // whatever reads it, e.g. a dashboard sync) until tomorrow
-                    // — this lets that be forced immediately instead.
+                    // A manual escape hatch remains useful for retrying an
+                    // interrupted iCloud write or refreshing an external reader.
                     Button("Sincronizar ahora") { performAutomaticBackupIfNeeded(force: true) }.font(.caption2)
                     Button("Desactivar", role: .destructive) {
                         EterBackupManager.disableAutomaticBackup()
@@ -838,7 +836,11 @@ struct ContentView: View {
             )
             if written { automaticBackupRevision += 1 }
         } catch {
-            // Keep the last valid file intact and retry on the next app launch.
+            // Keep the last valid file intact, but do not turn a failed iCloud
+            // write into a fake success. The user needs an actionable signal
+            // instead of a dashboard that silently stops refreshing.
+            backupMessage = "No se pudo actualizar la copia automática: \(error.localizedDescription)"
+            automaticBackupRevision += 1
         }
     }
 

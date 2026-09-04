@@ -28,6 +28,17 @@ final class EngineTests: XCTestCase {
                    calibration: neutralCalibration, personalAnchor: neutralAnchor)
     }
 
+    func testAutomaticBackupComparisonIgnoresCaptureDatesButNotRealChanges() {
+        let original = Data(#"{"createdAt":"2026-09-04T06:00:00Z","schemaVersion":8,"health":{"capturedAt":"2026-09-04T06:00:00Z","workouts":[{"id":"one"}]},"lifestyleEvents":[]}"#.utf8)
+        let newerCapture = Data(#"{"createdAt":"2026-09-04T07:00:00Z","schemaVersion":8,"health":{"capturedAt":"2026-09-04T07:00:00Z","workouts":[{"id":"one"}]},"lifestyleEvents":[]}"#.utf8)
+        let newWorkout = Data(#"{"createdAt":"2026-09-04T07:00:00Z","schemaVersion":8,"health":{"capturedAt":"2026-09-04T07:00:00Z","workouts":[{"id":"one"},{"id":"two"}]},"lifestyleEvents":[]}"#.utf8)
+        let newSchema = Data(#"{"createdAt":"2026-09-04T07:00:00Z","schemaVersion":9,"health":{"capturedAt":"2026-09-04T07:00:00Z","workouts":[{"id":"one"}]},"lifestyleEvents":[]}"#.utf8)
+
+        XCTAssertTrue(EterBackupManager.payloadsAreEquivalentIgnoringCaptureTime(original, newerCapture))
+        XCTAssertFalse(EterBackupManager.payloadsAreEquivalentIgnoringCaptureTime(original, newWorkout))
+        XCTAssertFalse(EterBackupManager.payloadsAreEquivalentIgnoringCaptureTime(original, newSchema))
+    }
+
     func testPersonalAnchorNeedsSevenMorningsBeforeLearning() {
         let anchor = PersonalReadinessAnchor.derive(scores: [52, 55, 54, 53, 56, 10])
         XCTAssertEqual(anchor.score, 70)
