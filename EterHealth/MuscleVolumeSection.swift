@@ -29,7 +29,9 @@ struct MuscleVolumeSection: View {
                     if hasCardio { Label("Cardio", systemImage: "circle.dashed").foregroundStyle(.orange) }
                 }.font(.caption).frame(maxWidth: .infinity)
                 if hasCardio {
-                    Text("El % cuenta sólo series de fuerza. La capa naranja es el estímulo que la carrera, el ciclismo y el senderismo dejan en piernas y core, en series-equivalentes: cargan la pierna de verdad, pero no es volumen de hipertrofia.")
+                    let legCardio = cardio["Piernas"] ?? 0
+                    let legPercent = Int((legCardio / MuscleRadar.cardioReference("Piernas", periodDays: 10) * 100).rounded())
+                    Text("El % de cada eje cuenta sólo fuerza. El radio naranja muestra la carga musculoesquelética del cardio con su propia referencia: piernas \(legPercent)%. Correr carga la pierna, pero no se acredita como volumen de hipertrofia.")
                         .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                 }
             }.cardStyle()

@@ -6310,6 +6310,14 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(MuscleVolumeLandmarkTable.bucketMAV("Brazos"), 20)
     }
 
+    func testCardioRadarUsesItsOwnTenDayReferenceInsteadOfHypertrophyMAV() {
+        XCTAssertEqual(MuscleRadar.cardioReference("Piernas", periodDays: 10), 8)
+        XCTAssertEqual(MuscleRadar.cardioReference("Piernas", periodDays: 5), 4)
+        XCTAssertLessThan(MuscleRadar.cardioReference("Piernas", periodDays: 10),
+                          MuscleVolumeLandmarkTable.bucketMAV("Piernas"),
+                          "Cardio load must not be normalized against the leg hypertrophy-set target.")
+    }
+
     // MARK: - PR9: los priors de volumen, revisados y documentados
 
     func testEveryMuscleLandmarkPriorSitsInsideTheLiteratureBand() {

@@ -286,6 +286,25 @@ struct MuscleRadar: View {
     // independently hand-picked ones that used to just happen to agree.
     private func target(_ muscle: String) -> Double { MuscleVolumeLandmarkTable.bucketMAV(muscle) * periodDays / 7 }
 
+    // Cardio is not hypertrophy volume, so dividing it by the 42-set weekly
+    // leg MAV makes several substantial runs look like a near-zero line.
+    // Its own reference means roughly three meaningful lower-body aerobic
+    // exposures per 10 days. It is only a visual load context and is never
+    // added to the blue strength percentage or used as muscle growth credit.
+    static func cardioReference(_ muscle: String, periodDays: Double) -> Double {
+        let tenDayReference: Double
+        switch muscle {
+        case "Piernas": tenDayReference = 8
+        case "Core": tenDayReference = 4
+        default: tenDayReference = 4
+        }
+        return tenDayReference * periodDays / 10
+    }
+
+    private func cardioRatio(_ muscle: String) -> Double {
+        min(1.3, (cardio[muscle] ?? 0) / Self.cardioReference(muscle, periodDays: periodDays))
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let size = min(geometry.size.width, geometry.size.height) * 0.68
@@ -306,13 +325,21 @@ struct MuscleRadar: View {
                 // muscle pushed past its target visibly pokes past the
                 // ring instead of reading identically to "exactly enough".
                 drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1.3, (previous[$0] ?? 0) / target($0)) }, color: .gray)
-                // El cardio va DEBAJO del actual y sin relleno sólido: es
-                // contexto ("esto también te cargó las piernas"), no el dato
-                // principal. Sólo se dibuja si hay algún estímulo real.
-                if axes.contains(where: { (cardio[$0] ?? 0) > 0 }) {
-                    drawSeries(context: &context, center: center, radius: radius,
-                               values: axes.map { min(1.3, (cardio[$0] ?? 0) / target($0)) },
-                               color: .orange, dashed: true, fillOpacity: 0.06)
+                // Cardio normally touches only one or two aggregated axes.
+                // Closing that as a six-sided polygon collapses through the
+                // centre and reads like a tiny accidental scribble. Draw the
+                // actual affected radii instead, against the cardio-specific
+                // reference above, with a marker at the measured dose.
+                for index in axes.indices where (cardio[axes[index]] ?? 0) > 0 {
+                    let end = point(center: center, radius: radius * cardioRatio(axes[index]),
+                                    index: index, count: axes.count)
+                    var path = Path()
+                    path.move(to: center)
+                    path.addLine(to: end)
+                    context.stroke(path, with: .color(.orange),
+                                   style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [6, 5]))
+                    context.fill(Path(ellipseIn: CGRect(x: end.x - 5, y: end.y - 5, width: 10, height: 10)),
+                                 with: .color(.orange))
                 }
                 drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1.3, (current[$0] ?? 0) / target($0)) }, color: .blue)
             }
@@ -335,7 +362,8 @@ struct MuscleRadar: View {
             let currentSets = current[muscle] ?? 0
             let percent = Int((currentSets / target(muscle) * 100).rounded())
             let cardioSets = cardio[muscle] ?? 0
-            let cardioNote = cardioSets > 0 ? ", más \(Int(cardioSets.rounded())) series-equivalentes de cardio" : ""
+            let cardioPercent = Int((cardioSets / Self.cardioReference(muscle, periodDays: periodDays) * 100).rounded())
+            let cardioNote = cardioSets > 0 ? ", más carga de cardio \(cardioPercent)% de su referencia" : ""
             return "\(muscle): actual \(Int(currentSets.rounded())) series de \(Int(target(muscle))) objetivo (\(percent)%)\(cardioNote), anterior \(Int((previous[muscle] ?? 0).rounded()))"
         }.joined(separator: ". ")
     }
