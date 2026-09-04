@@ -43,7 +43,7 @@ struct WorkoutDetailView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cerrar") { dismiss() } } }
             .sheet(isPresented: $editingMachineData) {
                 if let workout = healthWorkout {
-                    RowingEnrichmentEditor(
+                    ErgometerEnrichmentEditor(
                         workout: workout,
                         existing: workoutEnrichments.enrichment(for: workout.id)
                     ).environmentObject(workoutEnrichments)
@@ -84,17 +84,21 @@ struct WorkoutDetailView: View {
         }
         if hasRunningDynamics(workout) { runningDynamicsCard(workout) }
         if hasCyclingDynamics(workout) { cyclingDynamicsCard(workout) }
-        if workout.activity == "Remo indoor" { rowingMachineCard(workout) }
+        if supportsErgometerEnrichment(workout) { ergometerMachineCard(workout) }
         HeartRateZonesCard(workout: workout).environmentObject(health)
     }
 
-    private func rowingMachineCard(_ workout: HealthWorkout) -> some View {
+    private func supportsErgometerEnrichment(_ workout: HealthWorkout) -> Bool {
+        workout.activity == "Remo indoor" || workout.activity == "Entrenamiento"
+    }
+
+    private func ergometerMachineCard(_ workout: HealthWorkout) -> some View {
         let enrichment = workoutEnrichments.enrichment(for: workout.id)
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Datos de la máquina").font(.subheadline.bold())
-                    Text("Completa lo que Apple Fitness no registra")
+                    Text("Métricas de ergómetro").font(.subheadline.bold())
+                    Text("Completa remo o SkiErg sin duplicar la sesión")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -110,10 +114,10 @@ struct WorkoutDetailView: View {
                     if let level = enrichment.resistanceLevel { tile("Resistencia", "\(level.formatted(.number.precision(.fractionLength(0...1))))/10") }
                     if let effort = enrichment.perceivedEffort { tile("Esfuerzo", "RPE \(effort)/10") }
                 }
-                Text("\(enrichment.machine.rawValue) · \(enrichment.resistanceMode.rawValue)\(enrichment.useForHyrox ? " · referencia HYROX" : "")")
+                Text("\(enrichment.effectiveDiscipline.rawValue) · \(enrichment.machine.rawValue) · \(enrichment.resistanceMode.rawValue)\(enrichment.useForHyrox ? " · referencia HYROX" : "")")
                     .font(.caption2).foregroundStyle(.secondary)
             } else {
-                Text("Puedes añadir distancia, potencia, cadencia y resistencia sin modificar ni duplicar el entrenamiento guardado en Apple Salud.")
+                Text("Puedes añadir tiempo efectivo, distancia y potencia sin modificar ni duplicar el entrenamiento guardado en Apple Salud.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.cardStyle()
@@ -249,12 +253,13 @@ struct WorkoutDetailView: View {
     }
 }
 
-private struct RowingEnrichmentEditor: View {
+private struct ErgometerEnrichmentEditor: View {
     @EnvironmentObject private var store: WorkoutEnrichmentStore
     @Environment(\.dismiss) private var dismiss
     let workout: HealthWorkout
     let existing: WorkoutEnrichment?
 
+    @State private var discipline: ErgometerDiscipline
     @State private var machine: WorkoutMachine
     @State private var mode: RowingResistanceMode
     @State private var distance: String
@@ -269,8 +274,10 @@ private struct RowingEnrichmentEditor: View {
     init(workout: HealthWorkout, existing: WorkoutEnrichment?) {
         self.workout = workout
         self.existing = existing
-        _machine = State(initialValue: existing?.machine ?? .technogymSkillrow)
-        _mode = State(initialValue: existing?.resistanceMode ?? .aquaFeel)
+        let initialDiscipline = existing?.effectiveDiscipline ?? (workout.activity == "Remo indoor" ? .rowing : .skiErg)
+        _discipline = State(initialValue: initialDiscipline)
+        _machine = State(initialValue: existing?.machine ?? (initialDiscipline == .rowing ? .technogymSkillrow : .concept2SkiErg))
+        _mode = State(initialValue: existing?.resistanceMode ?? (initialDiscipline == .rowing ? .aquaFeel : .notRecorded))
         _distance = State(initialValue: existing?.distanceMeters.map { String(Int($0.rounded())) } ?? "")
         _duration = State(initialValue: existing?.effectiveDurationSeconds.map(Self.formatDuration) ?? "")
         _power = State(initialValue: existing?.averagePowerWatts.map { String(Int($0.rounded())) } ?? "")
@@ -284,6 +291,17 @@ private struct RowingEnrichmentEditor: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Disciplina") {
+                    Picker("Ergómetro", selection: $discipline) {
+                        ForEach(ErgometerDiscipline.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .onChange(of: discipline) { _, value in
+                        if existing == nil {
+                            machine = value == .rowing ? .technogymSkillrow : .concept2SkiErg
+                            mode = value == .rowing ? .aquaFeel : .notRecorded
+                        }
+                    }
+                }
                 Section("Máquina") {
                     Picker("Equipo", selection: $machine) {
                         ForEach(WorkoutMachine.allCases) { Text($0.rawValue).tag($0) }
@@ -303,7 +321,7 @@ private struct RowingEnrichmentEditor: View {
                 }
                 Section {
                     Toggle("Usar como referencia para HYROX", isOn: $useForHyrox)
-                    Text("Éter la reconocerá como evidencia de remo. No la tratará como una simulación completa ni inventará el comportamiento del trineo o la carrera.")
+                    Text("Éter la usará como evidencia de \(discipline.rawValue) para esa estación. No la tratará como una simulación HYROX completa.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Notas") { TextField("Sensaciones, técnica o configuración", text: $note, axis: .vertical) }
@@ -316,7 +334,7 @@ private struct RowingEnrichmentEditor: View {
                     }
                 }
             }
-            .navigationTitle("Completar remo")
+            .navigationTitle("Completar ergómetro")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancelar") { dismiss() } }
@@ -335,6 +353,7 @@ private struct RowingEnrichmentEditor: View {
     private func save() {
         let enrichment = WorkoutEnrichment(
             workoutID: workout.id.uuidString, workoutDate: workout.date,
+            discipline: discipline,
             machine: machine, resistanceMode: mode,
             resistanceLevel: boundedNumber(resistance, range: 1...10),
             distanceMeters: positiveNumber(distance),

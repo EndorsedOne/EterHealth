@@ -3,8 +3,15 @@ import Foundation
 enum WorkoutMachine: String, Codable, CaseIterable, Identifiable {
     case technogymSkillrow = "Technogym Skillrow"
     case concept2 = "Concept2"
+    case concept2SkiErg = "Concept2 SkiErg"
     case other = "Otra máquina"
 
+    var id: String { rawValue }
+}
+
+enum ErgometerDiscipline: String, Codable, CaseIterable, Identifiable {
+    case rowing = "Remo"
+    case skiErg = "SkiErg"
     var id: String { rawValue }
 }
 
@@ -22,6 +29,9 @@ struct WorkoutEnrichment: Codable, Identifiable, Equatable {
     var id: String { workoutID }
     let workoutID: String
     var workoutDate: Date
+    // Optional keeps backups made before SkiErg support decodable. A nil
+    // discipline is an old rowing record and is interpreted as such.
+    var discipline: ErgometerDiscipline? = nil
     var machine: WorkoutMachine
     var resistanceMode: RowingResistanceMode
     var resistanceLevel: Double?
@@ -33,6 +43,8 @@ struct WorkoutEnrichment: Codable, Identifiable, Equatable {
     var useForHyrox: Bool
     var note: String
     var updatedAt: Date
+
+    var effectiveDiscipline: ErgometerDiscipline { discipline ?? .rowing }
 }
 
 @MainActor

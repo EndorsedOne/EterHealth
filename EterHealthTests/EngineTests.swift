@@ -1062,6 +1062,27 @@ final class EngineTests: XCTestCase {
         XCTAssertLessThan(personalized?.stationSeconds ?? 0, baseline?.stationSeconds ?? 0)
     }
 
+    func testSkiErgEnrichmentPersonalizesOnlyTheSkiStation() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let ski = WorkoutEnrichment(
+            workoutID: UUID().uuidString, workoutDate: now.addingTimeInterval(-86_400),
+            discipline: .skiErg, machine: .concept2SkiErg, resistanceMode: .notRecorded,
+            resistanceLevel: nil, distanceMeters: 1_000, effectiveDurationSeconds: 225,
+            averagePowerWatts: 230, cadenceSPM: 35, perceivedEffort: 8,
+            useForHyrox: true, note: "", updatedAt: now
+        )
+
+        XCTAssertNil(HyroxForecastEngine.enrichedRowingEstimate([ski], now: now),
+                     "Un SkiErg no puede contaminar la estimación de remo.")
+        XCTAssertNotNil(HyroxForecastEngine.enrichedErgometerEstimate([ski], discipline: .skiErg, now: now))
+
+        let forecast = HyroxForecastEngine.forecast(
+            running: hyroxRunning(), workouts: [], now: now, workoutEnrichments: [ski]
+        )
+        XCTAssertTrue(forecast?.stations.first(where: { $0.name == "SkiErg" })?.observed == true)
+        XCTAssertFalse(forecast?.stations.first(where: { $0.name == "Row" })?.observed == true)
+    }
+
     // Una serie de plancha o de trineo no tiene reps y sí es una serie hecha:
     // el filtro por reps > 0 las descartaba enteras del progreso de fuerza.
     func testTimeBasedSetsStillCountAsRealSets() {

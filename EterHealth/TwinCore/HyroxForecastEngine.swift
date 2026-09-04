@@ -31,7 +31,7 @@ enum HyroxStationBasis: String, Equatable {
     case populationBand = "banda de la división"
     case observedStations = "tiempos reales por estación"
     case impliedFromSimulations = "implícito de tus simulaciones"
-    case enrichedRow = "remo medido y resto por banda"
+    case enrichedRow = "ergómetros medidos y resto por banda"
 }
 
 enum HyroxForecastEngine {
@@ -65,14 +65,16 @@ enum HyroxForecastEngine {
         let exercises = workouts
             .filter { $0.start <= now && $0.start >= now.addingTimeInterval(-240 * 86_400) }
             .flatMap(\.exercises).map { normalized($0.name) }
-        let hasEnrichedRow = workoutEnrichments.contains {
+        let enrichedDisciplines = Set(workoutEnrichments.filter {
             $0.useForHyrox && $0.workoutDate <= now &&
                 $0.workoutDate >= now.addingTimeInterval(-240 * 86_400) &&
                 (($0.distanceMeters ?? 0) > 0 || ($0.effectiveDurationSeconds ?? 0) > 0 || ($0.averagePowerWatts ?? 0) > 0)
-        }
+        }.map(\.effectiveDiscipline))
         let stations = stationDefinitions.map { name, terms in
             let importedEvidence = exercises.contains { exercise in terms.contains { exercise.contains($0) } }
-            return HyroxStationEvidence(name: name, observed: importedEvidence || (name == "Row" && hasEnrichedRow))
+            let enriched = (name == "Row" && enrichedDisciplines.contains(.rowing)) ||
+                (name == "SkiErg" && enrichedDisciplines.contains(.skiErg))
+            return HyroxStationEvidence(name: name, observed: importedEvidence || enriched)
         }
         let stationCoverage = stations.filter(\.observed).count
         let specific = workouts.filter {
@@ -93,6 +95,7 @@ enum HyroxForecastEngine {
         let stationBand = stationTimeBand(division)
         let priorStationSeconds = (stationBand.lowerBound + stationBand.upperBound) / 2
         let rowingEvidence = enrichedRowingEstimate(workoutEnrichments, division: division, now: now)
+        let skiEvidence = enrichedErgometerEstimate(workoutEnrichments, discipline: .skiErg, now: now)
         let transitionSeconds = division == .doubles ? 270.0 : 330.0
 
         let credibleSimulations = specific.map { $0.end.timeIntervalSince($0.start) }
@@ -126,18 +129,20 @@ enum HyroxForecastEngine {
             stationSeconds = priorStationSeconds * 0.55 + impliedStationSeconds * 0.45
             stationBasis = .impliedFromSimulations
             stationSpread = stationSeconds * 0.12
-        } else if let rowingEvidence {
-            // Una estación medida sí debe mover el forecast. Sustituimos solo
-            // el prior del remo —no fingimos conocer las otras siete— y
-            // ponderamos por comparabilidad de máquina y repetición.
+        } else if rowingEvidence != nil || skiEvidence != nil {
+            // Cada ergómetro sustituye sólo su propio prior. Tener SkiErg no
+            // puede mejorar artificialmente el remo, ni al revés.
             let priorRow = priorRowingSeconds(division)
-            let personalizedRow = priorRow * (1 - rowingEvidence.weight) + rowingEvidence.seconds * rowingEvidence.weight
-            stationSeconds = priorStationSeconds - priorRow + personalizedRow
+            let priorSki = priorSkiErgSeconds(division)
+            let personalizedRow = rowingEvidence.map { priorRow * (1 - $0.weight) + $0.seconds * $0.weight } ?? priorRow
+            let personalizedSki = skiEvidence.map { priorSki * (1 - $0.weight) + $0.seconds * $0.weight } ?? priorSki
+            stationSeconds = priorStationSeconds - priorRow - priorSki + personalizedRow + personalizedSki
             stationBasis = .enrichedRow
             // Conservamos casi toda la amplitud poblacional: conocemos mejor
             // el remo, no el trineo, lunges o wall balls.
             let populationSpread = (stationBand.upperBound - stationBand.lowerBound) / 2
-            stationSpread = populationSpread * (1 - 0.12 * rowingEvidence.weight)
+            let combinedWeight = (rowingEvidence?.weight ?? 0) + (skiEvidence?.weight ?? 0)
+            stationSpread = populationSpread * (1 - 0.10 * min(1.5, combinedWeight))
         } else {
             stationSeconds = priorStationSeconds
             stationBasis = .populationBand
@@ -238,9 +243,17 @@ enum HyroxForecastEngine {
         _ values: [WorkoutEnrichment], division: HyroxDivision = .open,
         now: Date = Date()
     ) -> (seconds: Double, weight: Double)? {
+        enrichedErgometerEstimate(values, discipline: .rowing, now: now)
+    }
+
+    nonisolated static func enrichedErgometerEstimate(
+        _ values: [WorkoutEnrichment], discipline: ErgometerDiscipline,
+        now: Date = Date()
+    ) -> (seconds: Double, weight: Double)? {
         let recent = values.filter {
             $0.useForHyrox && $0.workoutDate <= now &&
-                $0.workoutDate >= now.addingTimeInterval(-240 * 86_400)
+                $0.workoutDate >= now.addingTimeInterval(-240 * 86_400) &&
+                $0.effectiveDiscipline == discipline
         }.compactMap { value -> (Double, Double)? in
             let paceEstimate: Double? = {
                 guard let meters = value.distanceMeters, meters >= 250,
@@ -259,7 +272,8 @@ enum HyroxForecastEngine {
             else if let powerEstimate { estimate = powerEstimate }
             else { return nil }
             guard (150...600).contains(estimate) else { return nil }
-            let machineReliability: Double = value.machine == .concept2 ? 0.82 : 0.62
+            let isConcept2 = value.machine == .concept2 || value.machine == .concept2SkiErg
+            let machineReliability: Double = isConcept2 ? 0.82 : 0.62
             let completeness = paceEstimate != nil && powerEstimate != nil ? 1.0 : 0.86
             return (estimate, machineReliability * completeness)
         }
@@ -271,6 +285,14 @@ enum HyroxForecastEngine {
     }
 
     private nonisolated static func priorRowingSeconds(_ division: HyroxDivision) -> Double {
+        switch division {
+        case .open: return 270
+        case .pro: return 260
+        case .doubles: return 250
+        }
+    }
+
+    private nonisolated static func priorSkiErgSeconds(_ division: HyroxDivision) -> Double {
         switch division {
         case .open: return 270
         case .pro: return 260
