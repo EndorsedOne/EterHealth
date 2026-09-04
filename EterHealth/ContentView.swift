@@ -112,8 +112,22 @@ struct ContentView: View {
             }
                 .tabItem { Label("Rendimiento", systemImage: "figure.run") }.tag(1)
             appPage {
-                if selectedTab == 2 { StrengthTrainingView() }
-                else { deferredTab(title: "Fuerza", systemImage: "dumbbell.fill") }
+                if selectedTab == 2,
+                   let assessment = dashboard.assessment,
+                   let plan = dashboard.plan,
+                   dashboard.performance != nil,
+                   dashboard.running != nil {
+                    StrengthTrainingView(
+                        assessment: assessment, plan: plan,
+                        goalDistances: dashboard.goalDistances
+                    )
+                } else if selectedTab == 2 {
+                    deferredTab(title: "Preparando fuerza", systemImage: "dumbbell.fill")
+                        .task {
+                            if dashboard.assessment == nil { scheduleDashboardRefresh() }
+                            loadPerformanceIfNeeded()
+                        }
+                } else { deferredTab(title: "Fuerza", systemImage: "dumbbell.fill") }
             }
                 .tabItem { Label("Fuerza", systemImage: "dumbbell.fill") }.tag(2)
             appPage {
@@ -252,9 +266,18 @@ struct ContentView: View {
         .onReceive(lifestyle.objectWillChange) { _ in
             scheduleDashboardRefresh()
         }
+        .onReceive(workoutReviews.objectWillChange) { _ in
+            scheduleDashboardRefresh()
+        }
+        .onReceive(goals.objectWillChange) { _ in
+            scheduleDashboardRefresh()
+        }
+        .onReceive(imports.objectWillChange) { _ in
+            scheduleDashboardRefresh()
+        }
         .onChange(of: imports.workoutCount) { _, _ in scheduleDashboardRefresh() }
         .onChange(of: selectedTab) { _, tab in
-            if tab == 1 { loadPerformanceIfNeeded() }
+            if tab == 1 || tab == 2 { loadPerformanceIfNeeded() }
         }
         // Backfill de estabilidad de viajes pasados. En una vista aparte (no un
         // .onChange más en esta cadena) porque el type-checker de SwiftUI no
@@ -375,17 +398,13 @@ struct ContentView: View {
     }
 
     private var currentAssessment: TwinAssessment {
-        dashboard.assessment ?? TwinEngine.assess(
-            health: health, imports: imports, checkIn: checkIns.entry(), context: twinContext
-        )
+        // Todas las vistas que lo consumen tienen un estado de carga previo.
+        // No volvemos a ejecutar el gemelo desde el path de renderizado.
+        dashboard.assessment!
     }
 
     private var currentPlan: WeeklyPlanStatus {
-        dashboard.plan ?? TrainingPlanEngine.status(
-            health: health, imports: imports, readiness: currentAssessment.score,
-            muscles: currentAssessment.muscles, checkIn: checkIns.entry(), context: twinContext,
-            physiologicalAlert: currentAssessment.physiologicalAlert
-        )
+        dashboard.plan!
     }
 
     @ViewBuilder private var todayPage: some View {
@@ -618,12 +637,13 @@ struct ContentView: View {
         // la vista antes de que el usuario pulse Rendimiento, justo el trabajo
         // invisible que hacía pesado el arranque. La pestaña muestra primero
         // su estado y después recibe el resultado diferido del view model.
-        if let running = dashboard.running, dashboard.performance != nil, dashboard.balance != nil {
+        if let running = dashboard.running, let plan = dashboard.plan,
+           dashboard.performance != nil, dashboard.balance != nil {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
-                GoalDistanceCard(strengthOnly: false)
+                GoalDistanceCard(strengthOnly: false, distances: dashboard.goalDistances)
                 loadIntensitySection
-                RunningPerformanceView(running: running, plan: currentPlan)
+                RunningPerformanceView(running: running, plan: plan)
                 recentTraining
             }
         } else {
@@ -838,17 +858,20 @@ struct ContentView: View {
         .cardStyle()
     }
 
-    private var performanceDashboard: some View {
-        let summary = dashboard.performance ?? PerformanceEngine.summarize(health: health, imports: imports)
-        return VStack(alignment: .leading, spacing: 16) {
-            trainingBalanceCard
-            weeklySummary(summary)
-            trainingLoadCard(summary)
-            TrainingScenarioCardView()
-            intensityFocusCard(summary)
-            activityCalendar(summary)
-            physiologicalPerformanceCard
-            capacityCard
+    @ViewBuilder private var performanceDashboard: some View {
+        if let summary = dashboard.performance {
+            VStack(alignment: .leading, spacing: 16) {
+                trainingBalanceCard
+                weeklySummary(summary)
+                trainingLoadCard(summary)
+                TrainingScenarioCardView()
+                intensityFocusCard(summary)
+                activityCalendar(summary)
+                physiologicalPerformanceCard
+                capacityCard
+            }
+        } else {
+            ProgressView("Preparando rendimiento")
         }
     }
 
@@ -1465,9 +1488,9 @@ struct ContentView: View {
     }
 
     private func captureCurrentPlanIfNeeded() {
-        guard health.authorizationRequested else { return }
-        let assessment = currentAssessment
-        let plan = currentPlan
+        guard health.authorizationRequested,
+              let assessment = dashboard.assessment,
+              let plan = dashboard.plan else { return }
         planHistory.captureIfNeeded(plan, health: health)
         twinStates.capture(assessment: assessment, health: health)
         // La decisión vive en el store (recordStabilityIfConfirmed) y no aquí:
@@ -1482,7 +1505,7 @@ struct ContentView: View {
             print("[éter/watch] syncWatchSummary descartado: sin permiso de Salud todavía")
             return
         }
-        let assessment = currentAssessment
+        guard let assessment = dashboard.assessment, let plan = dashboard.plan else { return }
         let energyTimeline = EnergyTimelineEngine.build(
             assessment: assessment, health: health, imports: imports,
             checkIn: checkIns.entry(), lifestyle: lifestyle.recent(before: Date(), hours: 30),
@@ -1494,7 +1517,7 @@ struct ContentView: View {
         // misclassifications that string-matching caused (swim/bike/brick/
         // HYROX/race-day defaulting to "strength", and "Brick bici-carrera"
         // being misread as running because it contains "carrera").
-        let activity = TrainingPlanEngine.watchActivity(for: currentPlan.nextSession)
+        let activity = TrainingPlanEngine.watchActivity(for: plan.nextSession)
         watchMetrics.updateTwinSummary(readiness: assessment.score, state: assessment.state,
                                        recommendation: assessment.recommendation,
                                        reason: assessment.explanation, activity: activity,

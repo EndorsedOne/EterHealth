@@ -166,6 +166,9 @@ struct StrengthTrainingView: View {
     @EnvironmentObject private var travel: TravelEpisodeStore
     @State private var activeSheet: StrengthSheet?
     @State private var selectedProgressExercise = ""
+    let assessment: TwinAssessment
+    let plan: WeeklyPlanStatus
+    let goalDistances: [GoalDistance]
 
     private var context: TwinContext {
         TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
@@ -177,21 +180,10 @@ struct StrengthTrainingView: View {
     }
 
     var body: some View {
-        let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIns.entry(),
-                                           context: TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
-                                                                reviews: WorkoutReviewStore.shared.reviews, activeInjuries: InjuryStore.shared.active,
-                                                                calibration: TwinStateStore.shared.calibration,
-                                                                personalAnchor: TwinStateStore.shared.personalAnchor(),
-                                                                travel: travel.episodeForEvaluation(), travelHistory: travel.episodes))
         let forecasts = TrainingPlanEngine.weekAhead(
             health: health, imports: imports, checkIn: checkIns.entry(), context: context, days: 14
         )
         let strengthForecasts = Array(forecasts.filter { $0.kind == .strength }.prefix(3))
-        let plan = TrainingPlanEngine.status(
-            health: health, imports: imports, readiness: assessment.score,
-            muscles: assessment.muscles, checkIn: checkIns.entry(), context: context,
-            physiologicalAlert: assessment.physiologicalAlert
-        )
         VStack(alignment: .leading, spacing: 18) {
             EterPageHeader(eyebrow: "Fuerza", title: "Entrena y progresa")
 
@@ -201,7 +193,7 @@ struct StrengthTrainingView: View {
 
             // Objetivos de fuerza (press banca, sentadilla, peso muerto,
             // hipertrofia). Los de carrera/híbridos viven en Rendimiento.
-            GoalDistanceCard(strengthOnly: true)
+            GoalDistanceCard(strengthOnly: true, distances: goalDistances)
 
             // Movidas desde Rendimiento: distribución muscular y volumen de
             // fuerza son análisis de fuerza y su sitio es esta pestaña.

@@ -7,6 +7,7 @@ final class DashboardViewModel: ObservableObject {
     @Published private(set) var performance: PerformanceSummary?
     @Published private(set) var balance: TrainingBalance?
     @Published private(set) var running: RunningPerformanceSummary?
+    @Published private(set) var goalDistances: [GoalDistance] = []
     @Published private(set) var isLoadingPerformance = false
     // Reto 1 · curva de tendencias del día ya calculada. Se computa aquí, en el
     // refresco debounced del gemelo, y NUNCA dentro de body: build() recorre el
@@ -17,7 +18,15 @@ final class DashboardViewModel: ObservableObject {
     // cambie, la caché es válida y no se recomputa — antes se tiraba a la basura
     // en CADA refresh() del gemelo (check-in, estilo de vida, foreground...),
     // así que volver a Rendimiento siempre lo recargaba desde cero.
-    private var performanceStamp: Date?
+    private struct PerformanceStamp: Equatable {
+        let healthUpdated: Date?
+        let importCount: Int
+        let latestImport: Date?
+        let reviewCount: Int
+        let latestReview: Date?
+        let goalSignature: String
+    }
+    private var performanceStamp: PerformanceStamp?
 
     // TwinCore's engines no longer read GoalStore/LifestyleFactorStore/
     // InjuryStore/TwinStateStore internally — profile/events/activeInjuries/
@@ -55,10 +64,19 @@ final class DashboardViewModel: ObservableObject {
         // Ya calculado para esta misma lectura de Salud: nada que hacer. Sólo se
         // recomputa cuando health.lastUpdated cambia (datos nuevos) o si nunca
         // se calculó.
+        let stamp = PerformanceStamp(
+            healthUpdated: health.lastUpdated,
+            importCount: imports.workoutCount,
+            latestImport: imports.workouts.map(\.start).max(),
+            reviewCount: reviews.count,
+            latestReview: reviews.map(\.recordedAt).max(),
+            goalSignature: context.profile.goals.map {
+                "\($0.id.uuidString)|\($0.kind.rawValue)|\($0.targetValue ?? -1)|\($0.date?.timeIntervalSince1970 ?? -1)|\($0.isActive)"
+            }.sorted().joined(separator: ";")
+        )
         if performance != nil, balance != nil, running != nil,
-           performanceStamp == health.lastUpdated { return }
+           performanceStamp == stamp { return }
         guard !isLoadingPerformance else { return }
-        let stamp = health.lastUpdated
         isLoadingPerformance = true
         // Cede el primer frame al indicador de carga antes de recorrer el
         // histórico. Los motores son síncronos por diseño, así que dividirlos
@@ -73,6 +91,14 @@ final class DashboardViewModel: ObservableObject {
         performance = PerformanceEngine.summarize(health: health, imports: imports)
         await Task.yield()
         balance = PerformanceEngine.balance(health: health, imports: imports, context: context)
+        await Task.yield()
+        if let running {
+            let strength = StrengthProgressEngine.summarize(imports.workouts)
+            goalDistances = GoalDistanceEngine.evaluate(
+                goals: context.profile.goals, running: running, strength: strength,
+                importedWorkouts: imports.workouts, healthWorkouts: health.workoutHistory
+            )
+        }
         performanceStamp = stamp
         isLoadingPerformance = false
     }
