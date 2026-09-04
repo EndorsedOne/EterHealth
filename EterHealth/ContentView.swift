@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import Charts
+import UIKit
 
 // Chaining several independent `.fileImporter`/`.sheet` modifiers on the same
 // view is unreliable — SwiftUI can end up only ever presenting the first one
@@ -67,6 +68,7 @@ struct ContentView: View {
     @EnvironmentObject private var watchMetrics: WatchMetricsStore
     @EnvironmentObject private var twinStates: TwinStateStore
     @EnvironmentObject private var workoutEnrichments: WorkoutEnrichmentStore
+    @EnvironmentObject private var temperatureDeviations: TemperatureDeviationStore
     @State private var activeImporter: ContentImporter?
     // Set together with activeImporter at the moment each button is tapped,
     // and read inside .fileImporter's onCompletion below. Deliberately NOT
@@ -283,6 +285,7 @@ struct ContentView: View {
         // .onChange más en esta cadena) porque el type-checker de SwiftUI no
         // aguanta un modificador más sobre este TabView ya enorme.
         .background(travelBackfillTrigger)
+        .background(backupChangeTrigger)
         // syncWatchSummary sólo estaba enganchado a CAMBIOS (lastUpdated,
         // check-in, estilo de vida, importaciones). Con la app abierta y nada
         // cambiando, el iPhone no enviaba nada nunca y el reloj se quedaba en
@@ -293,20 +296,15 @@ struct ContentView: View {
             if granted { syncWatchSummary() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { syncWatchSummary() }
+            if phase == .active {
+                syncWatchSummary()
+            } else if phase == .background {
+                performPendingAutomaticBackupInBackground()
+            }
         }
-        // performAutomaticBackupIfNeeded() used to also run from onAppear,
-        // which fires the instant this view mounts — before health.prepare()'s
-        // async HealthKit fetch (kicked off separately at the App level) has
-        // populated anything. Since the write is throttled to once per
-        // calendar day, that early call almost always won the race, writing
-        // a backup with HealthStore still at its empty startup defaults and
-        // then blocking the real write from the onChange above (which fires
-        // once refresh() actually completes) for the rest of the day — the
-        // dashboard would show that day's Health data as stale or missing
-        // even though the device itself had it all along. onChange alone is
-        // sufficient: it already fires on the initial refresh and on every
-        // later HealthKit background-delivery update.
+        // La copia nunca compite con el arranque ni con el render de pestañas:
+        // los cambios sólo dejan una marca persistente y la escritura se hace
+        // cuando la escena ya ha pasado a segundo plano.
         // syncWatchSummary aquí también: si el permiso de Salud ya estaba
         // concedido antes de que esta vista apareciera, ningún onChange llega a
         // dispararse y el reloj se quedaría esperando igual.
@@ -352,6 +350,9 @@ struct ContentView: View {
     }
 
     private func scheduleDashboardRefresh(includeBackup: Bool = false) {
+        // objectWillChange puede cancelar/reprogramar el cálculo varias veces;
+        // la intención de copiar no debe perderse por ese debounce.
+        if includeBackup { EterBackupManager.markAutomaticBackupPending() }
         dashboardRefreshTask?.cancel()
         dashboardRefreshTask = Task { @MainActor in
             // Salud puede publicar varias señales durante la misma lectura.
@@ -374,11 +375,6 @@ struct ContentView: View {
             captureCurrentPlanIfNeeded()
             await Task.yield()
             syncWatchSummary()
-            if includeBackup {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                performAutomaticBackupIfNeeded()
-            }
             if selectedTab == 1 { loadPerformanceIfNeeded() }
         }
     }
@@ -478,6 +474,20 @@ struct ContentView: View {
             .onChange(of: travel.episodes) { _, _ in
                 if health.hasLoadedHistory { Task { await travel.backfillAllPending(health: health, imports: imports) } }
             }
+    }
+
+    // Stores que no necesariamente provocan una nueva publicación de
+    // HealthKit también forman parte del JSON. Se agrupan aquí para no seguir
+    // ensanchando la ya pesada cadena de modificadores del TabView.
+    private var backupChangeTrigger: some View {
+        Color.clear
+            .onReceive(planHistory.objectWillChange) { _ in EterBackupManager.markAutomaticBackupPending() }
+            .onReceive(strengthRoutines.objectWillChange) { _ in EterBackupManager.markAutomaticBackupPending() }
+            .onReceive(injuries.objectWillChange) { _ in EterBackupManager.markAutomaticBackupPending() }
+            .onReceive(travel.objectWillChange) { _ in EterBackupManager.markAutomaticBackupPending() }
+            .onReceive(twinStates.objectWillChange) { _ in EterBackupManager.markAutomaticBackupPending() }
+            .onReceive(workoutEnrichments.objectWillChange) { _ in EterBackupManager.markAutomaticBackupPending() }
+            .onReceive(temperatureDeviations.objectWillChange) { _ in EterBackupManager.markAutomaticBackupPending() }
     }
 
     @ViewBuilder private var todayTrendsCard: some View {
@@ -612,7 +622,7 @@ struct ContentView: View {
             }
             if EterBackupManager.automaticBackupEnabled {
                 HStack {
-                    Text("Un único archivo se reemplaza cuando cambian tus datos; si no hay cambios, no vuelve a escribirse.")
+                    Text("Un único archivo se reemplaza al dejar Éter en segundo plano cuando han cambiado tus datos.")
                         .font(.caption2).foregroundStyle(.secondary)
                     Spacer()
                     // A manual escape hatch remains useful for retrying an
@@ -842,6 +852,22 @@ struct ContentView: View {
             backupMessage = "No se pudo actualizar la copia automática: \(error.localizedDescription)"
             automaticBackupRevision += 1
         }
+    }
+
+    private func performPendingAutomaticBackupInBackground() {
+        guard EterBackupManager.automaticBackupPending,
+              health.lastUpdated != nil,
+              health.hasLoadedHistory,
+              !health.isLoading else { return }
+        // iOS concede una ventana breve para terminar una operación iniciada
+        // al abandonar la app. La escritura es atómica: si se agota esa
+        // ventana, permanece la copia anterior y pending sigue a true porque
+        // sólo se limpia después de completar correctamente.
+        let identifier = UIApplication.shared.beginBackgroundTask(withName: "EterAutomaticBackup")
+        defer {
+            if identifier != .invalid { UIApplication.shared.endBackgroundTask(identifier) }
+        }
+        performAutomaticBackupIfNeeded()
     }
 
     private var permissionCard: some View {

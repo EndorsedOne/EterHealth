@@ -133,11 +133,18 @@ enum EterBackupManager {
     private static let folderBookmarkKey = "eter.automatic-backup.folder-bookmark"
     private static let folderNameKey = "eter.automatic-backup.folder-name"
     private static let lastSuccessKey = "eter.automatic-backup.last-success"
+    private static let pendingKey = "eter.automatic-backup.pending"
     static let automaticFilename = "EterHealth-copia-automatica.json"
 
     static var automaticFolderName: String? { defaults.string(forKey: folderNameKey) }
     static var automaticLastSuccess: Date? { defaults.object(forKey: lastSuccessKey) as? Date }
     static var automaticBackupEnabled: Bool { defaults.data(forKey: folderBookmarkKey) != nil }
+    static var automaticBackupPending: Bool { defaults.bool(forKey: pendingKey) }
+
+    static func markAutomaticBackupPending() {
+        guard automaticBackupEnabled else { return }
+        defaults.set(true, forKey: pendingKey)
+    }
 
     // `travel` llega como parámetro y no se lee de un `.shared` como
     // GoalStore/InjuryStore de abajo: TravelEpisodeStore no tiene singleton a
@@ -193,12 +200,14 @@ enum EterBackupManager {
         defaults.set(bookmark, forKey: folderBookmarkKey)
         defaults.set(folder.lastPathComponent, forKey: folderNameKey)
         defaults.removeObject(forKey: lastSuccessKey)
+        defaults.set(true, forKey: pendingKey)
     }
 
     static func disableAutomaticBackup() {
         defaults.removeObject(forKey: folderBookmarkKey)
         defaults.removeObject(forKey: folderNameKey)
         defaults.removeObject(forKey: lastSuccessKey)
+        defaults.removeObject(forKey: pendingKey)
     }
 
     @discardableResult
@@ -211,6 +220,7 @@ enum EterBackupManager {
         force: Bool = false, now: Date = Date()
     ) throws -> Bool {
         guard automaticBackupEnabled else { return false }
+        guard force || automaticBackupPending else { return false }
         guard let folder = try automaticFolderURL() else { throw EterBackupError.automaticFolderUnavailable }
         let access = folder.startAccessingSecurityScopedResource()
         defer { if access { folder.stopAccessingSecurityScopedResource() } }
@@ -233,10 +243,12 @@ enum EterBackupManager {
            Calendar.current.isDate(last, inSameDayAs: now),
            let existing = try? Data(contentsOf: destination),
            payloadsAreEquivalentIgnoringCaptureTime(existing, encoded) {
+            defaults.set(false, forKey: pendingKey)
             return false
         }
         try encoded.write(to: destination, options: .atomic)
         defaults.set(now, forKey: lastSuccessKey)
+        defaults.set(false, forKey: pendingKey)
         return true
     }
 
