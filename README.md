@@ -24,10 +24,11 @@ EterHealth/TwinCore/            el motor del gemelo (ver abajo)
 EterHealthTests/                XCTest — EngineTests.swift (unitarios) + LabImportRealPDFTests
 EterHealthWatch Watch App/      app de reloj (registro de series y métricas en vivo)
 EterHealthWidgets/              widgets de pantalla de inicio
+EterHealthWatchWidgets/         complicaciones/widgets de Apple Watch
 ```
 
-Cuatro targets (`EterHealth`, `EterHealthTests`, `EterHealthWatch Watch App`,
-`EterHealthWidgets`), Xcode 26.3, Swift 6 (el target de iOS aún compila en
+Cinco targets (`EterHealth`, `EterHealthTests`, `EterHealthWatch Watch App`,
+`EterHealthWidgets`, `EterHealthWatchWidgets`), Xcode 26.3, Swift 6 (el target de iOS aún compila en
 modo Swift 5), iOS 18.0+, watchOS 26.2+. **Sin SPM, sin CocoaPods.**
 
 `TwinCore/` es la frontera importante: todo lo que decide *qué entrenar* vive
@@ -56,6 +57,7 @@ flowchart TD
         TS[TwinStateStore<br/>calibración + ancla personal]
         PH[PlanHistoryStore<br/>plan propuesto vs. ejecutado]
         TE[TravelEpisodeStore<br/>episodios de viaje]
+        WE[WorkoutEnrichmentStore<br/>variables de máquina enlazadas a HealthKit]
     end
 
     GS --> CTX[TwinContext<br/>profile · events · reviews ·<br/>activeInjuries · calibration · personalAnchor]
@@ -65,6 +67,7 @@ flowchart TD
     WR --> CTX
     TS --> CTX
     TE --> CTX
+    WE --> UI
 
     HS --> ASSESS
     IS --> ASSESS
@@ -118,6 +121,28 @@ lift), `PersonalBaselineEngine` (líneas base personales por métrica),
 ("Tres futuros"), `InjurySafetyEngine`, `SleepArchitectureEngine`,
 `SleepRegularityEngine`, `BiologicalAgeEngine`, `LongevityEngine`,
 `EnduranceNutritionEngine`, `CaffeinePharmacokinetics`.
+
+### Caché y coste de renderizado
+
+`DashboardViewModel` es la fuente de verdad de evaluación, plan, rendimiento,
+balance, running y distancia a objetivos. Las vistas muestran un estado de
+carga hasta recibir esos resultados: no ejecutan `TwinEngine.assess`,
+`PerformanceEngine.summarize` ni `GoalDistanceEngine.evaluate` dentro de
+`body`.
+
+La caché de Rendimiento usa un sello compuesto por HealthKit, importaciones,
+valoraciones y objetivos. Importar Hevy, terminar o valorar una sesión, o
+cambiar un objetivo invalida el resultado aunque `health.lastUpdated` no
+cambie.
+
+### Entrenamientos HealthKit enriquecidos
+
+`WorkoutEnrichmentStore` conserva datos que Apple Salud no incluye —máquina,
+resistencia, metros, tiempo efectivo, vatios, cadencia y RPE— vinculados al
+UUID del `HKWorkout`. Completa la sesión original sin duplicarla. En remo,
+metros/tiempo y potencia personalizan la estimación de 1.000 m de HYROX; una
+máquina distinta amplía la incertidumbre, pero no anula la evidencia. Estos
+registros también forman parte de la copia de seguridad.
 
 ---
 
@@ -620,8 +645,11 @@ Están documentadas en el código, en el sitio donde ocurren. Resumen:
 13. **El ratio agudo:crónico que gobierna el gate** sigue viviendo en el EWMA
    de un solo canal combinado dentro de `ForwardState`, no en los dos
    canales de `DualLoad`.
-14. **`MuscleMap` hace matching de substrings en inglés** (la convención de
-   los exports de Hevy). Nombres en español caen al bucket genérico.
+14. **`MuscleMap` reconoce el catálogo canónico en inglés y español.** Primero
+   resuelve coincidencia exacta y después el alias parcial más largo, por lo
+   que el resultado no depende del orden del array. Un nombre realmente nuevo
+   aún puede caer al fallback; allí `groups` e `involvement` comparten los
+   mismos músculos y sólo se diferencian en el peso atribuido a cada uno.
 15. **`LabImportRealPDFTests` se salta** si `/tmp/eter-lab-pdfs` está vacío
     (macOS purga `/tmp`). No es un fallo: es un skip explícito.
 

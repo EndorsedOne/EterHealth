@@ -591,10 +591,12 @@ enum MuscleMap {
             }
         }
 
-        func matches(_ normalizedName: String) -> Bool {
-            normalizedAliases.contains { alias in
-                normalizedName == alias || normalizedName.contains(alias)
-            }
+        func isExactMatch(_ normalizedName: String) -> Bool {
+            normalizedAliases.contains(normalizedName)
+        }
+
+        func longestPartialMatch(in normalizedName: String) -> Int? {
+            normalizedAliases.filter { normalizedName.contains($0) }.map(\.count).max()
         }
     }
 
@@ -645,7 +647,13 @@ enum MuscleMap {
         let name = normalized(raw)
         let key = name as NSString
         if let cached = profileCache.object(forKey: key) { return cached.profile }
-        let resolved = knownProfiles.first { $0.matches(name) }
+        // Exacto siempre gana. Si el nombre lleva sufijos de Hevy o de la
+        // máquina, gana el alias parcial más largo, no el primer perfil del
+        // array. Así añadir mañana "curl" no puede robar "preacher curl".
+        let resolved = knownProfiles.first { $0.isExactMatch(name) } ??
+            knownProfiles.compactMap { profile in
+                profile.longestPartialMatch(in: name).map { (profile, $0) }
+            }.max { $0.1 < $1.1 }?.0
         profileCache.setObject(ProfileLookup(resolved), forKey: key)
         return resolved
     }
@@ -657,17 +665,9 @@ enum MuscleMap {
     static func groups(for raw: String) -> [String] {
         let name = normalized(raw)
         if let profile = profile(for: raw) { return profile.groups }
-        if name.contains("squat") || name.contains("leg press") || name.contains("leg extension") || name.contains("lunge") || name.contains("bulgarian") || name.contains("wall ball") || name.contains("goblet") { return ["Cuádriceps", "Glúteos"] }
-        if name.contains("deadlift") || name.contains("leg curl") { return ["Isquios", "Glúteos", "Espalda"] }
-        if name.contains("hip thrust") || name.contains("glute bridge") || name.contains("hip abduction") { return ["Glúteos"] }
-        if name.contains("calf") { return ["Gemelos"] }
-        if name.contains("bench") || name.contains("chest press") || name.contains("chest fly") || name.contains("cable fly") || name.contains("push up") || name.contains("dip") { return ["Pecho", "Tríceps"] }
-        if name.contains("shoulder") || name.contains("military") || name.contains("lateral raise") || name.contains("landmine press") { return ["Hombros", "Tríceps"] }
-        if name.contains("row") || name.contains("pulldown") || name.contains("pull up") || name.contains("chin up") || name.contains("pullover") || name.contains("face pull") { return ["Espalda", "Bíceps"] }
-        if name.contains("curl") { return ["Bíceps"] }
-        if name.contains("triceps") || name.contains("skullcrusher") { return ["Tríceps"] }
-        if name.contains("crunch") || name.contains("plank") || name.contains("knee raise") || name.contains("leg raise") || name.contains("dead bug") || name.contains("pallof") || name.contains("dragon") || name.contains("bird dog") { return ["Core"] }
-        return ["Cuerpo completo"]
+        let weights = fallbackInvolvement(for: name)
+        let order = ["Cuádriceps", "Glúteos", "Isquios", "Gemelos", "Pecho", "Espalda", "Hombros", "Bíceps", "Tríceps", "Core", "Cuerpo completo"]
+        return order.filter { weights[$0] != nil }
     }
 
     // Weighted involvement for set-counting toward hypertrophy volume —
@@ -685,6 +685,10 @@ enum MuscleMap {
     static func involvement(for raw: String) -> [String: Double] {
         let name = normalized(raw)
         if let profile = profile(for: raw) { return profile.involvement }
+        return fallbackInvolvement(for: name)
+    }
+
+    private static func fallbackInvolvement(for name: String) -> [String: Double] {
         if name.contains("squat") || name.contains("leg press") || name.contains("leg extension") || name.contains("lunge") || name.contains("bulgarian") || name.contains("wall ball") || name.contains("goblet") {
             return ["Cuádriceps": 1.0, "Glúteos": 0.6]
         }

@@ -958,6 +958,19 @@ final class EngineTests: XCTestCase {
         }
     }
 
+    func testAliasResolutionPrefersExactThenLongestPartialMatch() {
+        XCTAssertEqual(MuscleMap.profile(for: "Dip")?.id, "dip")
+        XCTAssertEqual(MuscleMap.profile(for: "Bench Dip estable")?.id, "benchDip")
+        XCTAssertEqual(MuscleMap.profile(for: "Close Push Up tempo")?.id, "closePushUp")
+        XCTAssertEqual(MuscleMap.profile(for: "Push Up")?.id, "pushUp")
+    }
+
+    func testFallbackGroupsAndVolumeInvolvementCannotDisagree() {
+        for name in ["Cable shoulder rotation", "Machine squat custom", "Unknown curl variation", "Custom plank hold"] {
+            XCTAssertEqual(Set(MuscleMap.groups(for: name)), Set(MuscleMap.involvement(for: name).keys), name)
+        }
+    }
+
     func testEveryBodyweightExerciseProposedByEterResolvesToACanonicalProfile() {
         let prescribedNames = [
             "Sentadilla búlgara", "Zancada inversa", "Puente de glúteo unilateral",
