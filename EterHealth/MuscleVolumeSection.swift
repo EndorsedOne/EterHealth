@@ -14,9 +14,9 @@ struct MuscleVolumeSection: View {
         let now = Date()
         let start = calendar.date(byAdding: .day, value: -10, to: now)!
         let previousStart = calendar.date(byAdding: .day, value: -20, to: now)!
-        let current = combinedMuscleDistribution(from: start, to: now)
-        let previous = combinedMuscleDistribution(from: previousStart, to: start)
-        let cardio = cardioMuscleStimulus(from: start, to: now)
+        let current = Self.combinedMuscleDistribution(imports: imports, health: health, from: start, to: now)
+        let previous = Self.combinedMuscleDistribution(imports: imports, health: health, from: previousStart, to: start)
+        let cardio = Self.cardioMuscleStimulus(imports: imports, health: health, from: start, to: now)
         let hasCardio = cardio.values.contains { $0 > 0 }
         let volume = imports.weeklyVolume()
         return VStack(alignment: .leading, spacing: 16) {
@@ -55,7 +55,8 @@ struct MuscleVolumeSection: View {
         }
     }
 
-    private func combinedMuscleDistribution(from start: Date, to end: Date) -> [String: Double] {
+    static func combinedMuscleDistribution(imports: ImportStore, health: HealthStore,
+                                           from start: Date, to end: Date) -> [String: Double] {
         var result = imports.muscleDistribution(from: start, to: end)
         for workout in health.recentWorkouts where workout.date >= start && workout.date < end {
             // Evita el doble conteo del resumen que Hevy/éter también escriben en
@@ -72,7 +73,7 @@ struct MuscleVolumeSection: View {
         return result
     }
 
-    private func muscleBucket(_ muscle: String) -> String {
+    static func muscleBucket(_ muscle: String) -> String {
         switch muscle {
         case "Cuádriceps", "Glúteos", "Isquios", "Gemelos": return "Piernas"
         case "Bíceps", "Tríceps": return "Brazos"
@@ -85,7 +86,8 @@ struct MuscleVolumeSection: View {
     // radar. NO entra en combinedMuscleDistribution (ese cuenta hipertrofia);
     // reutiliza el mismo modelo de fatiga del gemelo (cardioMuscleLoad) para no
     // mezclar ni contar doble.
-    private func cardioMuscleStimulus(from start: Date, to end: Date) -> [String: Double] {
+    static func cardioMuscleStimulus(imports: ImportStore, health: HealthStore,
+                                     from start: Date, to end: Date) -> [String: Double] {
         var result: [String: Double] = [:]
         for workout in health.recentWorkouts where workout.date >= start && workout.date < end {
             guard !imports.isHealthKitMirror(workout) else { continue }

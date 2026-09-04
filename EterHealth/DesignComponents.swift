@@ -324,14 +324,14 @@ struct MuscleRadar: View {
                 // Clamped a little past 1.0 (not hard-capped at it) so a
                 // muscle pushed past its target visibly pokes past the
                 // ring instead of reading identically to "exactly enough".
-                drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1.3, (previous[$0] ?? 0) / target($0)) }, color: .gray)
+                drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1, (previous[$0] ?? 0) / target($0)) }, color: .gray)
                 // Cardio normally touches only one or two aggregated axes.
                 // Closing that as a six-sided polygon collapses through the
                 // centre and reads like a tiny accidental scribble. Draw the
                 // actual affected radii instead, against the cardio-specific
                 // reference above, with a marker at the measured dose.
                 for index in axes.indices where (cardio[axes[index]] ?? 0) > 0 {
-                    let end = point(center: center, radius: radius * cardioRatio(axes[index]),
+                    let end = point(center: center, radius: radius * min(1, cardioRatio(axes[index])),
                                     index: index, count: axes.count)
                     var path = Path()
                     path.move(to: center)
@@ -341,14 +341,18 @@ struct MuscleRadar: View {
                     context.fill(Path(ellipseIn: CGRect(x: end.x - 5, y: end.y - 5, width: 10, height: 10)),
                                  with: .color(.orange))
                 }
-                drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1.3, (current[$0] ?? 0) / target($0)) }, color: .blue)
+                drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1, (current[$0] ?? 0) / target($0)) }, color: .blue)
             }
             ForEach(axes.indices, id: \.self) { index in
                 let position = point(center: center, radius: radius + 22, index: index, count: axes.count)
                 VStack(spacing: 0) {
                     Text(axes[index]).font(.caption2).foregroundStyle(.secondary)
-                    Text("\(Int(((current[axes[index]] ?? 0) / target(axes[index]) * 100).rounded()))%")
+                    Text("Fuerza \(Int(((current[axes[index]] ?? 0) / target(axes[index]) * 100).rounded()))%")
                         .font(.caption2.bold()).foregroundStyle(.secondary.opacity(0.8))
+                    if (cardio[axes[index]] ?? 0) > 0 {
+                        Text("Cardio \(Int((cardioRatio(axes[index]) * 100).rounded()))%")
+                            .font(.caption2.bold()).foregroundStyle(.orange)
+                    }
                 }.position(position)
             }
         }

@@ -52,6 +52,11 @@ struct EterWidgetSnapshot: Codable, Sendable {
     var caffeineNowMg: Double?
     var caffeineBedtimeMg: Double?
     var caffeineBedtimeHour: Double?
+    // Compact muscle matrix. Optional so snapshots written by older builds
+    // remain decodable until the app produces the first refreshed snapshot.
+    var muscleCurrent: [Double]?
+    var musclePrevious: [Double]?
+    var muscleCardio: [Double]?
 }
 
 struct EterWidgetEnergyEvent: Codable, Sendable {
@@ -90,6 +95,17 @@ enum WidgetSnapshotStore {
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let calendar = Calendar.current
         let start = calendar.date(byAdding: .day, value: -10, to: now) ?? now
+        let previousStart = calendar.date(byAdding: .day, value: -20, to: now) ?? start
+        let muscleAxes = ["Espalda", "Pecho", "Core", "Hombros", "Brazos", "Piernas"]
+        let muscleCurrent = MuscleVolumeSection.combinedMuscleDistribution(
+            imports: imports, health: health, from: start, to: now
+        )
+        let musclePrevious = MuscleVolumeSection.combinedMuscleDistribution(
+            imports: imports, health: health, from: previousStart, to: start
+        )
+        let muscleCardio = MuscleVolumeSection.cardioMuscleStimulus(
+            imports: imports, health: health, from: start, to: now
+        )
         let strengthSessions = imports.workouts.filter { $0.start >= start }.count
         let runningSessions = health.recentWorkouts.filter {
             $0.date >= start && $0.activity == "Carrera" && !imports.isHealthKitMirror($0)
@@ -159,7 +175,10 @@ enum WidgetSnapshotStore {
             hrvBaseline: baseline.hrv.expected,
             restingHeartRateBaseline: baseline.restingHeartRate.expected,
             caffeineCurve: caffeine.points, caffeineNowMg: caffeine.currentMg,
-            caffeineBedtimeMg: caffeine.bedtimeMg, caffeineBedtimeHour: caffeine.bedtimeHour
+            caffeineBedtimeMg: caffeine.bedtimeMg, caffeineBedtimeHour: caffeine.bedtimeHour,
+            muscleCurrent: muscleAxes.map { muscleCurrent[$0] ?? 0 },
+            musclePrevious: muscleAxes.map { musclePrevious[$0] ?? 0 },
+            muscleCardio: muscleAxes.map { muscleCardio[$0] ?? 0 }
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults(suiteName: suiteName)?.set(data, forKey: key)

@@ -50,6 +50,9 @@ private struct Snapshot: Codable {
     var caffeineNowMg: Double?
     var caffeineBedtimeMg: Double?
     var caffeineBedtimeHour: Double?
+    var muscleCurrent: [Double]?
+    var musclePrevious: [Double]?
+    var muscleCardio: [Double]?
 
     static let sample = Snapshot(
         updatedAt: .now, readiness: 70, state: "Disponible", recommendation: "Recuperación",
@@ -74,7 +77,10 @@ private struct Snapshot: Codable {
                        InputMarker(hour: 8.0, symbol: "snowflake", kind: "cold", label: "Frío 3 min")],
         hrvBaseline: 49, restingHeartRateBaseline: 59,
         caffeineCurve: [CaffeinePoint(hour: 7, remainingMg: 95), CaffeinePoint(hour: 12, remainingMg: 47.5), CaffeinePoint(hour: 23, remainingMg: 10)],
-        caffeineNowMg: 47.5, caffeineBedtimeMg: 10, caffeineBedtimeHour: 23
+        caffeineNowMg: 47.5, caffeineBedtimeMg: 10, caffeineBedtimeHour: 23,
+        muscleCurrent: [9, 18, 8, 11, 17, 4],
+        musclePrevious: [7, 12, 6, 8, 13, 10],
+        muscleCardio: [0, 0, 0, 0, 0, 9]
     )
 }
 
@@ -428,6 +434,110 @@ private struct LoadView: View {
     }
 }
 
+private struct MuscleMatrixView: View {
+    let entry: Entry
+    private let axes = ["Espalda", "Pecho", "Core", "Hombros", "Brazos", "Piernas"]
+    // Same stable 10-day strength targets and cardio references used by the
+    // app. The widget receives raw values so it cannot drift from the source.
+    private let strengthTargets = [16.0, 15.0, 10.0, 13.0, 20.0, 42.0].map { $0 * 10 / 7 }
+    private let cardioTargets = [4.0, 4.0, 4.0, 4.0, 4.0, 8.0]
+
+    var body: some View {
+        HStack(spacing: 12) {
+            CompactRadar(current: normalized(entry.snapshot.muscleCurrent, targets: strengthTargets),
+                         previous: normalized(entry.snapshot.musclePrevious, targets: strengthTargets),
+                         cardio: normalized(entry.snapshot.muscleCardio, targets: cardioTargets))
+                .frame(width: 145, height: 135)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("MATRIZ MUSCULAR").font(.caption2.bold()).tracking(1).foregroundStyle(.secondary)
+                Text("Últimos 10 días").font(.headline)
+                ForEach(priorityRows, id: \.0) { row in
+                    HStack {
+                        Text(row.0).lineLimit(1)
+                        Spacer()
+                        Text("\(row.1)%").monospacedDigit().foregroundStyle(row.1 >= 70 ? green : .secondary)
+                    }.font(.caption2.bold())
+                }
+                if cardioLegPercent > 0 {
+                    Label("Piernas · cardio \(cardioLegPercent)%", systemImage: "figure.run")
+                        .font(.system(size: 8, weight: .semibold)).foregroundStyle(.orange)
+                }
+                HStack(spacing: 8) {
+                    legend("Actual", .blue)
+                    legend("Anterior", .gray)
+                    legend("Cardio", .orange)
+                }
+            }
+        }
+        .containerBackground(eterBackground, for: .widget).foregroundStyle(.white)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Matriz muscular de los últimos diez días")
+        .accessibilityValue(priorityRows.map { "\($0.0) \($0.1) por ciento" }.joined(separator: ", "))
+    }
+
+    private func normalized(_ values: [Double]?, targets: [Double]) -> [Double] {
+        let values = values ?? Array(repeating: 0, count: axes.count)
+        return axes.indices.map { min(1, (values.indices.contains($0) ? values[$0] : 0) / targets[$0]) }
+    }
+    private var strengthPercents: [Int] {
+        let values = entry.snapshot.muscleCurrent ?? []
+        return axes.indices.map { Int(((values.indices.contains($0) ? values[$0] : 0) / strengthTargets[$0] * 100).rounded()) }
+    }
+    private var priorityRows: [(String, Int)] {
+        zip(axes, strengthPercents).sorted { $0.1 < $1.1 }.prefix(3).map { ($0.0, $0.1) }
+    }
+    private var cardioLegPercent: Int {
+        let values = entry.snapshot.muscleCardio ?? []
+        return values.count > 5 ? Int((values[5] / cardioTargets[5] * 100).rounded()) : 0
+    }
+    private func legend(_ label: String, _ color: Color) -> some View {
+        HStack(spacing: 3) { Circle().fill(color).frame(width: 5, height: 5); Text(label) }
+            .font(.system(size: 7)).foregroundStyle(.secondary)
+    }
+}
+
+private struct CompactRadar: View {
+    let current: [Double]
+    let previous: [Double]
+    let cardio: [Double]
+    var body: some View {
+        GeometryReader { proxy in
+            let radius = min(proxy.size.width, proxy.size.height) * 0.39
+            let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            Canvas { context, _ in
+                for level in 1...4 {
+                    context.stroke(polygon(center, radius * CGFloat(level) / 4, Array(repeating: 1, count: 6)),
+                                   with: .color(.white.opacity(0.11)), lineWidth: 0.8)
+                }
+                context.fill(polygon(center, radius, current), with: .color(.blue.opacity(0.22)))
+                context.stroke(polygon(center, radius, previous), with: .color(.gray.opacity(0.8)), lineWidth: 1.4)
+                context.stroke(polygon(center, radius, current), with: .color(.blue), lineWidth: 2.2)
+                for index in cardio.indices where cardio[index] > 0 {
+                    let end = point(center, radius * min(1, cardio[index]), index)
+                    var path = Path(); path.move(to: center); path.addLine(to: end)
+                    context.stroke(path, with: .color(.orange),
+                                   style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash: [5, 4]))
+                    context.fill(Path(ellipseIn: CGRect(x: end.x - 3.5, y: end.y - 3.5, width: 7, height: 7)),
+                                 with: .color(.orange))
+                }
+            }
+        }
+    }
+    private func polygon(_ center: CGPoint, _ radius: CGFloat, _ values: [Double]) -> Path {
+        var path = Path()
+        for index in 0..<6 {
+            let value = values.indices.contains(index) ? min(1, max(0, values[index])) : 0
+            let p = point(center, radius * CGFloat(value), index)
+            index == 0 ? path.move(to: p) : path.addLine(to: p)
+        }
+        path.closeSubpath(); return path
+    }
+    private func point(_ center: CGPoint, _ radius: CGFloat, _ index: Int) -> CGPoint {
+        let angle = -CGFloat.pi / 2 + CGFloat(index) * 2 * CGFloat.pi / 6
+        return CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+    }
+}
+
 struct DecisionWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "EterDecisionWidget", provider: Provider()) { DecisionView(entry: $0) }
@@ -452,7 +562,16 @@ struct LoadWidget: Widget {
     }
 }
 
+struct MuscleMatrixWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "EterMuscleMatrixWidget", provider: Provider()) { MuscleMatrixView(entry: $0) }
+            .configurationDisplayName("Matriz muscular")
+            .description("Fuerza reciente y carga muscular del cardio.")
+            .supportedFamilies([.systemMedium])
+    }
+}
+
 @main
 struct EterWidgets: WidgetBundle {
-    var body: some Widget { DecisionWidget(); EnergyWidget(); LoadWidget() }
+    var body: some Widget { DecisionWidget(); EnergyWidget(); LoadWidget(); MuscleMatrixWidget() }
 }
