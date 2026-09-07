@@ -2696,6 +2696,20 @@ final class EngineTests: XCTestCase {
                        "averageWeight must reflect only the working sets, not be dragged down by the warm-up ramp.")
     }
 
+    func testHevyImportDiscardsWorkoutsLongerThanTwoHours() {
+        let csv = """
+        title,start_time,end_time,exercise_title,weight_kg,reps,set_type,rpe
+        Válido,"1 Jan 2024, 10:00","1 Jan 2024, 12:00",Bench Press (Barbell),80,8,normal,8
+        Temporizador olvidado,"2 Jan 2024, 10:00","6 Jan 2024, 14:00",Squat (Barbell),100,5,normal,8
+        """
+
+        let result = ImportStore.parseHevyCSVForTesting(csv)
+
+        XCTAssertEqual(result.workouts.map(\.title), ["Válido"],
+                       "Exactly two hours remains valid; the 100-hour session must never reach the model.")
+        XCTAssertEqual(result.discardedWorkoutCount, 1)
+    }
+
     func testStrengthPrescriptionDeloadsWhenTargetMuscleIsTired() {
         let now = Date()
         let exercise = ImportedExercise(name: "Squat (Barbell)", sets: 3, volume: 2_400, totalReps: 24, averageWeight: 100,

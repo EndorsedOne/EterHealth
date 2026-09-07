@@ -120,20 +120,32 @@ final class ImportStore: ObservableObject {
                 var workouts: [ImportedWorkout] = []
                 var labs: [LabResult] = []
                 var errors: [String] = []
+                var notices: [String] = []
+                var discardedWorkoutIDs: Set<String> = []
                 for url in urls {
                     let access = url.startAccessingSecurityScopedResource()
                     defer { if access { url.stopAccessingSecurityScopedResource() } }
                     do {
                         switch url.pathExtension.lowercased() {
-                        case "csv": workouts.append(contentsOf: try Self.parseHevyCSV(url))
+                        case "csv":
+                            let result = try Self.parseHevyCSV(url)
+                            workouts.append(contentsOf: result.workouts)
+                            discardedWorkoutIDs.formUnion(result.discardedWorkoutIDs)
+                            if result.discardedWorkoutCount > 0 {
+                                notices.append("Hevy: \(result.discardedWorkoutCount) entrenamiento(s) de más de 2 h descartado(s)")
+                            }
                         case "pdf": labs.append(contentsOf: try Self.parseLabPDF(url))
                         default: errors.append("Formato no compatible: \(url.lastPathComponent)")
                         }
                     } catch { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
                 }
-                return (workouts, labs, errors)
+                return (workouts, labs, errors, notices, discardedWorkoutIDs)
             }.value
 
+            // If the malformed session was imported by an older build,
+            // re-importing the CSV also removes that exact title/start ID.
+            // No unrelated or merely long HealthKit workout is touched.
+            workouts.removeAll { parsed.4.contains($0.id) }
             let existingWorkouts = Set(workouts.map(\.id))
             let newWorkouts = parsed.0.filter { !existingWorkouts.contains($0.id) }
             let enrichedWorkouts = parsed.0.filter { existingWorkouts.contains($0.id) }.count
@@ -152,9 +164,11 @@ final class ImportStore: ObservableObject {
             labs.sort { $0.date > $1.date }
             save()
             if parsed.2.isEmpty {
-                message = "Importación terminada: \(newWorkouts.count) entrenamientos nuevos, \(enrichedWorkouts) enriquecidos, \(newLabs.count) resultados clínicos nuevos y \(updatedLabs) actualizados. Totales: \(workouts.count) entrenamientos y \(labs.count) resultados clínicos."
+                let notice = parsed.3.isEmpty ? "" : " \(parsed.3.joined(separator: "; "))."
+                message = "Importación terminada: \(newWorkouts.count) entrenamientos nuevos, \(enrichedWorkouts) enriquecidos, \(newLabs.count) resultados clínicos nuevos y \(updatedLabs) actualizados. Totales: \(workouts.count) entrenamientos y \(labs.count) resultados clínicos.\(notice)"
             } else {
-                message = "Importados \(newWorkouts.count) entrenamientos y \(newLabs.count) resultados nuevos. Totales: \(workouts.count) y \(labs.count). Problemas: \(parsed.2.joined(separator: "; "))"
+                let notice = parsed.3.isEmpty ? "" : " Avisos: \(parsed.3.joined(separator: "; "))."
+                message = "Importados \(newWorkouts.count) entrenamientos y \(newLabs.count) resultados nuevos. Totales: \(workouts.count) y \(labs.count). Problemas: \(parsed.2.joined(separator: "; ")).\(notice)"
             }
         }
     }
@@ -250,10 +264,22 @@ final class ImportStore: ObservableObject {
         }
     }
 
-    nonisolated private static func parseHevyCSV(_ url: URL) throws -> [ImportedWorkout] {
+    private struct HevyParseResult {
+        let workouts: [ImportedWorkout]
+        let discardedWorkoutIDs: Set<String>
+        var discardedWorkoutCount: Int { discardedWorkoutIDs.count }
+    }
+
+    nonisolated private static let maximumHevyWorkoutDuration: TimeInterval = 2 * 60 * 60
+
+    nonisolated private static func parseHevyCSV(_ url: URL) throws -> HevyParseResult {
         let text = try String(contentsOf: url, encoding: .utf8)
+        return parseHevyCSV(text)
+    }
+
+    nonisolated private static func parseHevyCSV(_ text: String) -> HevyParseResult {
         let rows = CSV.parse(text)
-        guard let header = rows.first else { return [] }
+        guard let header = rows.first else { return HevyParseResult(workouts: [], discardedWorkoutIDs: []) }
         // Some CSV exports contain repeated or empty header names. Keep the first
         // occurrence instead of trapping on a duplicate dictionary key.
         let index = header.enumerated().reduce(into: [String: Int]()) { result, item in
@@ -282,11 +308,24 @@ final class ImportStore: ObservableObject {
             var exerciseOrder: [String] = []
         }
         var grouped: [String: WorkoutAccumulator] = [:]
+        var discardedWorkoutIDs: Set<String> = []
         for row in rows.dropFirst() {
             guard let start = date(field(row, "start_time")),
                   let end = date(field(row, "end_time")) else { continue }
             let title = field(row, "title")
             let key = "\(title)|\(start.timeIntervalSince1970)"
+            // A forgotten timer in Hevy can turn a normal strength session
+            // into tens (or hundreds) of hours and poison every downstream
+            // load/baseline calculation. Strength sessions longer than two
+            // hours are treated as invalid imports; exactly two hours is
+            // still accepted. Reject the whole workout, not individual sets.
+            let duration = end.timeIntervalSince(start)
+            if duration < 0 || duration > maximumHevyWorkoutDuration {
+                discardedWorkoutIDs.insert(key)
+                grouped.removeValue(forKey: key)
+                continue
+            }
+            guard !discardedWorkoutIDs.contains(key) else { continue }
             let exercise = field(row, "exercise_title")
             let weight = Double(field(row, "weight_kg")) ?? 0
             let reps = Double(field(row, "reps")) ?? 0
@@ -333,7 +372,12 @@ final class ImportStore: ObservableObject {
             }
             return ImportedWorkout(title: item.title, start: item.start, end: item.end, exercises: exercises, muscleSets: muscles)
         }
-        return imported
+        return HevyParseResult(workouts: imported, discardedWorkoutIDs: discardedWorkoutIDs)
+    }
+
+    nonisolated static func parseHevyCSVForTesting(_ text: String) -> (workouts: [ImportedWorkout], discardedWorkoutCount: Int) {
+        let result = parseHevyCSV(text)
+        return (result.workouts, result.discardedWorkoutCount)
     }
 
     // Internal (not private) seam so EterHealthTests can drive the real regex
