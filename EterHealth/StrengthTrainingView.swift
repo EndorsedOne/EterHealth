@@ -1206,15 +1206,24 @@ private struct NumericDraftField<Value: Equatable>: View {
             .fieldBox()
             .focused($isFocused)
             .onAppear { draft = format(value) }
-            // Un cambio del modelo desde FUERA (los botones +/-, repetir la
-            // serie anterior) sí tiene que verse — pero sólo cuando el campo
-            // no está enfocado, o le pisaría el texto a quien escribe.
+            // Un cambio del modelo desde FUERA (repetir la serie anterior,
+            // la carga propuesta) sí tiene que verse — pero sólo cuando el
+            // campo no está enfocado, o le pisaría el texto a quien escribe.
             .onChange(of: value) { _, newValue in
                 guard !isFocused else { return }
                 draft = format(newValue)
             }
             .onChange(of: isFocused) { wasFocused, nowFocused in
-                if nowFocused { return }
+                if nowFocused {
+                    // Como Hevy: al tocar el campo se selecciona todo el número
+                    // propuesto, de modo que el primer dígito lo reemplaza sin
+                    // tener que borrarlo. Si no escribes nada, se conserva.
+                    DispatchQueue.main.async {
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.selectAll(_:)), to: nil, from: nil, for: nil)
+                    }
+                    return
+                }
                 if wasFocused { commit() }
             }
             .onSubmit { commit() }
@@ -1420,7 +1429,7 @@ struct LiveStrengthWorkoutView: View {
                     Text("\((exercise.wrappedValue.sets.firstIndex { $0.id == set.id } ?? 0) + 1)")
                         .font(.subheadline.bold()).frame(width: 18, alignment: .leading)
                     if descriptor.tracksWeight {
-                        stepperField(value: $set.weight, step: 2.5, minimum: 0, decimalPlaces: 0...1)
+                        weightField(value: $set.weight).frame(maxWidth: .infinity)
                     }
                     measurementFields(descriptor.measurement, set: $set,
                                       tracksTime: exercise.wrappedValue.tracksTime)
@@ -1463,37 +1472,11 @@ struct LiveStrengthWorkoutView: View {
         String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
-    // A plain TextField with a live-editable numeric value is fiddly to hit
-    // precisely mid-workout — these +/- buttons cover the common case (repeat
-    // or nudge the previous set) without needing to type at all. Sized up
-    // (bigger box, bolder digits) after comparing against how roomy Hevy's
-    // own logging screen is — the old 38pt-wide field with caption-sized
-    // text was genuinely harder to hit and read mid-set than it needed to be.
-    private func stepperField(value: Binding<Double>, step: Double, minimum: Double, decimalPlaces: ClosedRange<Int> = 0...1) -> some View {
-        HStack(spacing: 3) {
-            stepButton(systemImage: "minus") { value.wrappedValue = max(minimum, value.wrappedValue - step) }
-            weightField(value: value)
-            stepButton(systemImage: "plus") { value.wrappedValue += step }
-        }.frame(maxWidth: .infinity)
-    }
-
-    private func stepperField(value: Binding<Int>, step: Int, minimum: Int) -> some View {
-        HStack(spacing: 3) {
-            stepButton(systemImage: "minus") { value.wrappedValue = max(minimum, value.wrappedValue - step) }
-            plainNumberField(value: value, minWidth: 52)
-            stepButton(systemImage: "plus") { value.wrappedValue += step }
-        }.frame(maxWidth: .infinity)
-    }
-
-    private func stepButton(systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage).font(.body.bold()).frame(width: 34, height: 46)
-        }
-        .buttonStyle(.plain)
-        .background(Color.primary.opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .eterTouchTarget()
-    }
+    // KG y REPS son campos de texto directos, sin botones +/-. Al estilo Hevy:
+    // se propone el número, pulsas HECHO y ya está; si quieres cambiarlo, tocas
+    // el campo, el número queda seleccionado y escribes el nuevo valor encima
+    // sin borrar. Los +/- respondían con retraso y empeoraban la experiencia
+    // mitad de serie, así que se han eliminado (ver NumericDraftField).
 
     // A big, filled checkmark button reads and hits far more easily
     // mid-set than the native iOS Toggle switch this replaced — the same
@@ -1545,7 +1528,7 @@ struct LiveStrengthWorkoutView: View {
             plainNumberField(value: set.reps)
             timedSetField(set)
         case .reps:
-            stepperField(value: set.reps, step: 1, minimum: 0)
+            plainNumberField(value: set.reps).frame(maxWidth: .infinity)
         case .time:
             timedSetField(set)
         case .timeAndDistance:
