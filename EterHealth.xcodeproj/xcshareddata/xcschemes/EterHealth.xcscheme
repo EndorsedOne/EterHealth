@@ -20,11 +20,6 @@
                ReferencedContainer = "container:EterHealth.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
-         <!-- Explicitly excluded from this scheme's build (was being pulled in as an
-              implicit embedded dependency of EterHealth, which is what tripped the
-              "no devices from which to generate a provisioning profile" error on a
-              free/Personal Team account). Re-add via Edit Scheme > Build once the
-              Watch app's own signing works again. -->
          <BuildActionEntry
             buildForTesting = "NO"
             buildForRunning = "NO"

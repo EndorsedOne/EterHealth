@@ -5,7 +5,11 @@ struct EterHealthApp: App {
     @StateObject private var health = HealthStore()
     @StateObject private var imports = ImportStore()
     @StateObject private var strengthRoutines = StrengthRoutineStore()
-    @StateObject private var watchMetrics = WatchMetricsStore()
+    // La instancia inyectada ES la compartida: así la sesión de fuerza puede
+    // enviar contexto/finalizar/descartar vía WatchMetricsStore.shared sin
+    // observar el objeto (evita reconstruir la vista cada segundo), y sigue
+    // habiendo un único delegado de WCSession.
+    @StateObject private var watchMetrics = WatchMetricsStore.shared
     @StateObject private var checkIns = DailyCheckInStore()
     @StateObject private var lifestyle = LifestyleFactorStore.shared
     @StateObject private var workoutReviews = WorkoutReviewStore.shared

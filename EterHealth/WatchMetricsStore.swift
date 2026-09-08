@@ -31,6 +31,14 @@ private struct WatchMetricsPayload: Sendable {
 
 @MainActor
 final class WatchMetricsStore: NSObject, ObservableObject {
+    // Instancia única: es el delegado de WCSession y la fuente de métricas en
+    // vivo. Tenerla como singleton permite que la sesión de fuerza haga las
+    // llamadas imperativas (enviar contexto, finalizar, descartar) SIN
+    // observar el objeto —y por tanto sin reconstruir toda la vista cada vez
+    // que llega un pulso—, mientras la cabecera y el puente del reloj sí lo
+    // observan para pintarse.
+    static let shared = WatchMetricsStore()
+
     @Published var heartRate = 0.0
     @Published var activeEnergy = 0.0
     @Published var elapsed = 0.0

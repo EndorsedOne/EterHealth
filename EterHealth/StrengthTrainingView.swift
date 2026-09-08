@@ -1298,8 +1298,12 @@ private struct TimedDurationDraftField: View {
 struct LiveStrengthWorkoutView: View {
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var health: HealthStore
-    @EnvironmentObject private var watchMetrics: WatchMetricsStore
     @EnvironmentObject private var routineStore: StrengthRoutineStore
+    // NO observamos watchMetrics aquí a propósito: publica pulso/calorías cada
+    // segundo y observarlo reconstruía toda la sesión (cada tarjeta y campo)
+    // una vez por segundo -> pantalla congelada, sin scroll, sin poder teclear
+    // y el iPhone caliente. La observación vive en WatchWorkoutBridge (vista
+    // vacía) y las llamadas imperativas van por WatchMetricsStore.shared.
     @Environment(\.dismiss) private var dismiss
     let routine: StrengthRoutine
     @State private var exercises: [LiveExercise]
@@ -1310,7 +1314,6 @@ struct LiveStrengthWorkoutView: View {
     @State private var showDiscardConfirmation = false
     @State private var completionSummary: StrengthSessionSummary?
     @State private var hasCompleted = false
-    @State private var requestedWatchStart = false
     // Only one set can realistically be timed at once, so a single shared
     // pair of state covers every exercise card.
     @State private var timingSetID: UUID?
@@ -1346,16 +1349,25 @@ struct LiveStrengthWorkoutView: View {
                             Label("Añadir ejercicio", systemImage: "plus").frame(maxWidth: .infinity).padding()
                                 .background(Color.primary.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
                         }
+                        // Guardar y cancelar viven abajo, al alcance del pulgar.
+                        // La antigua "Cerrar" de la esquina superior se quitó:
+                        // gastaba una fila de cabecera que hace falta para las
+                        // series y no aportaba nada que no esté ya aquí abajo.
                         Button(action: finish) {
-                            Text("Finalizar entrenamiento")
+                            Text("Guardar entrenamiento")
                         }.buttonStyle(EterPrimaryButtonStyle()).disabled(exercises.isEmpty)
+                        Button(role: .destructive) { showDiscardConfirmation = true } label: {
+                            Text("Cancelar entrenamiento")
+                                .font(.subheadline.bold())
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 11)
+                        }
                     }.padding(18)
                 }
             }
             .background(EterTheme.canvas)
             .navigationTitle(routine.name)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cerrar") { showDiscardConfirmation = true } } }
             .confirmationDialog("¿Cerrar el entrenamiento?", isPresented: $showDiscardConfirmation) {
                 Button("Descartar sesión", role: .destructive) { discard() }
                 Button("Continuar", role: .cancel) {}
@@ -1365,30 +1377,30 @@ struct LiveStrengthWorkoutView: View {
                 StrengthSessionSummaryView(summary: summary) { dismiss() }
                     .interactiveDismissDisabled()
             }
-            .onChange(of: watchMetrics.terminalAction) { _, action in
-                guard let action else { return }
-                watchMetrics.clearTerminalAction()
-                if action == "finish" { completeSession(notifyWatch: false) }
-                else if action == "discard" { discardSession(notifyWatch: false) }
-            }
-            .onChange(of: watchMetrics.workoutCommand) { _, command in
-                guard let command else { return }
-                watchMetrics.clearWorkoutCommand()
-                if command == "completeSet" { completeNextSet() }
-                else if command == "skipRest" { restEndsAt = nil; syncWorkoutContext() }
-                else if command.hasPrefix("restAdjust:"), let seconds = Int(command.dropFirst("restAdjust:".count)) {
-                    adjustRest(bySeconds: seconds)
-                }
-            }
+            // Toda la observación de watchMetrics (por segundo) vive aquí, en una
+            // vista que no pinta nada, para que el cuerpo de la sesión NO se
+            // reconstruya con cada latido. El cuerpo sólo se repinta cuando
+            // cambian las series o el descanso.
+            .background(
+                WatchWorkoutBridge(
+                    onStart: {
+                        syncWorkoutContext()
+                        _ = await health.startStrengthWorkoutOnWatch()
+                    },
+                    onTerminal: { action in
+                        if action == "finish" { completeSession(notifyWatch: false) }
+                        else if action == "discard" { discardSession(notifyWatch: false) }
+                    },
+                    onCommand: { command in
+                        if command == "completeSet" { completeNextSet() }
+                        else if command == "skipRest" { restEndsAt = nil; syncWorkoutContext() }
+                        else if command.hasPrefix("restAdjust:"), let seconds = Int(command.dropFirst("restAdjust:".count)) {
+                            adjustRest(bySeconds: seconds)
+                        }
+                    }
+                )
+            )
             .onChange(of: workoutContextSignature) { _, _ in syncWorkoutContext() }
-            .task {
-                guard !requestedWatchStart else { return }
-                requestedWatchStart = true
-                watchMetrics.clearTerminalAction()
-                watchMetrics.clearWorkoutCommand()
-                syncWorkoutContext()
-                _ = await health.startStrengthWorkoutOnWatch()
-            }
         }
     }
 
@@ -1750,7 +1762,7 @@ struct LiveStrengthWorkoutView: View {
         let next = flattened.first { !$0.1.completed }
         let nextIndex = next.flatMap { target in flattened.firstIndex { $0.1.id == target.1.id } } ?? flattened.count
         let volume = flattened.filter { $0.1.completed }.reduce(0) { $0 + $1.1.weight * Double($1.1.reps) }
-        watchMetrics.updateWorkoutContext(routine: routine.name,
+        WatchMetricsStore.shared.updateWorkoutContext(routine: routine.name,
                                           workoutID: "\(routine.name)|\(startedAt.timeIntervalSince1970)", workoutDate: startedAt,
                                           exercise: next?.0,
                                           setNumber: min(flattened.count, nextIndex + 1), totalSets: flattened.count,
@@ -1822,9 +1834,9 @@ struct LiveStrengthWorkoutView: View {
         let completedWorkout = ImportedWorkout(title: routine.name, start: startedAt, end: endedAt,
                                                exercises: saved, muscleSets: [:])
         imports.addStrengthWorkout(title: routine.name, start: startedAt, end: endedAt, exercises: saved)
-        if notifyWatch && watchMetrics.isRunning {
-            watchMetrics.finish()
-        } else if !watchMetrics.isRunning && notifyWatch {
+        if notifyWatch && WatchMetricsStore.shared.isRunning {
+            WatchMetricsStore.shared.finish()
+        } else if !WatchMetricsStore.shared.isRunning && notifyWatch {
             Task { await health.saveStrengthWorkout(start: startedAt, end: endedAt) }
         }
         completionSummary = StrengthSessionSummary.make(for: completedWorkout,
@@ -1837,13 +1849,48 @@ struct LiveStrengthWorkoutView: View {
     }
 
     private func discardSession(notifyWatch: Bool) {
-        if notifyWatch && watchMetrics.isRunning { watchMetrics.discard() }
+        if notifyWatch && WatchMetricsStore.shared.isRunning { WatchMetricsStore.shared.discard() }
         restEndsAt = nil
         dismiss()
     }
 
     private func duration(_ interval: TimeInterval) -> String {
         let seconds = max(0, Int(interval)); return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// Vista invisible cuyo único trabajo es observar `WatchMetricsStore` —donde el
+/// pulso y las calorías llegan cada segundo mientras el reloj graba— y traducir
+/// sus señales entrantes (finalizar/descartar desde el reloj, completar serie,
+/// saltar/ajustar descanso) a callbacks. Vive aparte de `LiveStrengthWorkoutView`
+/// justamente para que esas actualizaciones por segundo NO reconstruyan la lista
+/// de series: aquí sólo se repinta un `Color.clear`.
+private struct WatchWorkoutBridge: View {
+    @EnvironmentObject private var watchMetrics: WatchMetricsStore
+    let onStart: () async -> Void
+    let onTerminal: (String) -> Void
+    let onCommand: (String) -> Void
+    @State private var started = false
+
+    var body: some View {
+        Color.clear
+            .onChange(of: watchMetrics.terminalAction) { _, action in
+                guard let action else { return }
+                watchMetrics.clearTerminalAction()
+                onTerminal(action)
+            }
+            .onChange(of: watchMetrics.workoutCommand) { _, command in
+                guard let command else { return }
+                watchMetrics.clearWorkoutCommand()
+                onCommand(command)
+            }
+            .task {
+                guard !started else { return }
+                started = true
+                watchMetrics.clearTerminalAction()
+                watchMetrics.clearWorkoutCommand()
+                await onStart()
+            }
     }
 }
 
