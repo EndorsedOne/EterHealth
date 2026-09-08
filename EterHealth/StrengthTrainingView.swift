@@ -1834,10 +1834,20 @@ struct LiveStrengthWorkoutView: View {
         let completedWorkout = ImportedWorkout(title: routine.name, start: startedAt, end: endedAt,
                                                exercises: saved, muscleSets: [:])
         imports.addStrengthWorkout(title: routine.name, start: startedAt, end: endedAt, exercises: saved)
-        if notifyWatch && WatchMetricsStore.shared.isRunning {
+        if notifyWatch {
+            // Ordena SIEMPRE terminar en el reloj. La orden es idempotente allí
+            // (si no hay sesión activa, se ignora). Antes iba condicionada a que
+            // el iPhone CREYERA que el reloj grababa (isRunning), y esa creencia
+            // depende de que lleguen las métricas por segundo; si no llegaban,
+            // "Guardar" en el iPhone dejaba el reloj grabando indefinidamente.
             WatchMetricsStore.shared.finish()
-        } else if !WatchMetricsStore.shared.isRunning && notifyWatch {
-            Task { await health.saveStrengthWorkout(start: startedAt, end: endedAt) }
+            // El guardado propio en Apple Salud sólo si el reloj NO lleva la
+            // sesión: con el reloj activo, su builder ya escribe el HKWorkout y
+            // guardarlo aquí lo duplicaría. Si estaba grabando, al terminar el
+            // reloj envía su propio terminalAction y esta sesión ya se cerró.
+            if !WatchMetricsStore.shared.isRunning {
+                Task { await health.saveStrengthWorkout(start: startedAt, end: endedAt) }
+            }
         }
         completionSummary = StrengthSessionSummary.make(for: completedWorkout,
                                                         allWorkouts: imports.workouts,
@@ -1849,7 +1859,10 @@ struct LiveStrengthWorkoutView: View {
     }
 
     private func discardSession(notifyWatch: Bool) {
-        if notifyWatch && WatchMetricsStore.shared.isRunning { WatchMetricsStore.shared.discard() }
+        // Igual que finish: ordena SIEMPRE descartar en el reloj; si no grababa,
+        // lo ignora. No condicionarlo a isRunning evita que el reloj se quede
+        // con una sesión abierta cuando el iPhone no había registrado el estado.
+        if notifyWatch { WatchMetricsStore.shared.discard() }
         restEndsAt = nil
         dismiss()
     }

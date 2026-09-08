@@ -574,17 +574,18 @@ final class HealthStore: ObservableObject {
             await MainActor.run { self.watchStartDiagnostic = "No hay ningún Apple Watch emparejado." }
             return false
         }
-        guard session.isWatchAppInstalled else {
-            // Pasa de verdad con una instalación de desarrollo: el reloj tiene
-            // la app pero WCSession no la ve como companion instalada hasta que
-            // se instala por la vía normal. Decirlo es más útil que el silencio
-            // de antes, que se confundía con "la función no existe".
-            await MainActor.run {
-                self.watchStartDiagnostic = "éter no está instalada como app companion en el Apple Watch. Ábrela una vez desde el reloj o instálala desde la app Watch."
-            }
-            return false
+        // `isWatchAppInstalled` da FALSOS NEGATIVOS en builds de desarrollo: el
+        // reloj tiene la app pero WCSession no la marca como companion hasta que
+        // se instala por la vía de App Store. Antes este guard abortaba y el
+        // reloj no se abría NUNCA con una firma de desarrollo. Ahora, si hay un
+        // reloj emparejado, se intenta el arranque igualmente y se deja que
+        // `startWatchApp` tenga éxito o falle por sí mismo (su error real, si lo
+        // hay, se muestra abajo en la cabecera).
+        await MainActor.run {
+            self.watchStartDiagnostic = session.isWatchAppInstalled
+                ? nil
+                : "El reloj no reporta éter como companion (habitual en builds de desarrollo); intentando abrirla igualmente."
         }
-        await MainActor.run { self.watchStartDiagnostic = nil }
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .traditionalStrengthTraining
         configuration.locationType = .indoor
