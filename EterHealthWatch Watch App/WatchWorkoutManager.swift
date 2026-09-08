@@ -297,7 +297,12 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
             activeEnergy = statistics.sumQuantity()?.doubleValue(for: .kilocalorie()) ?? activeEnergy
         default: break
         }
-        sendMetrics()
+        // NO se transmite aquí a propósito. HealthKit entrega muestras varias
+        // veces por segundo; enviar en cada una inundaba el iPhone de mensajes
+        // WCSession (un Task @MainActor + repintados por cada uno) y congelaba
+        // la sesión de fuerza. Los valores se actualizan localmente para la
+        // pantalla del reloj, y el Timer de 1 s (updateElapsedTime) los
+        // transmite al iPhone a ~1 Hz, que es de sobra para pulso y calorías.
     }
 
     private func sendMetrics(terminalAction: String? = nil) {

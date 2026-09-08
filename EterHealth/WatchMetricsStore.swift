@@ -39,12 +39,20 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     // observan para pintarse.
     static let shared = WatchMetricsStore()
 
-    @Published var heartRate = 0.0
-    @Published var activeEnergy = 0.0
-    @Published var elapsed = 0.0
+    // Métricas de ALTA FRECUENCIA: deliberadamente NO @Published. Llegan cada
+    // segundo mientras el reloj graba; si fueran @Published, cada recepción
+    // emitiría objectWillChange y repintaría cualquier vista que observe el
+    // store —incluida, por caminos indirectos, la lista de ejercicios— una vez
+    // por segundo, congelando la sesión. La cabecera las lee a 1 Hz con su
+    // propio TimelineView, sin depender de la observación del store.
+    var heartRate = 0.0
+    var activeEnergy = 0.0
+    var elapsed = 0.0
+    var lastReceived: Date?
+    // Estado de BAJA frecuencia: sí @Published, pero en receive() sólo se
+    // reasignan cuando cambian de verdad, para no emitir por segundo.
     @Published var isRunning = false
     @Published var isPaused = false
-    @Published var lastReceived: Date?
     @Published var terminalAction: String?
     @Published var workoutCommand: String?
 
@@ -56,11 +64,15 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     }
 
     private func receive(_ payload: WatchMetricsPayload) {
+        // Campos no publicados: se asignan libremente, no repintan nada.
         heartRate = payload.heartRate ?? heartRate
         activeEnergy = payload.activeEnergy ?? activeEnergy
         elapsed = payload.elapsed ?? elapsed
-        isRunning = payload.isRunning ?? isRunning
-        isPaused = payload.isPaused ?? isPaused
+        // Publicados: sólo se reasignan si cambian de verdad, para que
+        // objectWillChange NO se dispare en cada recepción (evita el repintado
+        // por segundo de la sesión).
+        if let running = payload.isRunning, running != isRunning { isRunning = running }
+        if let paused = payload.isPaused, paused != isPaused { isPaused = paused }
         if let action = payload.terminalAction { terminalAction = action }
         if let command = payload.workoutCommand { workoutCommand = command }
         if let effort = payload.reviewEffort,

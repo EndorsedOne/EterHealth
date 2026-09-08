@@ -1147,13 +1147,18 @@ private struct LiveSessionHeader: View {
         }
         if watchMetrics.isRunning {
             Divider()
-            HStack {
-                Label("\(Int(watchMetrics.heartRate.rounded())) ppm", systemImage: "heart.fill").foregroundStyle(.red)
-                Spacer()
-                Label("\(Int(watchMetrics.activeEnergy.rounded())) kcal", systemImage: "flame.fill").foregroundStyle(.orange)
-                Spacer()
-                Text(watchMetrics.isPaused ? "Watch en pausa" : "Watch conectado").font(.caption2.bold()).foregroundStyle(watchMetrics.isPaused ? EterTheme.negative : EterTheme.positive)
-            }.font(.caption)
+            // Pulso y kcal se refrescan a 1 Hz con este TimelineView leyendo los
+            // campos NO publicados del store — así la métrica en vivo no repinta
+            // la sesión entera cada vez que llega un dato del reloj.
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                HStack {
+                    Label("\(Int(watchMetrics.heartRate.rounded())) ppm", systemImage: "heart.fill").foregroundStyle(.red)
+                    Spacer()
+                    Label("\(Int(watchMetrics.activeEnergy.rounded())) kcal", systemImage: "flame.fill").foregroundStyle(.orange)
+                    Spacer()
+                    Text(watchMetrics.isPaused ? "Watch en pausa" : "Watch conectado").font(.caption2.bold()).foregroundStyle(watchMetrics.isPaused ? EterTheme.negative : EterTheme.positive)
+                }.font(.caption)
+            }
             Button {
                 watchMetrics.isPaused ? watchMetrics.resume() : watchMetrics.pause()
             } label: {
