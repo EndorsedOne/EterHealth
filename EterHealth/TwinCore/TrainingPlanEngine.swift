@@ -2865,7 +2865,29 @@ enum TrainingPlanEngine {
             // even after the main-gate fix. daysSinceStrength alone (which
             // does reset) is enough to still rotate back to strength once a
             // real gap reopens.
-            if effectiveLegReadiness >= 45, daysSinceStrength >= 4, goalFocus.strength > 0 {
+            // Alta frecuencia: cumplido el mínimo semanal, un patrón claramente
+            // recuperado (readiness >= 70) y por debajo de su volumen semanal
+            // (volumeUrgency > 0) no debe esperar a `daysSinceStrength >= 4` ni a
+            // que rote la semana — se ofrece YA como sesión opcional. No colapsa
+            // a fuerza diaria porque la simulación forward (applyStrengthLoad)
+            // suma fatiga y volumen al programarla: ese mismo grupo deja de estar
+            // "fresco + deficitario" al día siguiente y el hueco rota a otro
+            // patrón o a carrera. El patrón concreto lo sigue eligiendo
+            // bestStrengthPattern sobre los músculos de ese día (el más fresco
+            // con déficit, p. ej. empuje), no esta rama.
+            let freshUndertrainedPattern: Bool = {
+                guard let pattern = bestStrengthPattern(muscles, among: StrengthPattern.allCases,
+                                                        landmarkContext: landmarkContext) else { return false }
+                let patternReadiness = average(pattern.muscles.map { name in
+                    muscles.first { $0.name == name }?.readiness ?? 50
+                })
+                let patternUrgency = averageDouble(pattern.muscles.map {
+                    volumeUrgency($0, muscles: muscles, landmarkContext: landmarkContext)
+                })
+                return patternReadiness >= 70 && patternUrgency > 0
+            }()
+            if goalFocus.strength > 0, effectiveLegReadiness >= 45,
+               daysSinceStrength >= 4 || freshUndertrainedPattern {
                 return (.strength, rationale + " Esto es una sesión de mantenimiento ligera y opcional, no una sesión obligatoria.")
             }
             if effectiveLegReadiness >= 45, goalFocus.running > 0 {
