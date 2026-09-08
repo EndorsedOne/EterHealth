@@ -1373,6 +1373,10 @@ struct LiveStrengthWorkoutView: View {
             .background(EterTheme.canvas)
             .navigationTitle(routine.name)
             .navigationBarTitleDisplayMode(.inline)
+            // No cerrar por gesto: la sesión solo se sale con Guardar o Cancelar.
+            // Deslizarla para cerrar dejaba el entreno del reloj vivo (sin
+            // finalizar ni descartar) y acababa guardándose como fantasma.
+            .interactiveDismissDisabled()
             .confirmationDialog("¿Cerrar el entrenamiento?", isPresented: $showDiscardConfirmation) {
                 Button("Descartar sesión", role: .destructive) { discard() }
                 Button("Continuar", role: .cancel) {}

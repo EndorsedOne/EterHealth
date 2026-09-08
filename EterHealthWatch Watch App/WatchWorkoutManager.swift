@@ -159,7 +159,24 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
     }
 
     func start(configuration suppliedConfiguration: HKWorkoutConfiguration? = nil) async {
-        guard !isRunning, await requestAuthorization() else { return }
+        // Si quedó una sesión viva de un intento anterior (el iPhone se
+        // reinstaló, se cerró o perdió la conexión sin finalizarla ni
+        // descartarla), se DESCARTA en silencio antes de empezar. Antes había
+        // un `guard !isRunning` que se limitaba a bloquear la nueva: aquel
+        // HKWorkoutSession seguía vivo y acababa guardándose en Apple Salud
+        // como un entrenamiento fantasma de 1 min. Silencioso a propósito: NO
+        // se envía terminalAction, para no cerrar la sesión nueva del iPhone.
+        if isRunning || session != nil || builder != nil {
+            session?.end()
+            builder?.discardWorkout()
+            session = nil
+            builder = nil
+            timer?.invalidate()
+            timer = nil
+            isRunning = false
+            isPaused = false
+        }
+        guard await requestAuthorization() else { return }
         heartRate = 0
         activeEnergy = 0
         elapsed = 0
