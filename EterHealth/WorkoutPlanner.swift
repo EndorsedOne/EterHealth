@@ -672,7 +672,12 @@ enum WorkoutPlanner {
                 pool.insert(trackedLiftTerms[0].contains("bench press") ? "Bench Press (Barbell)" : "Squat (Barbell)", at: 0)
             }
         }
-        let exercises = Self.diversifiedTop(pool, count: 5).map { name in
+        // Secuenciación estándar de fuerza: los básicos multiarticulares de más
+        // demanda (sentadilla, peso muerto, press, dominadas/remo) van primero,
+        // cuando estás fresco; accesorios después; aislamiento y core al final.
+        // El levantamiento objetivo 1RM fijado arriba se mantiene en su sitio.
+        let exercises = Self.orderedBySequencing(Self.diversifiedTop(pool, count: 5),
+                                                 keepFirstPinned: trackedLiftTerms != nil).map { name in
             let last = imports.workouts.sorted(by: { $0.start > $1.start })
                 .lazy.flatMap(\.exercises)
                 .first { $0.name == name && $0.averageWeight != nil }
@@ -717,6 +722,38 @@ enum WorkoutPlanner {
             usedPatterns.insert(ExerciseCatalog.descriptor(for: name).pattern)
         }
         return selected
+    }
+
+    /// Ordena la sesión "básicos multiarticulares → accesorios → aislamiento/
+    /// core", la secuenciación estándar (el trabajo de más demanda va cuando
+    /// estás fresco). Sort ESTABLE: dentro de cada rango se conserva el orden
+    /// por frescura que traía el pool. Si `keepFirstPinned`, el primer elemento
+    /// (el lift objetivo 1RM fijado) se mantiene en su sitio, no se reordena.
+    private static func orderedBySequencing(_ names: [String], keepFirstPinned: Bool) -> [String] {
+        let head = keepFirstPinned ? Array(names.prefix(1)) : []
+        let rest = keepFirstPinned ? Array(names.dropFirst()) : names
+        let ordered = rest.enumerated()
+            .sorted { lhs, rhs in
+                let lr = sequencingRank(lhs.element), rr = sequencingRank(rhs.element)
+                return lr == rr ? lhs.offset < rhs.offset : lr < rr
+            }
+            .map(\.element)
+        return head + ordered
+    }
+
+    /// Rango de secuenciación (menor = antes):
+    ///  0 = básico axial de máxima demanda: sentadilla y peso muerto/bisagra.
+    ///  1 = básico multiarticular: press y tirón compuestos (banca, militar,
+    ///      dominadas, remo).
+    ///  2 = accesorio (unilaterales, máquinas compuestas, carries…).
+    ///  3 = aislamiento / core / gemelos.
+    /// Señal: el `pattern` del descriptor, la misma que usa `defaultRest`.
+    private static func sequencingRank(_ name: String) -> Int {
+        let pattern = ExerciseCatalog.descriptor(for: name).pattern
+        if pattern.contains("Aislamiento") || pattern.contains("Core") || pattern.contains("Gemelos") { return 3 }
+        if pattern.contains("Sentadilla") || pattern.contains("Bisagra") { return 0 }
+        if pattern.contains("Empuje") || pattern.contains("Tirón") { return 1 }
+        return 2
     }
 
     // Every "Calidad de carrera" session used to be the exact same flat-
