@@ -1232,15 +1232,6 @@ private struct NumericDraftField<Value: Equatable>: View {
                 if wasFocused { commit() }
             }
             .onSubmit { commit() }
-            // El teclado numérico no tiene tecla de retorno, así que se queda
-            // ocupando media pantalla. Barra "Hecho" para cerrarlo (y confirmar
-            // el valor) de un toque, igual que Hevy.
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Hecho") { isFocused = false }.font(.body.bold())
-                }
-            }
     }
 
     private func commit() {
@@ -1288,12 +1279,6 @@ private struct TimedDurationDraftField: View {
                 if !nowFocused, wasFocused { commit() }
             }
             .onSubmit { commit() }
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Hecho") { isFocused = false }.font(.body.bold())
-                }
-            }
             .accessibilityLabel("Tiempo de la serie, minutos y segundos")
     }
 
@@ -1384,7 +1369,13 @@ struct LiveStrengthWorkoutView: View {
                         }
                     }.padding(18)
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
+            // Tocar una zona libre oculta el teclado. Los campos y botones
+            // consumen su propio toque, así que esto solo dispara en el espacio
+            // vacío; y al arrastrar la lista, scrollDismissesKeyboard lo cierra.
+            .contentShape(Rectangle())
+            .onTapGesture { hideKeyboard() }
             .background(EterTheme.canvas)
             .navigationTitle(routine.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -1535,8 +1526,14 @@ struct LiveStrengthWorkoutView: View {
     // mid-set than the native iOS Toggle switch this replaced — the same
     // "make the thing you tap between every set as easy to hit as
     // possible" reasoning as the bigger weight/reps boxes above.
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
     private func completedButton(_ set: Binding<LiveSet>, restSeconds: Int) -> some View {
         Button {
+            // Confirmar la serie cierra el teclado si estaba abierto, como Hevy.
+            hideKeyboard()
             set.wrappedValue.completed.toggle()
             if set.wrappedValue.completed {
                 restEndsAt = Date().addingTimeInterval(TimeInterval(restSeconds))
