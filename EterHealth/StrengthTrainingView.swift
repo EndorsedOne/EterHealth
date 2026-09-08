@@ -1411,6 +1411,7 @@ struct LiveStrengthWorkoutView: View {
 
     private func exerciseCard(_ exercise: Binding<LiveExercise>) -> some View {
         let descriptor = ExerciseCatalog.descriptor(for: exercise.wrappedValue.name)
+        let index = exercises.firstIndex { $0.id == exercise.wrappedValue.id } ?? 0
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
@@ -1433,6 +1434,13 @@ struct LiveStrengthWorkoutView: View {
                     }
                     .accessibilityLabel(exercise.wrappedValue.tracksTime ? "Dejar de cronometrar las series" : "Cronometrar las series")
                 }
+                // Reordenar en vivo, igual que en el editor de rutina: a veces
+                // decides el orden ya calentando. Básicos primero, accesorios
+                // después, sin tener que salir a editar la plantilla.
+                Button { moveExercise(index, -1) } label: { Image(systemName: "chevron.up") }
+                    .eterTouchTarget().accessibilityLabel("Subir ejercicio").disabled(index == 0)
+                Button { moveExercise(index, 1) } label: { Image(systemName: "chevron.down") }
+                    .eterTouchTarget().accessibilityLabel("Bajar ejercicio").disabled(index >= exercises.count - 1)
                 Button(role: .destructive) { exercises.removeAll { $0.id == exercise.wrappedValue.id } } label: { Image(systemName: "trash") }
             }
             HStack {
@@ -1462,6 +1470,15 @@ struct LiveStrengthWorkoutView: View {
                                                           distanceMeters: previous.distanceMeters))
             } label: { Label("Añadir serie", systemImage: "plus.circle").font(.caption.bold()) }
         }.cardStyle()
+    }
+
+    private func moveExercise(_ index: Int, _ offset: Int) {
+        let destination = index + offset
+        guard exercises.indices.contains(index), exercises.indices.contains(destination) else { return }
+        exercises.swapAt(index, destination)
+        // El reloj muestra "serie siguiente": si cambia por el reorden, hay que
+        // reenviarle el contexto para que no apunte al ejercicio equivocado.
+        syncWorkoutContext()
     }
 
     private func restMenu(_ exercise: Binding<LiveExercise>) -> some View {
