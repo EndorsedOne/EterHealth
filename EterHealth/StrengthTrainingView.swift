@@ -1232,6 +1232,15 @@ private struct NumericDraftField<Value: Equatable>: View {
                 if wasFocused { commit() }
             }
             .onSubmit { commit() }
+            // El teclado numérico no tiene tecla de retorno, así que se queda
+            // ocupando media pantalla. Barra "Hecho" para cerrarlo (y confirmar
+            // el valor) de un toque, igual que Hevy.
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Hecho") { isFocused = false }.font(.body.bold())
+                }
+            }
     }
 
     private func commit() {
@@ -1279,6 +1288,12 @@ private struct TimedDurationDraftField: View {
                 if !nowFocused, wasFocused { commit() }
             }
             .onSubmit { commit() }
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Hecho") { isFocused = false }.font(.body.bold())
+                }
+            }
             .accessibilityLabel("Tiempo de la serie, minutos y segundos")
     }
 
