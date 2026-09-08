@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>EterHealthWatch</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>La app usa el Apple Watch para medir pulso y energía durante tus entrenamientos.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>La app guarda tus entrenamientos y su energía activa en Apple Salud.</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+	</array>
+	<key>WKApplication</key>
+	<true/>
+	<!-- Requisito de Apple para una app de entrenamiento: sin este modo de
+	     fondo, HKWorkoutSession no puede seguir en segundo plano y
+	     startWatchApp(with:) no lanza/mantiene la sesión en el reloj. Antes se
+	     declaraba como INFOPLIST_KEY_WKBackgroundModes, que Xcode no inyecta
+	     al generar el plist (clave de tipo array); por eso el reloj no
+	     arrancaba. Ahora el Info.plist es completo (GENERATE_INFOPLIST_FILE=NO). -->
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>workout-processing</string>
+	</array>
+	<key>WKCompanionAppBundleIdentifier</key>
+	<string>com.angelmartinez.eterhealth</string>
+</dict>
+</plist>

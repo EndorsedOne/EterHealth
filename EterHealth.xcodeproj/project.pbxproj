@@ -102,10 +102,17 @@
 			);
 			target = WX010 /* EterHealthWatchWidgets */;
 		};
+		WATCHAPPINFO0EXC /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 2E4C6529302CB61A00A02A2B /* EterHealthWatch Watch App */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		2E4C652B302CB61A00A02A2B /* EterHealthWatch Watch App */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = "EterHealthWatch Watch App"; sourceTree = "<group>"; };
+		2E4C652B302CB61A00A02A2B /* EterHealthWatch Watch App */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (WATCHAPPINFO0EXC /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = "EterHealthWatch Watch App"; sourceTree = "<group>"; };
 		A003 /* EterHealth */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = EterHealth; sourceTree = "<group>"; };
 		T101 /* EterHealthTests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = EterHealthTests; sourceTree = "<group>"; };
 		W005 /* EterHealthWidgets */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (W014 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = EterHealthWidgets; sourceTree = "<group>"; };
@@ -497,13 +504,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = EterHealthWatch;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "La app usa el Apple Watch para medir pulso y energía durante tus entrenamientos.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "La app guarda tus entrenamientos y su energía activa en Apple Salud.";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKBackgroundModes = "workout-processing";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.angelmartinez.eterhealth;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "EterHealthWatch Watch App/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -576,13 +578,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = EterHealthWatch;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "La app usa el Apple Watch para medir pulso y energía durante tus entrenamientos.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "La app guarda tus entrenamientos y su energía activa en Apple Salud.";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKBackgroundModes = "workout-processing";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.angelmartinez.eterhealth;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "EterHealthWatch Watch App/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
