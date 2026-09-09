@@ -95,19 +95,19 @@
 			);
 			target = W010 /* EterHealthWidgets */;
 		};
-		WX014 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = WX010 /* EterHealthWatchWidgets */;
-		};
 		WATCHAPPINFO0EXC /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
 			target = 2E4C6529302CB61A00A02A2B /* EterHealthWatch Watch App */;
+		};
+		WX014 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = WX010 /* EterHealthWatchWidgets */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 

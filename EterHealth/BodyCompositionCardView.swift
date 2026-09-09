@@ -3,6 +3,7 @@ import Charts
 
 struct BodyCompositionCardView: View {
     @EnvironmentObject private var health: HealthStore
+    @EnvironmentObject private var inBody: InBodyStore
     @Binding var showBodyComposition: Bool
     @Binding var bodyMeasurementPendingEdit: BodyMeasurement?
 
@@ -23,6 +24,31 @@ struct BodyCompositionCardView: View {
                 bodyValue("Peso", health.bodyWeightHistory.last?.value, "kg")
                 bodyValue("Grasa", health.bodyFatHistory.last?.value, "%")
                 bodyValue("Masa magra", health.leanMassHistory.last?.value, "kg")
+            }
+            if let latest = inBody.latest {
+                Divider()
+                HStack {
+                    Text("InBody").font(.caption.bold())
+                    Spacer()
+                    Text(latest.date.formatted(date: .abbreviated, time: .omitted))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 16) {
+                        if let smm = latest.skeletalMuscleMassKg {
+                            metric("M. esquelética", "\(smm.formatted(.number.precision(.fractionLength(1)))) kg")
+                        }
+                        if let fat = latest.bodyFatMassKg {
+                            metric("Grasa", "\(fat.formatted(.number.precision(.fractionLength(1)))) kg")
+                        }
+                        if let visceral = latest.visceralFatLevel {
+                            metric("Visceral", "\(visceral)")
+                        }
+                        if let bmr = latest.basalMetabolicRateKcal {
+                            metric("BMR", "\(Int(bmr.rounded())) kcal")
+                        }
+                    }
+                }
             }
             if !health.bodyWeightHistory.isEmpty {
                 Chart(health.bodyWeightHistory) { point in
@@ -71,6 +97,13 @@ struct BodyCompositionCardView: View {
             Text(value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) \(unit)" } ?? "—")
                 .font(.subheadline.bold()).monospacedDigit()
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.subheadline.bold()).monospacedDigit()
+        }
     }
 
 }

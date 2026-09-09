@@ -22,6 +22,7 @@ struct EterHealthApp: App {
     // correcto es este (mismo que health/imports/checkIns).
     @StateObject private var travel = TravelEpisodeStore()
     @StateObject private var workoutEnrichments = WorkoutEnrichmentStore()
+    @StateObject private var inBody = InBodyStore()
 
     var body: some Scene {
         WindowGroup {
@@ -40,6 +41,7 @@ struct EterHealthApp: App {
                 .environmentObject(temperatureDeviations)
                 .environmentObject(travel)
                 .environmentObject(workoutEnrichments)
+                .environmentObject(inBody)
                 .task {
                     // HealthKit puede despertar el proceso sin que el usuario
                     // abra la ventana. El widget se reescribe desde el store,

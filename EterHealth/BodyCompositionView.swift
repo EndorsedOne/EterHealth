@@ -2,11 +2,18 @@ import SwiftUI
 
 struct BodyCompositionView: View {
     @EnvironmentObject private var health: HealthStore
+    @EnvironmentObject private var inBody: InBodyStore
     @Environment(\.dismiss) private var dismiss
     @State private var weight = ""
     @State private var bodyFat = ""
     @State private var leanMass = ""
+    // Campos InBody (los que Apple Salud no modela como tipo propio).
+    @State private var skeletalMuscle = ""
+    @State private var bodyFatMass = ""
+    @State private var visceralFat = ""
+    @State private var basalRate = ""
     @State private var date = Date()
+    @State private var didLoadInBody = false
     private let existing: BodyMeasurement?
 
     init(existing: BodyMeasurement? = nil) {
@@ -27,15 +34,42 @@ struct BodyCompositionView: View {
                     DatePicker("Fecha", selection: $date)
                 }
                 Section {
-                    Text("Peso, grasa y masa magra se guardan en Apple Salud. La composición de básculas domésticas es una estimación: interesa más la tendencia bajo condiciones similares que una lectura aislada.")
+                    TextField("Masa muscular esquelética (kg)", text: $skeletalMuscle).keyboardType(.decimalPad)
+                    TextField("Grasa corporal (kg)", text: $bodyFatMass).keyboardType(.decimalPad)
+                    TextField("Grasa visceral (nivel)", text: $visceralFat).keyboardType(.numberPad)
+                    TextField("Metabolismo basal (kcal)", text: $basalRate).keyboardType(.numberPad)
+                } header: {
+                    Text("InBody · opcional")
+                } footer: {
+                    Text("Datos de un escaneo InBody que Apple Salud no guarda. Peso, % de grasa y masa magra sí van a Salud; estos se guardan en Éter y se muestran por fecha.")
+                }
+                Section {
+                    Text("La composición de básculas domésticas es una estimación: interesa más la tendencia bajo condiciones similares que una lectura aislada.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Composición corporal")
+            // No se puede prellenar InBody en init (el store llega por entorno):
+            // se carga aquí, una sola vez, según la fecha de la medición.
+            .onAppear {
+                guard !didLoadInBody else { return }
+                didLoadInBody = true
+                if let record = inBody.measurement(on: date) {
+                    skeletalMuscle = record.skeletalMuscleMassKg.map { String(format: "%.1f", $0) } ?? ""
+                    bodyFatMass = record.bodyFatMassKg.map { String(format: "%.1f", $0) } ?? ""
+                    visceralFat = record.visceralFatLevel.map(String.init) ?? ""
+                    basalRate = record.basalMetabolicRateKcal.map { String(Int($0.rounded())) } ?? ""
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 if let existing {
                     Button(role: .destructive) {
-                        Task { if await health.deleteBodyMeasurement(existing) { dismiss() } }
+                        Task {
+                            if await health.deleteBodyMeasurement(existing) {
+                                inBody.removeMeasurement(on: existing.date)
+                                dismiss()
+                            }
+                        }
                     } label: { Label("Eliminar medición", systemImage: "trash").frame(maxWidth: .infinity) }
                     .buttonStyle(.bordered).disabled(!existing.isOwnedByEter)
                     .padding(.horizontal).padding(.bottom, 6).background(.bar)
@@ -53,7 +87,16 @@ struct BodyCompositionView: View {
                             } else {
                                 success = await health.saveBodyComposition(weightKg: kg, bodyFatPercent: number(bodyFat), leanMassKg: number(leanMass), date: date)
                             }
-                            if success { dismiss() }
+                            if success {
+                                inBody.upsert(InBodyMeasurement(
+                                    date: date,
+                                    skeletalMuscleMassKg: number(skeletalMuscle),
+                                    bodyFatMassKg: number(bodyFatMass),
+                                    visceralFatLevel: intNumber(visceralFat),
+                                    basalMetabolicRateKcal: number(basalRate)
+                                ))
+                                dismiss()
+                            }
                         }
                     }.bold().disabled(number(weight) == nil || (existing != nil && existing?.isOwnedByEter == false))
                 }
@@ -62,4 +105,5 @@ struct BodyCompositionView: View {
     }
 
     private func number(_ text: String) -> Double? { Double(text.replacingOccurrences(of: ",", with: ".")) }
+    private func intNumber(_ text: String) -> Int? { Int(text.trimmingCharacters(in: .whitespaces)) }
 }

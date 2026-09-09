@@ -68,6 +68,7 @@ struct ContentView: View {
     @EnvironmentObject private var watchMetrics: WatchMetricsStore
     @EnvironmentObject private var twinStates: TwinStateStore
     @EnvironmentObject private var workoutEnrichments: WorkoutEnrichmentStore
+    @EnvironmentObject private var inBody: InBodyStore
     @EnvironmentObject private var temperatureDeviations: TemperatureDeviationStore
     @State private var activeImporter: ContentImporter?
     // Set together with activeImporter at the moment each button is tapped,
@@ -252,7 +253,7 @@ struct ContentView: View {
             LifestyleFactorView(existing: lifestyleFactorPendingEdit).environmentObject(lifestyle).environmentObject(health)
         }
         .sheet(isPresented: $showBodyComposition) {
-            BodyCompositionView(existing: bodyMeasurementPendingEdit).environmentObject(health)
+            BodyCompositionView(existing: bodyMeasurementPendingEdit).environmentObject(health).environmentObject(inBody)
         }
         .fullScreenCover(item: $todayStrengthRoutine) { routine in
             LiveStrengthWorkoutView(routine: routine)
@@ -794,7 +795,7 @@ struct ContentView: View {
         let backup = EterBackupManager.make(imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                              workoutReviews: workoutReviews, planHistory: planHistory,
                                              strengthRoutines: strengthRoutines, health: health, travel: travel,
-                                             workoutEnrichments: workoutEnrichments)
+                                             workoutEnrichments: workoutEnrichments, inBody: inBody)
         backupDocument = EterBackupDocument(backup: backup)
         showBackupExporter = true
     }
@@ -815,7 +816,7 @@ struct ContentView: View {
         EterBackupManager.restore(backup, imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                                   workoutReviews: workoutReviews, planHistory: planHistory,
                                   strengthRoutines: strengthRoutines, travel: travel,
-                                  workoutEnrichments: workoutEnrichments)
+                                  workoutEnrichments: workoutEnrichments, inBody: inBody)
         backupMessage = "Restauración terminada. Se han procesado \(backup.totalRecords) registros."
     }
 
@@ -827,7 +828,7 @@ struct ContentView: View {
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
                 strengthRoutines: strengthRoutines, health: health, travel: travel,
-                workoutEnrichments: workoutEnrichments, force: true
+                workoutEnrichments: workoutEnrichments, inBody: inBody, force: true
             )
             automaticBackupRevision += 1
             backupMessage = "Copia automática activada en \(folder.lastPathComponent)."
@@ -842,7 +843,7 @@ struct ContentView: View {
                 imports: imports, checkIns: checkIns, lifestyle: lifestyle,
                 workoutReviews: workoutReviews, planHistory: planHistory,
                 strengthRoutines: strengthRoutines, health: health, travel: travel,
-                workoutEnrichments: workoutEnrichments, force: force
+                workoutEnrichments: workoutEnrichments, inBody: inBody, force: force
             )
             if written { automaticBackupRevision += 1 }
         } catch {
