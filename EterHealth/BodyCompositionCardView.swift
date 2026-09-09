@@ -38,8 +38,14 @@ struct BodyCompositionCardView: View {
                         if let smm = latest.skeletalMuscleMassKg {
                             metric("M. esquelética", "\(smm.formatted(.number.precision(.fractionLength(1)))) kg")
                         }
+                        if let ffm = latest.fatFreeMassKg {
+                            metric("FFM", "\(ffm.formatted(.number.precision(.fractionLength(1)))) kg")
+                        }
                         if let fat = latest.bodyFatMassKg {
                             metric("Grasa", "\(fat.formatted(.number.precision(.fractionLength(1)))) kg")
+                        }
+                        if let tbw = latest.totalBodyWaterKg {
+                            metric("Agua", "\(tbw.formatted(.number.precision(.fractionLength(1)))) kg")
                         }
                         if let visceral = latest.visceralFatLevel {
                             metric("Visceral", "\(visceral)")

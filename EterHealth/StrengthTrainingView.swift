@@ -200,10 +200,6 @@ struct StrengthTrainingView: View {
             // fuerza son análisis de fuerza y su sitio es esta pestaña.
             MuscleVolumeSection()
 
-            // Composición segmental del último InBody (masa magra por zona y
-            // asimetrías L/R), junto a la distribución de entreno de arriba.
-            InBodySegmentalSection()
-
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {

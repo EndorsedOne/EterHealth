@@ -16,27 +16,16 @@ struct InBodyMeasurement: Codable, Identifiable {
     var visceralFatLevel: Int?
     /// Metabolismo basal (kcal).
     var basalMetabolicRateKcal: Double?
-    /// Masa magra segmental como % vs ideal por zona (InBody da "% vs ideal",
-    /// no kg). Sirve para asimetrías L/R y distribución del músculo por región.
-    var armLeanLeftPercent: Double?
-    var armLeanRightPercent: Double?
-    var legLeanLeftPercent: Double?
-    var legLeanRightPercent: Double?
-    var trunkLeanPercent: Double?
+    /// Masa libre de grasa (kg).
+    var fatFreeMassKg: Double?
+    /// Agua corporal total (kg).
+    var totalBodyWaterKg: Double?
 
     /// Verdadero si tiene al menos un valor: una medición vacía no se guarda.
     var hasAnyValue: Bool {
         [skeletalMuscleMassKg, bodyFatMassKg, basalMetabolicRateKcal,
-         armLeanLeftPercent, armLeanRightPercent, legLeanLeftPercent,
-         legLeanRightPercent, trunkLeanPercent]
+         fatFreeMassKg, totalBodyWaterKg]
             .contains(where: { $0 != nil }) || visceralFatLevel != nil
-    }
-
-    /// Verdadero si hay al menos un valor segmental (para pintar la sección).
-    var hasSegmental: Bool {
-        [armLeanLeftPercent, armLeanRightPercent, legLeanLeftPercent,
-         legLeanRightPercent, trunkLeanPercent]
-            .contains(where: { $0 != nil })
     }
 }
 
