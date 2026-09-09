@@ -649,42 +649,88 @@ final class HealthStore: ObservableObject {
         }
     }
 
-    private func sleepBreakdown() async -> SleepStages {
-        guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return .empty }
-        let start = Calendar.current.date(byAdding: .hour, value: -24, to: Date())!
-        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
-        return await withCheckedContinuation { continuation in
-            let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
-                let values = samples as? [HKCategorySample] ?? []
-                // Multiple apps may mirror the same night. Select the source with
-                // the largest amount of staged sleep to avoid double-counting.
-                let grouped = Dictionary(grouping: values) { $0.sourceRevision.source.name }
-                let stagedSeconds: ([HKCategorySample]) -> Double = { samples in
-                    samples.filter { $0.value != HKCategoryValueSleepAnalysis.inBed.rawValue && $0.value != HKCategoryValueSleepAnalysis.awake.rawValue }
-                        .reduce(0) { $0 + $1.endDate.timeIntervalSince($1.startDate) }
-                }
-                let best = grouped.values.max { stagedSeconds($0) < stagedSeconds($1) } ?? []
-                let sleepSamples = best.filter {
-                    $0.value != HKCategoryValueSleepAnalysis.inBed.rawValue &&
-                    $0.value != HKCategoryValueSleepAnalysis.awake.rawValue
-                }
-                var awake = 0.0, core = 0.0, deep = 0.0, rem = 0.0, unspecified = 0.0
-                for sample in best {
+    private struct SleepSession {
+        let night: Date
+        let deepHours, remHours, coreHours, unspecifiedHours, awakeHours: Double
+        let start, end: Date
+        var asleepHours: Double { deepHours + remHours + coreHours + unspecifiedHours }
+    }
+
+    /// Fuente única de verdad para "una noche": agrupa las muestras de sueño en
+    /// SESIONES por fuente (cortando por huecos > 3 h, para separar siestas) y
+    /// atribuye cada sesión a la mañana en que TERMINA — NO muestra a muestra.
+    /// El bug anterior atribuía cada muestra por `startOfDay(endDate)`, así que
+    /// la parte dormida antes de medianoche caía en el día previo e infravaloraba
+    /// la noche ~1 h. Devuelve la mejor (mayor) sesión de la mejor fuente por
+    /// noche, ordenadas por fecha. `nonisolated`: pura sobre las muestras, se
+    /// llama desde el callback (background) de HKSampleQuery.
+    private nonisolated static func sleepSessions(from samples: [HKCategorySample]) -> [SleepSession] {
+        let calendar = Calendar.current
+        let sessionGap: TimeInterval = 3 * 3600
+        // Se excluye "en cama"; "despierto" cuenta como parte de la noche.
+        let staged = samples.filter { $0.value != HKCategoryValueSleepAnalysis.inBed.rawValue }
+        let bySource = Dictionary(grouping: staged) { $0.sourceRevision.source.name }
+        struct NightSource: Hashable { let night: Date; let source: String }
+        var best: [NightSource: SleepSession] = [:]
+        for (source, sourceSamples) in bySource {
+            let sorted = sourceSamples.sorted { $0.startDate < $1.startDate }
+            var current: [HKCategorySample] = []
+            var runningEnd: Date?
+            func flush() {
+                let session = current
+                current = []
+                guard !session.isEmpty else { return }
+                var deep = 0.0, rem = 0.0, core = 0.0, unspec = 0.0, awake = 0.0
+                for sample in session {
                     let hours = sample.endDate.timeIntervalSince(sample.startDate) / 3600
                     switch sample.value {
-                    case HKCategoryValueSleepAnalysis.awake.rawValue: awake += hours
-                    case HKCategoryValueSleepAnalysis.asleepCore.rawValue: core += hours
                     case HKCategoryValueSleepAnalysis.asleepDeep.rawValue: deep += hours
                     case HKCategoryValueSleepAnalysis.asleepREM.rawValue: rem += hours
-                    case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue: unspecified += hours
+                    case HKCategoryValueSleepAnalysis.asleepCore.rawValue: core += hours
+                    case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue: unspec += hours
+                    case HKCategoryValueSleepAnalysis.awake.rawValue: awake += hours
                     default: break
                     }
                 }
+                let sessionStart = session.map(\.startDate).min()!
+                let sessionEnd = session.map(\.endDate).max()!
+                let night = calendar.startOfDay(for: sessionEnd)
+                let candidate = SleepSession(night: night, deepHours: deep, remHours: rem, coreHours: core,
+                                             unspecifiedHours: unspec, awakeHours: awake,
+                                             start: sessionStart, end: sessionEnd)
+                let key = NightSource(night: night, source: source)
+                if let existing = best[key], existing.asleepHours >= candidate.asleepHours { return }
+                best[key] = candidate
+            }
+            for sample in sorted {
+                if let end = runningEnd, sample.startDate.timeIntervalSince(end) > sessionGap { flush() }
+                current.append(sample)
+                runningEnd = max(runningEnd ?? sample.endDate, sample.endDate)
+            }
+            flush()
+        }
+        // Por noche, la fuente con más sueño (evita doble conteo phone + watch).
+        let byNight = Dictionary(grouping: best.values, by: { $0.night })
+        return byNight.compactMap { _, sessions -> SleepSession? in
+            guard let bestSession = sessions.max(by: { $0.asleepHours < $1.asleepHours }),
+                  bestSession.asleepHours > 0.5, bestSession.asleepHours < 16 else { return nil }
+            return bestSession
+        }.sorted { $0.night < $1.night }
+    }
+
+    private func sleepBreakdown() async -> SleepStages {
+        guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return .empty }
+        // 36 h para capturar la última noche completa aunque terminara temprano.
+        let start = Calendar.current.date(byAdding: .hour, value: -36, to: Date())!
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
+                let sessions = HealthStore.sleepSessions(from: samples as? [HKCategorySample] ?? [])
+                guard let last = sessions.last else { continuation.resume(returning: .empty); return }
                 continuation.resume(returning: SleepStages(
-                    awakeHours: awake, coreHours: core, deepHours: deep, remHours: rem,
-                    unspecifiedHours: unspecified,
-                    startDate: sleepSamples.map(\.startDate).min(),
-                    endDate: sleepSamples.map(\.endDate).max()
+                    awakeHours: last.awakeHours, coreHours: last.coreHours, deepHours: last.deepHours,
+                    remHours: last.remHours, unspecifiedHours: last.unspecifiedHours,
+                    startDate: last.start, endDate: last.end
                 ))
             }
             store.execute(query)
@@ -698,29 +744,13 @@ final class HealthStore: ObservableObject {
 
     private func sleepDurationHistory(from start: Date, to end: Date) async -> [TrendPoint] {
         guard let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return [] }
-        let calendar = Calendar.current
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end)
         return await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
-                let values = samples as? [HKCategorySample] ?? []
-                let asleep = values.filter {
-                    $0.value != HKCategoryValueSleepAnalysis.inBed.rawValue &&
-                    $0.value != HKCategoryValueSleepAnalysis.awake.rawValue
-                }
-                struct NightSource: Hashable { let day: Date; let source: String }
-                var totals: [NightSource: Double] = [:]
-                for sample in asleep {
-                    // Attribute sleep to the morning on which it ended.
-                    let day = calendar.startOfDay(for: sample.endDate)
-                    let key = NightSource(day: day, source: sample.sourceRevision.source.name)
-                    totals[key, default: 0] += sample.endDate.timeIntervalSince(sample.startDate) / 3600
-                }
-                let byNight = Dictionary(grouping: totals, by: { $0.key.day })
-                let points = byNight.compactMap { day, sources -> TrendPoint? in
-                    guard let hours = sources.map(\.value).max(), hours > 0.5, hours < 16 else { return nil }
-                    return TrendPoint(date: day, value: hours)
-                }.sorted { $0.date < $1.date }
-                continuation.resume(returning: points)
+                // Atribución por SESIÓN (misma fuente que sleepBreakdown), no por
+                // muestra: cuenta la noche completa sin partirla en medianoche.
+                let sessions = HealthStore.sleepSessions(from: samples as? [HKCategorySample] ?? [])
+                continuation.resume(returning: sessions.map { TrendPoint(date: $0.night, value: $0.asleepHours) })
             }
             self.store.execute(query)
         }
@@ -794,49 +824,15 @@ final class HealthStore: ObservableObject {
         let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
         return await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: type, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
-                let values = samples as? [HKCategorySample] ?? []
-                struct NightSource: Hashable { let night: Date; let source: String }
-                var stagedSeconds: [NightSource: Double] = [:]
-                var deep: [NightSource: Double] = [:]
-                var rem: [NightSource: Double] = [:]
-                var core: [NightSource: Double] = [:]
-                var unspecified: [NightSource: Double] = [:]
-                var awakeDuringSession: [NightSource: Double] = [:]
-                for sample in values {
-                    let night = calendar.startOfDay(for: sample.endDate)
-                    let key = NightSource(night: night, source: sample.sourceRevision.source.name)
-                    let hours = sample.endDate.timeIntervalSince(sample.startDate) / 3600
-                    switch sample.value {
-                    case HKCategoryValueSleepAnalysis.asleepDeep.rawValue:
-                        deep[key, default: 0] += hours; stagedSeconds[key, default: 0] += hours
-                    case HKCategoryValueSleepAnalysis.asleepREM.rawValue:
-                        rem[key, default: 0] += hours; stagedSeconds[key, default: 0] += hours
-                    case HKCategoryValueSleepAnalysis.asleepCore.rawValue:
-                        core[key, default: 0] += hours; stagedSeconds[key, default: 0] += hours
-                    case HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue:
-                        unspecified[key, default: 0] += hours; stagedSeconds[key, default: 0] += hours
-                    case HKCategoryValueSleepAnalysis.awake.rawValue:
-                        awakeDuringSession[key, default: 0] += hours
-                    default: break
-                    }
-                }
-                let byNight = Dictionary(grouping: stagedSeconds.keys, by: { $0.night })
-                let nights = byNight.compactMap { night, keys -> NightlySleepStages? in
-                    // Same source disambiguation as sleepBreakdown()/
-                    // sleepScheduleHistory — the source with the most
-                    // staged sleep that night wins, avoiding a
-                    // double-mirrored night (phone + watch) from summing
-                    // the same sleep twice.
-                    guard let bestKey = keys.max(by: { (stagedSeconds[$0] ?? 0) < (stagedSeconds[$1] ?? 0) }) else { return nil }
-                    let nightStages = NightlySleepStages(
-                        night: night, deepHours: deep[bestKey] ?? 0, remHours: rem[bestKey] ?? 0,
-                        coreHours: core[bestKey] ?? 0, unspecifiedHours: unspecified[bestKey] ?? 0,
-                        awakeHours: awakeDuringSession[bestKey] ?? 0
-                    )
-                    guard nightStages.asleepHours > 0.5, nightStages.asleepHours < 16 else { return nil }
-                    return nightStages
-                }.sorted { $0.night < $1.night }
-                continuation.resume(returning: nights)
+                // Misma atribución por SESIÓN que sleepBreakdown/sleepDuration:
+                // el desglose de fases se cuenta por noche completa, sin partir
+                // en medianoche, con la fuente que más durmió esa noche.
+                let sessions = HealthStore.sleepSessions(from: samples as? [HKCategorySample] ?? [])
+                continuation.resume(returning: sessions.map {
+                    NightlySleepStages(night: $0.night, deepHours: $0.deepHours, remHours: $0.remHours,
+                                       coreHours: $0.coreHours, unspecifiedHours: $0.unspecifiedHours,
+                                       awakeHours: $0.awakeHours)
+                })
             }
             self.store.execute(query)
         }
