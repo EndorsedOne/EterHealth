@@ -12,6 +12,12 @@ struct BodyCompositionView: View {
     @State private var bodyFatMass = ""
     @State private var visceralFat = ""
     @State private var basalRate = ""
+    // Masa magra segmental (kg) por zona.
+    @State private var armLeanLeft = ""
+    @State private var armLeanRight = ""
+    @State private var legLeanLeft = ""
+    @State private var legLeanRight = ""
+    @State private var trunkLean = ""
     @State private var date = Date()
     @State private var didLoadInBody = false
     private let existing: BodyMeasurement?
@@ -44,6 +50,21 @@ struct BodyCompositionView: View {
                     Text("Datos de un escaneo InBody que Apple Salud no guarda. Peso, % de grasa y masa magra sí van a Salud; estos se guardan en Éter y se muestran por fecha.")
                 }
                 Section {
+                    HStack {
+                        TextField("Brazo izq (kg)", text: $armLeanLeft).keyboardType(.decimalPad)
+                        TextField("Brazo der (kg)", text: $armLeanRight).keyboardType(.decimalPad)
+                    }
+                    HStack {
+                        TextField("Pierna izq (kg)", text: $legLeanLeft).keyboardType(.decimalPad)
+                        TextField("Pierna der (kg)", text: $legLeanRight).keyboardType(.decimalPad)
+                    }
+                    TextField("Tronco (kg)", text: $trunkLean).keyboardType(.decimalPad)
+                } header: {
+                    Text("Segmental · masa magra por zona · opcional")
+                } footer: {
+                    Text("Masa magra de cada brazo, pierna y tronco (InBody). Sirve para ver asimetrías izquierda/derecha y la distribución del músculo por región.")
+                }
+                Section {
                     Text("La composición de básculas domésticas es una estimación: interesa más la tendencia bajo condiciones similares que una lectura aislada.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -59,6 +80,11 @@ struct BodyCompositionView: View {
                     bodyFatMass = record.bodyFatMassKg.map { String(format: "%.1f", $0) } ?? ""
                     visceralFat = record.visceralFatLevel.map(String.init) ?? ""
                     basalRate = record.basalMetabolicRateKcal.map { String(Int($0.rounded())) } ?? ""
+                    armLeanLeft = record.armLeanLeftKg.map { String(format: "%.1f", $0) } ?? ""
+                    armLeanRight = record.armLeanRightKg.map { String(format: "%.1f", $0) } ?? ""
+                    legLeanLeft = record.legLeanLeftKg.map { String(format: "%.1f", $0) } ?? ""
+                    legLeanRight = record.legLeanRightKg.map { String(format: "%.1f", $0) } ?? ""
+                    trunkLean = record.trunkLeanKg.map { String(format: "%.1f", $0) } ?? ""
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -93,7 +119,12 @@ struct BodyCompositionView: View {
                                     skeletalMuscleMassKg: number(skeletalMuscle),
                                     bodyFatMassKg: number(bodyFatMass),
                                     visceralFatLevel: intNumber(visceralFat),
-                                    basalMetabolicRateKcal: number(basalRate)
+                                    basalMetabolicRateKcal: number(basalRate),
+                                    armLeanLeftKg: number(armLeanLeft),
+                                    armLeanRightKg: number(armLeanRight),
+                                    legLeanLeftKg: number(legLeanLeft),
+                                    legLeanRightKg: number(legLeanRight),
+                                    trunkLeanKg: number(trunkLean)
                                 ))
                                 dismiss()
                             }

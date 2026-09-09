@@ -164,6 +164,7 @@ struct StrengthTrainingView: View {
     @EnvironmentObject private var checkIns: DailyCheckInStore
     @EnvironmentObject private var goals: GoalStore
     @EnvironmentObject private var travel: TravelEpisodeStore
+    @EnvironmentObject private var inBody: InBodyStore
     @State private var activeSheet: StrengthSheet?
     @State private var selectedProgressExercise = ""
     let assessment: TwinAssessment
@@ -198,6 +199,10 @@ struct StrengthTrainingView: View {
             // Movidas desde Rendimiento: distribución muscular y volumen de
             // fuerza son análisis de fuerza y su sitio es esta pestaña.
             MuscleVolumeSection()
+
+            // Composición segmental del último InBody (masa magra por zona y
+            // asimetrías L/R), junto a la distribución de entreno de arriba.
+            InBodySegmentalSection()
 
         }
         .sheet(item: $activeSheet) { sheet in
@@ -590,6 +595,7 @@ struct StrengthTrainingView: View {
                 progressMetric("Último volumen", progress.latestVolume > 0 ? "\(Int(progress.latestVolume.rounded())) kg" : "—")
                 progressMetric("Sesiones", "\(progress.sessions)")
             }
+            relativeStrengthBlock(oneRM: progress.latestOneRM)
             if let best = progress.bestSet {
                 Label("Mejor serie: \(best.weight.formatted()) kg × \(best.reps) · \(best.date.formatted(date: .abbreviated, time: .omitted))", systemImage: "trophy")
                     .font(.caption).foregroundStyle(.secondary)
@@ -602,6 +608,28 @@ struct StrengthTrainingView: View {
     private func progressMetric(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) { Text(title).font(.caption2).foregroundStyle(.secondary); Text(value).font(.subheadline.bold()).monospacedDigit() }
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Fuerza relativa: el 1RM frente al peso corporal (Salud) y a la masa
+    /// muscular esquelética (InBody). El ratio por músculo distingue progreso
+    /// por hipertrofia (más músculo) del neural (mismo músculo, más fuerza).
+    @ViewBuilder
+    private func relativeStrengthBlock(oneRM: Double?) -> some View {
+        let bodyweight = health.bodyWeightHistory.last?.value
+        let smm = inBody.latest?.skeletalMuscleMassKg
+        if let oneRM, oneRM > 0, (bodyweight ?? 0) > 0 || (smm ?? 0) > 0 {
+            Divider()
+            HStack(spacing: 8) {
+                if let bw = bodyweight, bw > 0 {
+                    progressMetric("× peso corporal", String(format: "%.2f", oneRM / bw))
+                }
+                if let smm, smm > 0 {
+                    progressMetric("Por kg de músculo", String(format: "%.2f", oneRM / smm))
+                }
+            }
+            Text("Fuerza relativa: 1RM frente a tu peso corporal y a tu masa muscular esquelética (InBody). El ratio por músculo distingue si progresas por hipertrofia (más músculo) o por eficiencia neural (mismo músculo, más fuerza).")
+                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+        }
     }
 
     private func selectedProgress(in choices: [ExerciseStrengthProgress]) -> ExerciseStrengthProgress? {
