@@ -74,12 +74,10 @@ struct BodyCompositionCardView: View {
 
     private func heroRow(_ latest: InBodyMeasurement) -> some View {
         HStack(alignment: .center, spacing: 14) {
-            Image(systemName: "figure.arms.open")
+            Image("BodyComposition")
                 .resizable().scaledToFit()
-                .frame(width: 88, height: 148)
-                .foregroundStyle(RadialGradient(colors: [muscleColor, waterColor, fatColor],
-                                                center: .center, startRadius: 6, endRadius: 96))
-                .shadow(color: muscleColor.opacity(0.25), radius: 12)
+                .frame(width: 108, height: 168)
+                .shadow(color: waterColor.opacity(0.28), radius: 14)
                 .accessibilityHidden(true)
             VStack(spacing: 8) {
                 compRow(color: fatColor, name: "Grasa", value: fatLine(latest))
