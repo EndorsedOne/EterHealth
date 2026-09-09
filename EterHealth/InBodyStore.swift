@@ -16,23 +16,26 @@ struct InBodyMeasurement: Codable, Identifiable {
     var visceralFatLevel: Int?
     /// Metabolismo basal (kcal).
     var basalMetabolicRateKcal: Double?
-    /// Masa magra segmental (kg) por zona: para asimetrías L/R y distribución.
-    var armLeanLeftKg: Double?
-    var armLeanRightKg: Double?
-    var legLeanLeftKg: Double?
-    var legLeanRightKg: Double?
-    var trunkLeanKg: Double?
+    /// Masa magra segmental como % vs ideal por zona (InBody da "% vs ideal",
+    /// no kg). Sirve para asimetrías L/R y distribución del músculo por región.
+    var armLeanLeftPercent: Double?
+    var armLeanRightPercent: Double?
+    var legLeanLeftPercent: Double?
+    var legLeanRightPercent: Double?
+    var trunkLeanPercent: Double?
 
     /// Verdadero si tiene al menos un valor: una medición vacía no se guarda.
     var hasAnyValue: Bool {
         [skeletalMuscleMassKg, bodyFatMassKg, basalMetabolicRateKcal,
-         armLeanLeftKg, armLeanRightKg, legLeanLeftKg, legLeanRightKg, trunkLeanKg]
+         armLeanLeftPercent, armLeanRightPercent, legLeanLeftPercent,
+         legLeanRightPercent, trunkLeanPercent]
             .contains(where: { $0 != nil }) || visceralFatLevel != nil
     }
 
     /// Verdadero si hay al menos un valor segmental (para pintar la sección).
     var hasSegmental: Bool {
-        [armLeanLeftKg, armLeanRightKg, legLeanLeftKg, legLeanRightKg, trunkLeanKg]
+        [armLeanLeftPercent, armLeanRightPercent, legLeanLeftPercent,
+         legLeanRightPercent, trunkLeanPercent]
             .contains(where: { $0 != nil })
     }
 }

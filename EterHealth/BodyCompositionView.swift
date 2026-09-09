@@ -51,18 +51,18 @@ struct BodyCompositionView: View {
                 }
                 Section {
                     HStack {
-                        TextField("Brazo izq (kg)", text: $armLeanLeft).keyboardType(.decimalPad)
-                        TextField("Brazo der (kg)", text: $armLeanRight).keyboardType(.decimalPad)
+                        TextField("Brazo izq (% vs ideal)", text: $armLeanLeft).keyboardType(.decimalPad)
+                        TextField("Brazo der (% vs ideal)", text: $armLeanRight).keyboardType(.decimalPad)
                     }
                     HStack {
-                        TextField("Pierna izq (kg)", text: $legLeanLeft).keyboardType(.decimalPad)
-                        TextField("Pierna der (kg)", text: $legLeanRight).keyboardType(.decimalPad)
+                        TextField("Pierna izq (% vs ideal)", text: $legLeanLeft).keyboardType(.decimalPad)
+                        TextField("Pierna der (% vs ideal)", text: $legLeanRight).keyboardType(.decimalPad)
                     }
-                    TextField("Tronco (kg)", text: $trunkLean).keyboardType(.decimalPad)
+                    TextField("Tronco (% vs ideal)", text: $trunkLean).keyboardType(.decimalPad)
                 } header: {
                     Text("Segmental · masa magra por zona · opcional")
                 } footer: {
-                    Text("Masa magra de cada brazo, pierna y tronco (InBody). Sirve para ver asimetrías izquierda/derecha y la distribución del músculo por región.")
+                    Text("El % de masa magra (FFM) vs ideal de cada zona, tal cual lo da InBody (ej. tronco 112,4%). Usa las tarjetas de \"Fat free mass % … compared to ideal\", no las de grasa. Sirve para ver asimetrías izquierda/derecha y la distribución del músculo por región.")
                 }
                 Section {
                     Text("La composición de básculas domésticas es una estimación: interesa más la tendencia bajo condiciones similares que una lectura aislada.")
@@ -80,11 +80,11 @@ struct BodyCompositionView: View {
                     bodyFatMass = record.bodyFatMassKg.map { String(format: "%.1f", $0) } ?? ""
                     visceralFat = record.visceralFatLevel.map(String.init) ?? ""
                     basalRate = record.basalMetabolicRateKcal.map { String(Int($0.rounded())) } ?? ""
-                    armLeanLeft = record.armLeanLeftKg.map { String(format: "%.1f", $0) } ?? ""
-                    armLeanRight = record.armLeanRightKg.map { String(format: "%.1f", $0) } ?? ""
-                    legLeanLeft = record.legLeanLeftKg.map { String(format: "%.1f", $0) } ?? ""
-                    legLeanRight = record.legLeanRightKg.map { String(format: "%.1f", $0) } ?? ""
-                    trunkLean = record.trunkLeanKg.map { String(format: "%.1f", $0) } ?? ""
+                    armLeanLeft = record.armLeanLeftPercent.map { String(format: "%.1f", $0) } ?? ""
+                    armLeanRight = record.armLeanRightPercent.map { String(format: "%.1f", $0) } ?? ""
+                    legLeanLeft = record.legLeanLeftPercent.map { String(format: "%.1f", $0) } ?? ""
+                    legLeanRight = record.legLeanRightPercent.map { String(format: "%.1f", $0) } ?? ""
+                    trunkLean = record.trunkLeanPercent.map { String(format: "%.1f", $0) } ?? ""
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -120,11 +120,11 @@ struct BodyCompositionView: View {
                                     bodyFatMassKg: number(bodyFatMass),
                                     visceralFatLevel: intNumber(visceralFat),
                                     basalMetabolicRateKcal: number(basalRate),
-                                    armLeanLeftKg: number(armLeanLeft),
-                                    armLeanRightKg: number(armLeanRight),
-                                    legLeanLeftKg: number(legLeanLeft),
-                                    legLeanRightKg: number(legLeanRight),
-                                    trunkLeanKg: number(trunkLean)
+                                    armLeanLeftPercent: number(armLeanLeft),
+                                    armLeanRightPercent: number(armLeanRight),
+                                    legLeanLeftPercent: number(legLeanLeft),
+                                    legLeanRightPercent: number(legLeanRight),
+                                    trunkLeanPercent: number(trunkLean)
                                 ))
                                 dismiss()
                             }

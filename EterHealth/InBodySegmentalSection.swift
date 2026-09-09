@@ -14,28 +14,28 @@ struct InBodySegmentalSection: View {
 
     @ViewBuilder
     private func content(_ measurement: InBodyMeasurement) -> some View {
-        let maxValue = [measurement.armLeanLeftKg, measurement.armLeanRightKg,
-                        measurement.legLeanLeftKg, measurement.legLeanRightKg,
-                        measurement.trunkLeanKg].compactMap { $0 }.max() ?? 1
+        let maxValue = [measurement.armLeanLeftPercent, measurement.armLeanRightPercent,
+                        measurement.legLeanLeftPercent, measurement.legLeanRightPercent,
+                        measurement.trunkLeanPercent].compactMap { $0 }.max() ?? 100
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Composición segmental").font(.headline)
-                    Text("Masa magra por zona (InBody)").font(.caption).foregroundStyle(.secondary)
+                    Text("Masa magra por zona · % vs ideal (InBody)").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(measurement.date.formatted(date: .abbreviated, time: .omitted))
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            segmentRow("Brazo izquierdo", measurement.armLeanLeftKg, maxValue)
-            segmentRow("Brazo derecho", measurement.armLeanRightKg, maxValue)
-            segmentRow("Pierna izquierda", measurement.legLeanLeftKg, maxValue)
-            segmentRow("Pierna derecha", measurement.legLeanRightKg, maxValue)
-            segmentRow("Tronco", measurement.trunkLeanKg, maxValue)
+            segmentRow("Brazo izquierdo", measurement.armLeanLeftPercent, maxValue)
+            segmentRow("Brazo derecho", measurement.armLeanRightPercent, maxValue)
+            segmentRow("Pierna izquierda", measurement.legLeanLeftPercent, maxValue)
+            segmentRow("Pierna derecha", measurement.legLeanRightPercent, maxValue)
+            segmentRow("Tronco", measurement.trunkLeanPercent, maxValue)
             Divider()
-            asymmetry("Brazos", measurement.armLeanLeftKg, measurement.armLeanRightKg)
-            asymmetry("Piernas", measurement.legLeanLeftKg, measurement.legLeanRightKg)
-            Text("La asimetría compara lado izquierdo y derecho. Por encima del ~10% conviene revisar técnica y añadir trabajo unilateral del lado más débil. Crúzalo con tu Distribución muscular de arriba para decidir dónde meter volumen.")
+            asymmetry("Brazos", measurement.armLeanLeftPercent, measurement.armLeanRightPercent)
+            asymmetry("Piernas", measurement.legLeanLeftPercent, measurement.legLeanRightPercent)
+            Text("Cada zona es el % de masa magra vs tu ideal (100% = ideal). La asimetría compara lado izquierdo y derecho; por encima del ~10% conviene revisar técnica y añadir trabajo unilateral del lado más débil. Crúzalo con tu Distribución muscular de arriba para decidir dónde meter volumen.")
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }.cardStyle()
     }
@@ -52,7 +52,7 @@ struct InBodySegmentalSection: View {
                     }
                 }
             }.frame(height: 8)
-            Text(value.map { "\($0.formatted(.number.precision(.fractionLength(1)))) kg" } ?? "—")
+            Text(value.map { "\($0.formatted(.number.precision(.fractionLength(1))))%" } ?? "—")
                 .font(.caption.monospacedDigit()).frame(width: 58, alignment: .trailing)
         }
     }
