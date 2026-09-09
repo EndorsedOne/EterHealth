@@ -190,6 +190,10 @@ struct StrengthTrainingView: View {
 
             recommendedStrengthSection(strengthForecasts, assessment: assessment, plan: plan)
 
+            // Distinta de la próxima sesión calendarizada: qué es lo óptimo si
+            // hoy te apetece entrenar, según tu recuperación actual.
+            OptionalTodaySection(assessment: assessment)
+
             strengthProgressSection
 
             // Objetivos de fuerza (press banca, sentadilla, peso muerto,
