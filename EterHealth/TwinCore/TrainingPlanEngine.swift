@@ -1934,6 +1934,16 @@ enum TrainingPlanEngine {
             let forecastPattern = kind == .strength
                 ? bestStrengthPattern(forecastMuscles, avoidLegs: avoidLegsThisDay, landmarkContext: landmarkContext)
                 : nil
+            // Un día de fuerza de la previsión es una sesión PLANIFICADA para
+            // esa fecha, no el estado de hoy. La fuerza futura solo entra por la
+            // rama fallback (el cupo semanal no se resetea en la simulación), y
+            // arrastra el texto "hoy no hay nada obligatorio… mantenimiento
+            // ligera y opcional" — que además miente sobre la ligereza: las
+            // series reales dependen de la readiness prevista, no del fallback.
+            // Se reencuadra como lo que es: la próxima sesión de fuerza prevista.
+            if kind == .strength {
+                rationale = "Próxima sesión de fuerza prevista para esta fecha: para entonces el patrón vuelve a estar recuperado y con el volumen por debajo de tu objetivo semanal. Es una sesión completa planificada, no un extra opcional de hoy."
+            }
             let forecastStrengthIsLight = state.readiness < 62
             let strengthWorkout = kind == .strength ? WorkoutPlanner.session(
                 for: .strength, pattern: forecastPattern, upperBodyOnlyToday: false,
