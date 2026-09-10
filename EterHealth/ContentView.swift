@@ -86,7 +86,6 @@ struct ContentView: View {
     @State private var backupDocument: EterBackupDocument?
     @State private var pendingBackup: EterBackup?
     @State private var backupMessage: String?
-    @State private var todayStrengthRoutine: StrengthRoutine?
     @State private var automaticBackupRevision = 0
     @State private var dashboardRefreshTask: Task<Void, Never>?
     @StateObject private var dashboard = DashboardViewModel()
@@ -246,11 +245,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showBodyComposition) {
             BodyCompositionView(existing: bodyMeasurementPendingEdit).environmentObject(health).environmentObject(inBody)
-        }
-        .fullScreenCover(item: $todayStrengthRoutine) { routine in
-            LiveStrengthWorkoutView(routine: routine)
-                .environmentObject(imports)
-                .environmentObject(health)
         }
         .onChange(of: health.lastUpdated) { _, _ in
             scheduleDashboardRefresh(includeBackup: true)
@@ -425,7 +419,9 @@ struct ContentView: View {
                 twinCard
                 todayTrendsCard
                 currentPlanCard
-                proposedWorkoutCard
+                // "Entrenamiento propuesto" se retira de Hoy: la sesión (cardio o
+                // fuerza) vive en la pestaña Entrenamiento, que ya la muestra con
+                // su detalle. Hoy = estado + semana + simular.
                 // "Tu semana de entrenamiento" integra en una sola ventana el
                 // strip de 7 días y el simulador combinable (entrenamiento y
                 // estilo de vida), interactivo y sin texto de relleno.
@@ -1106,70 +1102,6 @@ struct ContentView: View {
     }
 
 
-    private var proposedWorkoutCard: some View {
-        let assessment = currentAssessment
-        let plan = currentPlan
-        let workout = WorkoutPlanner.propose(health: health, imports: imports, checkIn: checkIns.entry(), context: twinContext)
-        let strengthIsAllowed = !injuries.active.contains { $0.restrictions.contains(.avoidStrength) }
-        // PR8: la propuesta dice si es de fuerza (workout.kind), en vez de
-        // deducirse de que su título NO contenga "recuperación" — una
-        // condición que también daba `true` para una natación, un brick o un
-        // protocolo de competición, y que dependía de la redacción exacta del
-        // título. El chequeo de MuscleMap se queda: además de ser de fuerza,
-        // los ejercicios tienen que ser nombres que el mapa reconozca para
-        // poder registrarla como sesión propia.
-        let isCompatibleStrengthProposal = workout.kind == .strength &&
-            workout.exercises.contains { !MuscleMap.groups(for: $0.name).isEmpty }
-        return VStack(alignment: .leading, spacing: 15) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("ENTRENAMIENTO PROPUESTO").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
-                    Text(workout.title).font(.title2).fontDesign(.serif)
-                    Text("\(workout.duration) · \(workout.intent)").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "figure.strengthtraining.traditional")
-                    .font(.title2).foregroundStyle(EterTheme.positive)
-            }
-            Divider()
-            ForEach(Array(workout.exercises.enumerated()), id: \.element.id) { index, exercise in
-                HStack(alignment: .top, spacing: 11) {
-                    Text("\(index + 1)").font(.caption.bold()).foregroundStyle(.white)
-                        .frame(width: 25, height: 25).background(EterTheme.primary).clipShape(Circle())
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(exercise.name).font(.subheadline.bold())
-                        Text(exercise.prescription).font(.caption).foregroundStyle(EterTheme.positive)
-                        Text(exercise.cue).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-            }
-            Text(workout.note).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            if plan.nextSession == .strength && strengthIsAllowed && isCompatibleStrengthProposal {
-                Button {
-                    todayStrengthRoutine = StrengthRoutineBuilder.routine(
-                        from: workout, imports: imports,
-                        readiness: assessment.score, muscles: assessment.muscles
-                    )
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "play.fill")
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Comenzar rutina").font(.headline)
-                            Text("Editable antes y durante la sesión").font(.caption2).opacity(0.76)
-                        }
-                        Spacer()
-                        Image(systemName: "arrow.right")
-                    }
-                    .padding(.horizontal, 15).frame(minHeight: 54)
-                    .foregroundStyle(Color(red: 0.07, green: 0.18, blue: 0.15))
-                    .background(Color(red: 0.84, green: 0.94, blue: 0.55))
-                    .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
-                }
-                .buttonStyle(.plain)
-            }
-        }.cardStyle()
-    }
 
     // "La gente no vive solo con el hoy": today's proposed workout used to
     // be the only thing on screen — this shows where the plan actually
@@ -1307,13 +1239,9 @@ struct ContentView: View {
             }
             Divider()
             Text("SIGUIENTE SESIÓN · \(plan.nextSession.rawValue.uppercased())").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(EterTheme.positive)
-            // El detalle de la sesión (duración, ejercicios, ejecución) lo posee
-            // "Entrenamiento propuesto", la tarjeta inmediatamente inferior. Antes
-            // repetíamos aquí plan.recommendation + plan.rationale, que renderizaban
-            // el mismo párrafo que su workout.note — y con minutos que no cuadraban
-            // (p. ej. 25–40 aquí vs 25–35 en la propuesta). Una sola fuente ahora.
-            Text("Su duración, ejercicios y ejecución están en «Entrenamiento propuesto», abajo.")
-                .font(.caption2).foregroundStyle(.secondary)
+            // El gist de la próxima sesión en una línea. El detalle completo y la
+            // ejecución viven en la pestaña Entrenamiento.
+            Text(plan.recommendation).font(.subheadline).lineSpacing(3)
         }.cardStyle()
     }
 
