@@ -1201,12 +1201,8 @@ struct ContentView: View {
         let week = weekAhead(checkIn: checkIns.entry())
         let simulation = simulatedDecision.map { simulateDecision($0, checkIn: checkIns.entry()) }
         let simulatedWeek = simulation.map { weekAhead(checkIn: checkIns.entry(), override: $0.weekAheadOverride) }
-        let summary: String? = {
-            guard let decision = simulatedDecision, let simulation else { return nil }
-            return "Si hoy haces «\(decision.rawValue.lowercased())»: mañana ≈\(simulation.tomorrowReadiness)% de disponibilidad."
-        }()
         return WeekAheadStripView(realDays: week, simulatedDays: simulatedWeek,
-                                  decision: $simulatedDecision, decisionSummary: summary)
+                                  decision: $simulatedDecision, decisionSimulation: simulation)
     }
 
     private var dailyCheckInCard: some View {

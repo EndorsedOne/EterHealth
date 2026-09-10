@@ -57,7 +57,7 @@ struct WeekAheadStripView: View {
     let realDays: [TrainingPlanEngine.DayForecast]
     var simulatedDays: [TrainingPlanEngine.DayForecast]? = nil
     @Binding var decision: SimulatedDecision?
-    var decisionSummary: String? = nil
+    var decisionSimulation: DecisionSimulation? = nil
 
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
@@ -220,25 +220,77 @@ struct WeekAheadStripView: View {
 
     @ViewBuilder private func simulateResult(lifeProj: WhatIfProjection?) -> some View {
         if simMode == .training {
-            if decision != nil, let decisionSummary {
-                Text(decisionSummary).font(.caption.bold()).foregroundStyle(EterTheme.primary)
+            if decision != nil, let sim = decisionSimulation {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(sim.headline).font(.subheadline.bold()).foregroundStyle(readinessColor(sim.tomorrowReadiness))
+                        Spacer()
+                        Text("Mañana \(sim.tomorrowReadiness)%").font(.caption.bold()).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    // Predicción concreta de la sesión: ritmo esperado (intervalos /
+                    // tirada), % de carga (fuerza), o el sentido del descanso.
+                    Text(sim.performanceExpectation).font(.caption).lineSpacing(2)
+                    ForEach(sim.tradeoffs, id: \.self) { item in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "arrow.right.circle.fill").font(.caption2).foregroundStyle(.teal)
+                            Text(item).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                        }
+                    }
+                }
             } else {
-                Text("Toca una opción y la semana de arriba se recalcula al momento.")
+                Text("Toca una opción: verás el ritmo/carga esperados y cómo te va a ir, no solo un número.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         } else if life.isEmpty {
-            Text("Marca lo que harías esta noche para ver el efecto en mañana.")
+            Text("Marca lo que harías esta noche: verás si podrás entrenar mañana y cómo afecta a tu sueño.")
                 .font(.caption2).foregroundStyle(.secondary)
         } else if let proj = lifeProj {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Mañana ≈\(proj.projectedReadiness)%")
-                    .font(.headline).foregroundStyle(readinessColor(proj.projectedReadiness))
-                Text("\(proj.totalReadinessImpact >= 0 ? "+" : "")\(proj.totalReadinessImpact) pt")
-                    .font(.caption.bold()).monospacedDigit()
-                    .foregroundStyle(proj.totalReadinessImpact >= 0 ? EterTheme.positive : EterTheme.negative)
-                Spacer()
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(proj.headline).font(.subheadline.bold()).foregroundStyle(readinessColor(proj.projectedReadiness))
+                    Spacer()
+                    Text("\(proj.projectedReadiness)% · \(signed(proj.totalReadinessImpact)) pt")
+                        .font(.caption.bold()).monospacedDigit()
+                        .foregroundStyle(proj.totalReadinessImpact >= 0 ? EterTheme.positive : EterTheme.negative)
+                }
+                Label(trainVerdict(proj.projectedReadiness), systemImage: "figure.run")
+                    .font(.caption.bold()).foregroundStyle(.primary)
+                ForEach(proj.factorImpacts) { factor in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(signed(factor.readinessImpact)) pt").font(.caption2.bold()).monospacedDigit()
+                            .foregroundStyle(factor.readinessImpact >= 0 ? EterTheme.positive : EterTheme.negative)
+                            .frame(width: 46, alignment: .leading)
+                        Text(factor.label).font(.caption2)
+                        Spacer()
+                    }
+                }
+                if let sleep = sleepImpactText(proj) {
+                    Label(sleep, systemImage: "moon.zzz.fill").font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                }
             }
         }
+    }
+
+    private func signed(_ value: Int) -> String { value >= 0 ? "+\(value)" : "\(value)" }
+
+    // Traducción disponibilidad → veredicto entrenable, con los mismos umbrales
+    // que el estado del gemelo (Disponible ≥62 · Carga moderada ≥45).
+    private func trainVerdict(_ readiness: Int) -> String {
+        readiness >= 62 ? "Mañana podrás entrenar con normalidad"
+            : readiness >= 45 ? "Mañana podrás entrenar, mejor sesión suave"
+            : "Mañana tocaría recuperar, no forzar"
+    }
+
+    private func sleepImpactText(_ proj: WhatIfProjection) -> String? {
+        var parts: [String] = []
+        if let deep = proj.projectedDeepShareDeltaPoints {
+            parts.append("profundo \(deep >= 0 ? "+" : "")\(deep.formatted(.number.precision(.fractionLength(1)))) pp")
+        }
+        if let rem = proj.projectedRemShareDeltaPoints {
+            parts.append("REM \(rem >= 0 ? "+" : "")\(rem.formatted(.number.precision(.fractionLength(1)))) pp")
+        }
+        if !parts.isEmpty { return "Sueño: " + parts.joined(separator: " · ") }
+        return proj.qualitativeNotes.first
     }
 
     private func simChip(_ title: String, active: Bool, _ action: @escaping () -> Void) -> some View {
