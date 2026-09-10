@@ -1,5 +1,13 @@
 import SwiftUI
 
+// Fila de recuperación muscular a mañana (hoy → +24h) para la decisión "Descansar".
+struct MuscleRecoveryRow: Identifiable {
+    let name: String
+    let now: Int
+    let tomorrow: Int
+    var id: String { name }
+}
+
 private extension PlannedSessionKind {
     var forecastIcon: String {
         switch self {
@@ -58,6 +66,7 @@ struct WeekAheadStripView: View {
     var simulatedDays: [TrainingPlanEngine.DayForecast]? = nil
     @Binding var decision: SimulatedDecision?
     var decisionSimulation: DecisionSimulation? = nil
+    var muscleRecovery: [MuscleRecoveryRow]? = nil
 
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
@@ -234,6 +243,22 @@ struct WeekAheadStripView: View {
                         HStack(alignment: .top, spacing: 6) {
                             Image(systemName: "arrow.right.circle.fill").font(.caption2).foregroundStyle(.teal)
                             Text(item).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                        }
+                    }
+                    if let recovery = muscleRecovery, !recovery.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("RECUPERACIÓN A MAÑANA").font(.caption2.bold())
+                                .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary).padding(.top, 3)
+                            ForEach(recovery.prefix(4)) { row in
+                                HStack {
+                                    Text(row.name).font(.caption2)
+                                    Spacer()
+                                    Text("\(row.now) → \(row.tomorrow)")
+                                        .font(.caption2.bold()).monospacedDigit().foregroundStyle(EterTheme.positive)
+                                }
+                            }
+                            Text("Descanso: tus grupos más cargados recuperan hasta mañana. Ya cuenta lo que has entrenado hoy.")
+                                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                         }
                     }
                 }

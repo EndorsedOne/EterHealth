@@ -508,6 +508,18 @@ enum TwinEngine {
         }.sorted { $0.readiness > $1.readiness }
     }
 
+    // Proyecta la recuperación muscular a `hoursAhead` (p. ej. +24h) reutilizando
+    // el MISMO modelo de fatiga: hace decaer la fatiga de las sesiones ya
+    // registradas —incluidas las de HOY, así que "ya he entrenado" se tiene en
+    // cuenta— sin añadir entrenamiento nuevo (proyección de descanso). checkIn a
+    // nil a propósito: las agujetas de hoy no se proyectan como agujetas de mañana.
+    static func projectedMuscles(imports: ImportStore, health: HealthStore, hoursAhead: Double, now: Date = Date()) -> [MuscleReadiness] {
+        let personal = PersonalBaselineEngine.profile(health: health, imports: imports, now: now)
+        return calculateMuscles(imports.workouts, healthWorkouts: health.recentWorkouts,
+                                learnedRecovery: personal.muscleRecoveryHours, checkIn: nil,
+                                now: now.addingTimeInterval(hoursAhead * 3600))
+    }
+
     private static func completedSessionToday(_ workouts: [HealthWorkout], now: Date) -> HealthWorkout? {
         workouts.filter { workout in
             Calendar.current.isDate(workout.date, inSameDayAs: now) &&

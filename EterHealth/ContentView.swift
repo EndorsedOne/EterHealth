@@ -1201,8 +1201,22 @@ struct ContentView: View {
         let week = weekAhead(checkIn: checkIns.entry())
         let simulation = simulatedDecision.map { simulateDecision($0, checkIn: checkIns.entry()) }
         let simulatedWeek = simulation.map { weekAhead(checkIn: checkIns.entry(), override: $0.weekAheadOverride) }
+        // Recuperación por grupo muscular a 24h — solo tiene sentido en "Descansar"
+        // (proyección de descanso, sin entrenamiento nuevo). Se compara hoy vs +24h
+        // con el mismo modelo de fatiga, que ya incluye lo entrenado hoy.
+        let muscleRecovery: [MuscleRecoveryRow]? = {
+            guard simulatedDecision == .rest else { return nil }
+            let today = TwinEngine.projectedMuscles(imports: imports, health: health, hoursAhead: 0)
+            let tomorrow = TwinEngine.projectedMuscles(imports: imports, health: health, hoursAhead: 24)
+            let tomorrowByName = Dictionary(uniqueKeysWithValues: tomorrow.map { ($0.name, $0.readiness) })
+            return today
+                .map { MuscleRecoveryRow(name: $0.name, now: $0.readiness, tomorrow: tomorrowByName[$0.name] ?? $0.readiness) }
+                .filter { $0.tomorrow > $0.now }
+                .sorted { ($0.tomorrow - $0.now) > ($1.tomorrow - $1.now) }
+        }()
         return WeekAheadStripView(realDays: week, simulatedDays: simulatedWeek,
-                                  decision: $simulatedDecision, decisionSimulation: simulation)
+                                  decision: $simulatedDecision, decisionSimulation: simulation,
+                                  muscleRecovery: muscleRecovery)
     }
 
     private var dailyCheckInCard: some View {
