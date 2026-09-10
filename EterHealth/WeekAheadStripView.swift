@@ -255,17 +255,30 @@ struct WeekAheadStripView: View {
                 }
                 Label(trainVerdict(proj.projectedReadiness), systemImage: "figure.run")
                     .font(.caption.bold()).foregroundStyle(.primary)
+                // Cada factor con su explicación real (distinta): así deja de "decir
+                // todos lo mismo" — alcohol, cafeína, horario y cena tienen cada uno
+                // su detalle aprendido o su referencia declarada.
                 ForEach(proj.factorImpacts) { factor in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("\(signed(factor.readinessImpact)) pt").font(.caption2.bold()).monospacedDigit()
-                            .foregroundStyle(factor.readinessImpact >= 0 ? EterTheme.positive : EterTheme.negative)
-                            .frame(width: 46, alignment: .leading)
-                        Text(factor.label).font(.caption2)
-                        Spacer()
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(signed(factor.readinessImpact)) pt").font(.caption2.bold()).monospacedDigit()
+                                .foregroundStyle(factor.readinessImpact >= 0 ? EterTheme.positive : EterTheme.negative)
+                                .frame(width: 46, alignment: .leading)
+                            Text(factor.label).font(.caption2.bold())
+                            if factor.isLearned {
+                                Text("APRENDIDO").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(EterTheme.primary)
+                            }
+                            Spacer()
+                        }
+                        Text(factor.detail).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                     }
                 }
                 if let sleep = sleepImpactText(proj) {
                     Label(sleep, systemImage: "moon.zzz.fill").font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                }
+                if let caveat = proj.combinationCaveat {
+                    Label(caveat, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2).foregroundStyle(EterTheme.warning).lineSpacing(2)
                 }
             }
         }
