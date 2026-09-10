@@ -77,7 +77,7 @@ struct ContentView: View {
     @State private var activeSheet: ContentSheet?
     @State private var showLifestyleFactors = false
     @State private var lifestyleFactorPendingEdit: LifestyleEvent?
-    @State private var simulatedDecision: SimulatedDecision = .rest
+    @State private var simulatedDecision: SimulatedDecision? = nil
     @State private var workoutPendingDeletion: HealthWorkout?
     @State private var showBodyComposition = false
     @State private var bodyMeasurementPendingEdit: BodyMeasurement?
@@ -426,11 +426,11 @@ struct ContentView: View {
                 todayTrendsCard
                 currentPlanCard
                 proposedWorkoutCard
-                // Un único simulador "¿qué pasa si…?" con dos modos (entrenamiento
-                // / estilo de vida) en vez de dos tarjetas contiguas que producían
-                // la misma salida ("Mañana %") con el mismo layout de métricas.
-                combinedSimulatorCard
+                // "Próximos 7 días" ya integra el simulador de decisión de
+                // entrenamiento. El de estilo de vida (alcohol, cafeína, horario)
+                // es otra pregunta distinta, así que va en su propia tarjeta debajo.
                 weekAheadCard
+                WhatIfSimulatorCardView()
                 LazyVGrid(columns: columns, spacing: 12) {
                     metric("Sueño", value: String(format: "%.1f", health.snapshot.sleepHours), unit: "h", icon: "moon.fill",
                            insight: todayComparisonInsight(health.sleepHistory, unit: "h"))
@@ -864,19 +864,12 @@ struct ContentView: View {
                 weeklySummary(summary)
                 trainingLoadCard(summary)
                 intensityFocusCard(summary)
-                // Análisis de consulta ocasional plegado: escenario, calendario y
-                // capacidad son referencia, no uso diario. La base fisiológica
-                // (HRV/pulso reposo/HRR) se retira de Rendimiento: su casa
-                // canónica es Salud, donde ya vive con su tendencia.
-                DisclosureGroup("Análisis avanzado") {
-                    VStack(alignment: .leading, spacing: 16) {
-                        TrainingScenarioCardView()
-                        activityCalendar(summary)
-                        capacityCard
-                    }
-                    .padding(.top, 8)
-                }
-                .tint(EterTheme.accent)
+                // La base fisiológica (HRV/pulso reposo/HRR) se mantiene retirada
+                // de Rendimiento: su casa canónica es Salud. El resto va visible;
+                // el selector de ritmo (TrainingScenarioCardView) es ahora compacto.
+                TrainingScenarioCardView()
+                activityCalendar(summary)
+                capacityCard
             }
         } else {
             ProgressView("Preparando rendimiento")
@@ -1003,7 +996,7 @@ struct ContentView: View {
         let target = RunningPerformanceEngine.hardIntensityTarget(for: TrainingPlanEngine.activeBlock(on: Date(), profile: goals.profile))
         let hard = summary.highAerobic + summary.anaerobic
         return VStack(alignment: .leading, spacing: 14) {
-            Label("Foco de intensidad", systemImage: "heart.text.square.fill").font(.headline)
+            Label("Intensidad y zonas de FC", systemImage: "heart.text.square.fill").font(.headline)
             HStack(alignment: .top, spacing: 10) {
                 focusMetric("Suave", subtitle: "Z1–Z2", summary.lowAerobic, .blue,
                             comparedTo: (100 - target.upperBound)...(100 - target.lowerBound))
@@ -1017,7 +1010,22 @@ struct ContentView: View {
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
             if !health.heartRateZones.isEmpty {
                 Divider()
-                heartRateZoneBreakdown(health.heartRateZones)
+                Text("Zonas de frecuencia cardíaca · últimos 10 días").font(.subheadline.bold())
+                Chart(health.heartRateZones) { item in
+                    BarMark(x: .value("Porcentaje", item.percentage), y: .value("Zona", "Z\(item.zone)"))
+                        .foregroundStyle(zoneColor(item.zone).gradient)
+                        .annotation(position: .trailing) { Text("\(Int(item.percentage.rounded()))%").font(.caption.bold()).monospacedDigit() }
+                }
+                .chartXScale(domain: 0...100)
+                .chartXAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { value in AxisGridLine().foregroundStyle(Color.primary.opacity(0.10)); AxisValueLabel { if let number = value.as(Int.self) { Text("\(number)%") } } } }
+                .frame(height: 175)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Distribución por zonas de frecuencia cardiaca")
+                .accessibilityValue(health.heartRateZones.map { "Zona \($0.zone): \(Int($0.percentage.rounded())) por ciento" }.joined(separator: ". "))
+                Text(goals.profile.maximumHeartRate.map {
+                    "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Calibradas con tu FC máxima de \($0) ppm."
+                } ?? "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Provisionales; configura tu FC máxima en Plan del gemelo para calibrarlas.")
+                    .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
             }
         }.cardStyle()
     }
@@ -1051,32 +1059,6 @@ struct ContentView: View {
                 }.frame(height: 5).clipShape(Capsule())
             }
         }.frame(height: 21)
-    }
-
-    private static let heartRateZoneColors: [Color] = [.mint, .blue, .yellow, .orange, .red]
-
-    private func heartRateZoneBreakdown(_ zones: [HeartRateZone]) -> some View {
-        let byZone = Dictionary(uniqueKeysWithValues: zones.map { ($0.zone, $0.percentage) })
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Zonas de frecuencia cardíaca").font(.subheadline.bold())
-            GeometryReader { proxy in
-                HStack(spacing: 2) {
-                    ForEach(1...5, id: \.self) { zone in
-                        Rectangle().fill(Self.heartRateZoneColors[zone - 1])
-                            .frame(width: proxy.size.width * (byZone[zone] ?? 0) / 100)
-                    }
-                }.clipShape(Capsule())
-            }.frame(height: 13)
-            HStack(spacing: 10) {
-                ForEach(1...5, id: \.self) { zone in
-                    VStack(spacing: 2) {
-                        Circle().fill(Self.heartRateZoneColors[zone - 1]).frame(width: 7, height: 7)
-                        Text("Z\(zone)").font(.caption2).foregroundStyle(.secondary)
-                        Text("\(Int((byZone[zone] ?? 0).rounded()))%").font(.caption2.bold()).monospacedDigit()
-                    }.frame(maxWidth: .infinity)
-                }
-            }
-        }
     }
 
     private func activityCalendar(_ summary: PerformanceSummary) -> some View {
@@ -1213,99 +1195,19 @@ struct ContentView: View {
                                          travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
     }
 
+    // El simulador de decisión de entrenamiento vive DENTRO de "Próximos 7 días":
+    // eliges una opción en su propio selector y la semana se recalcula al momento,
+    // sin una tarjeta aparte ni un toggle "Simulación". nil = tu plan real.
     private var weekAheadCard: some View {
         let week = weekAhead(checkIn: checkIns.entry())
-        let simulation = simulateDecision(simulatedDecision, checkIn: checkIns.entry())
-        let simulatedWeek = weekAhead(checkIn: checkIns.entry(), override: simulation.weekAheadOverride)
-        return WeekAheadStripView(realDays: week, simulatedDays: simulatedWeek, simulatedDecisionLabel: simulatedDecision.rawValue)
-    }
-
-    private enum SimulatorMode: String, CaseIterable { case training = "Entrenamiento", lifestyle = "Estilo de vida" }
-    @State private var simulatorMode: SimulatorMode = .training
-
-    // Un solo card "Simular mañana" con segmentado: entrenamiento (decisión de
-    // sesión) o estilo de vida (alcohol, cafeína, horario). Antes eran dos
-    // tarjetas contiguas con la misma salida ("Mañana %") y el mismo layout.
-    private var combinedSimulatorCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("SIMULAR MAÑANA").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
-            Picker("Modo de simulación", selection: $simulatorMode) {
-                ForEach(SimulatorMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented)
-            if simulatorMode == .training { decisionSimulatorCard } else { WhatIfSimulatorCardView() }
-        }.cardStyle()
-    }
-
-    private var decisionSimulatorCard: some View {
-        let simulation = simulateDecision(simulatedDecision, checkIn: checkIns.entry())
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                EterSectionHeader("¿Qué pasa si hoy…?", eyebrow: "Simular decisión")
-                Spacer()
-                DataTrustBadge(trust: DataTrust(nature: .inferred, source: "Gemelo personal · carga + recuperación", measuredAt: health.lastUpdated, samples: health.recentWorkouts.count + imports.workoutCount, level: simulation.confidence, explanation: "Compara la carga típica de cada opción con tu carga habitual y disponibilidad actual para proyectar mañana.", limitations: "Es una simulación, no una predicción fisiológica exacta. No conoce aún la duración, intensidad real ni respuesta individual de una sesión futura."))
-            }
-            Picker("Decisión", selection: $simulatedDecision) {
-                ForEach(SimulatedDecision.allCases) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.menu).labelsHidden()
-            HStack(spacing: 9) {
-                simulatorMetric("Carga añadida", "+\(Int(simulation.addedLoad.rounded()))")
-                simulatorMetric("Carga 7 días", "\(Int(simulation.projectedAcuteLoad.rounded()))")
-                simulatorMetric("Mañana", "\(simulation.tomorrowReadiness)%")
-            }
-            Text(simulation.headline).font(.headline).foregroundStyle(scoreColor(simulation.tomorrowReadiness))
-            Text(simulation.explanation).font(.caption).foregroundStyle(.secondary).lineSpacing(3)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("CÓMO VAS A RENDIR HOY").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
-                Text(simulation.performanceExpectation).font(.subheadline).lineSpacing(3)
-            }
-            .padding(11)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(EterTheme.accent.opacity(0.16))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            Chart(simulation.trajectory) { day in
-                AreaMark(x: .value("Día", day.day), y: .value("Disponibilidad", day.readiness))
-                    .foregroundStyle(LinearGradient(colors: [EterTheme.positive.opacity(0.24), .clear], startPoint: .top, endPoint: .bottom))
-                LineMark(x: .value("Día", day.day), y: .value("Disponibilidad", day.readiness))
-                    .foregroundStyle(EterTheme.positive).lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                PointMark(x: .value("Día", day.day), y: .value("Disponibilidad", day.readiness))
-                    .foregroundStyle(EterTheme.positive)
-            }
-            .chartYScale(domain: 0...100)
-            .chartXAxis { AxisMarks(values: simulation.trajectory.map(\.day)) { value in AxisValueLabel { if let day = value.as(Int.self) { Text(day == 1 ? "Mañana" : "+\(day)d") } } } }
-            .frame(height: 125)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Proyección de disponibilidad durante cuatro días")
-            .accessibilityValue(simulation.trajectory.map { "Día \($0.day): \($0.readiness) por ciento, \($0.guidance)" }.joined(separator: ". "))
-            ForEach(simulation.trajectory) { day in
-                HStack {
-                    Text(day.day == 1 ? "Mañana" : "+\(day.day) días").font(.caption.bold())
-                    Spacer()
-                    Text(day.guidance).font(.caption).foregroundStyle(.secondary)
-                    Text("\(day.readiness)%").font(.caption.bold()).monospacedDigit()
-                }
-            }
-            Text("Mañana refleja la decisión de hoy. A partir de ahí, la proyección asume que sigues el plan que éter recomendaría cada día — no reposo indefinido — y mantiene tu disponibilidad de hoy, ya que no podemos predecir tu sueño o HRV futuros. Se recalcula cuando entrenas o registras nuevas señales.")
-                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            Label("Esta misma decisión puede sustituir el entrenamiento de hoy en \"Próximos 7 días\" abajo — activa \"Simulación\" en esa tarjeta.", systemImage: "arrow.down")
-                .font(.caption2.bold()).foregroundStyle(EterTheme.primary)
-            Divider()
-            ForEach(simulation.tradeoffs, id: \.self) { item in
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "arrow.right.circle.fill").font(.caption).foregroundStyle(.teal)
-                    Text(item).font(.caption)
-                }
-            }
-            Text("Relación aguda/habitual proyectada: \(simulation.projectedRatio, specifier: "%.2f") · confianza \(simulation.confidence.rawValue.lowercased()).")
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-        // Sin .cardStyle(): el contenedor combinedSimulatorCard aporta el marco.
-    }
-
-    private func simulatorMetric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.headline).monospacedDigit()
-        }.frame(maxWidth: .infinity, alignment: .leading)
+        let simulation = simulatedDecision.map { simulateDecision($0, checkIn: checkIns.entry()) }
+        let simulatedWeek = simulation.map { weekAhead(checkIn: checkIns.entry(), override: $0.weekAheadOverride) }
+        let summary: String? = {
+            guard let decision = simulatedDecision, let simulation else { return nil }
+            return "Si hoy haces «\(decision.rawValue.lowercased())»: mañana ≈\(simulation.tomorrowReadiness)% de disponibilidad."
+        }()
+        return WeekAheadStripView(realDays: week, simulatedDays: simulatedWeek,
+                                  decision: $simulatedDecision, decisionSummary: summary)
     }
 
     private var dailyCheckInCard: some View {
@@ -1513,9 +1415,6 @@ struct ContentView: View {
     }
 
 
-    private func scoreColor(_ score: Int) -> Color { score >= 70 ? EterTheme.positive : score >= 45 ? EterTheme.negative : EterTheme.danger }
-
-
     private var recentTraining: some View {
         let sessions = recentSessions
         return VStack(alignment: .leading, spacing: 12) {
@@ -1650,49 +1549,15 @@ struct ContentView: View {
         }.frame(maxWidth: .infinity, alignment: .leading).cardStyle()
     }
 
-    // "Carga e intensidad": agrupa la carga de entrenamiento y el foco de
-    // intensidad (performanceDashboard) con la distribución por zonas de FC
-    // (heartZoneChart) bajo una sola sección, porque describen lo mismo — cómo
-    // de dura y cómo de repartida está tu carga — y antes iban como cards
-    // sueltas y salteadas.
+    // "Carga e intensidad" agrupa la carga de entrenamiento y el foco de
+    // intensidad. La distribución por zonas de FC ya vive dentro de "Intensidad y
+    // zonas de FC" (la misma pregunta: cómo de dura y repartida está tu carga),
+    // en vez de repetirse como una tarjeta suelta aparte.
     private var loadIntensitySection: some View {
         VStack(alignment: .leading, spacing: 14) {
             EterSectionHeader("Carga e intensidad", eyebrow: "Cómo entrenas")
             performanceDashboard
-            heartZoneChart
         }
-    }
-
-    private var heartZoneChart: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Zonas de frecuencia cardíaca").font(.headline)
-                    Text("Distribución estimada de tus entrenamientos · últimos 10 días").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            if health.heartRateZones.isEmpty {
-                Text("No hay muestras de frecuencia cardíaca asociadas a entrenamientos en este periodo.")
-                    .font(.caption).foregroundStyle(.secondary).frame(height: 70)
-            } else {
-                Chart(health.heartRateZones) { item in
-                    BarMark(x: .value("Porcentaje", item.percentage), y: .value("Zona", "Z\(item.zone)"))
-                        .foregroundStyle(zoneColor(item.zone).gradient)
-                        .annotation(position: .trailing) { Text("\(Int(item.percentage.rounded()))%").font(.caption.bold()).monospacedDigit() }
-                }
-                .chartXScale(domain: 0...100)
-                .chartXAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { value in AxisGridLine().foregroundStyle(Color.primary.opacity(0.10)); AxisValueLabel { if let number = value.as(Int.self) { Text("\(number)%") } } } }
-                .frame(height: 190)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Distribución por zonas de frecuencia cardiaca")
-                .accessibilityValue(health.heartRateZones.map { "Zona \($0.zone): \(Int($0.percentage.rounded())) por ciento" }.joined(separator: ". "))
-                Text(goals.profile.maximumHeartRate.map {
-                    "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Calibradas con tu FC máxima configurada de \($0) ppm."
-                } ?? "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Zonas provisionales estimadas desde tu pico reciente; configura una FC máxima medida en Plan del gemelo para calibrarlas.")
-                    .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            }
-        }.cardStyle()
     }
 
     private func zoneColor(_ zone: Int) -> Color {

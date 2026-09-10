@@ -10,6 +10,12 @@ struct PhysiologicalHealthView: View {
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
 
+    private enum TrendMetric: String, CaseIterable, Identifiable {
+        case vo2 = "VO₂ máx.", hrv = "HRV", rhr = "Pulso reposo"
+        var id: String { rawValue }
+    }
+    @State private var selectedTrend: TrendMetric = .vo2
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             longevityIndexCard
@@ -714,21 +720,31 @@ struct PhysiologicalHealthView: View {
     }
 
 
+    // Una sola ventana con tres botones (VO₂ máx. · HRV · Pulso reposo): antes
+    // eran tres tarjetas apiladas. El selector muestra una variable cada vez.
     private var trendCharts: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             EterSectionHeader("Evolución fisiológica")
-            if health.vo2MaxHistory.isEmpty {
-                VStack(alignment: .leading, spacing: 7) {
-                    Label("VO₂ máx. todavía sin registros", systemImage: "lungs.fill").font(.headline)
-                    Text("El Apple Watch lo estima durante caminatas, carreras o senderismo al aire libre; el entrenamiento de fuerza no genera esta medida.")
-                        .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
-                }.cardStyle()
-            } else {
-                trendCard("VO₂ máx.", unit: "ml/kg/min", points: health.vo2MaxHistory, color: EterTheme.positive, favorableHigh: true)
+            Picker("Señal fisiológica", selection: $selectedTrend) {
+                ForEach(TrendMetric.allCases) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+            switch selectedTrend {
+            case .vo2:
+                if health.vo2MaxHistory.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("VO₂ máx. todavía sin registros", systemImage: "lungs.fill").font(.headline)
+                        Text("El Apple Watch lo estima durante caminatas, carreras o senderismo al aire libre; el entrenamiento de fuerza no genera esta medida.")
+                            .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+                    }
+                } else {
+                    trendCard("VO₂ máx.", unit: "ml/kg/min", points: health.vo2MaxHistory, color: EterTheme.positive, favorableHigh: true)
+                }
+            case .hrv:
+                trendCard("Variabilidad cardíaca", unit: "ms", points: health.hrvHistory, color: Color(red: 0.42, green: 0.33, blue: 0.72), favorableHigh: true)
+            case .rhr:
+                trendCard("Pulso en reposo", unit: "ppm", points: health.restingHeartRateHistory, color: Color(red: 0.78, green: 0.30, blue: 0.25), favorableHigh: false)
             }
-            trendCard("Variabilidad cardíaca", unit: "ms", points: health.hrvHistory, color: Color(red: 0.42, green: 0.33, blue: 0.72), favorableHigh: true)
-            trendCard("Pulso en reposo", unit: "ppm", points: health.restingHeartRateHistory, color: Color(red: 0.78, green: 0.30, blue: 0.25), favorableHigh: false)
-        }
+        }.cardStyle()
     }
 
     private func trendCard(_ title: String, unit: String, points: [TrendPoint], color: Color, favorableHigh: Bool) -> some View {
@@ -778,7 +794,9 @@ struct PhysiologicalHealthView: View {
                     }
                 }
             }
-        }.cardStyle()
+        }
+        // Sin .cardStyle(): se renderiza dentro de "Evolución fisiológica",
+        // que aporta el marco único de la ventana con selector.
     }
 
 

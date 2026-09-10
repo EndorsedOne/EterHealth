@@ -188,17 +188,12 @@ struct StrengthTrainingView: View {
         VStack(alignment: .leading, spacing: 18) {
             EterPageHeader(eyebrow: "Fuerza", title: "Entrena y progresa")
 
-            recommendedStrengthSection(strengthForecasts, assessment: assessment, plan: plan)
+            // Lo opcional para hoy va primero y visible: es lo que puedes hacer
+            // ahora mismo si te apetece y te encuentras bien. Debajo, tu próxima
+            // sesión calendarizada (distinta: la que el plan te tiene reservada).
+            OptionalTodaySection(assessment: assessment)
 
-            // "Opcional para hoy" era una segunda recomendación de "entrena esto"
-            // como tarjeta co-igual justo bajo la principal — se confundían (lo
-            // reconocía el propio comentario original). Ahora es un desplegable
-            // secundario: la sesión discrecional si hoy apetece, distinta de la
-            // próxima sesión calendarizada.
-            DisclosureGroup("Opcional para hoy") {
-                OptionalTodaySection(assessment: assessment).padding(.top, 8)
-            }
-            .tint(EterTheme.accent)
+            recommendedStrengthSection(strengthForecasts, assessment: assessment, plan: plan)
 
             strengthProgressSection
 

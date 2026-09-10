@@ -46,8 +46,8 @@ struct TrainingScenarioCardView: View {
         let scenarios = TrainingScenarioEngine.simulate(health: health, imports: imports, currentPace: currentPace)
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Tres futuros, 8 semanas").font(.headline)
-                Text("La misma carga de hoy, con tres ritmos de progresión distintos").font(.caption).foregroundStyle(.secondary)
+                Text("Ritmo de progresión").font(.headline)
+                Text("Tres futuros a 8 semanas con la misma carga de hoy — elige el que usa tu plan").font(.caption).foregroundStyle(.secondary)
             }
             // The actual "elegir un futuro" control — previously this card
             // was pure lectura, with no way to act on what it showed.
@@ -69,13 +69,34 @@ struct TrainingScenarioCardView: View {
                 Text("Necesitamos al menos 8 días de carga real registrada para proyectar un bloque completo.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 14) {
+                // Comparación compacta de los tres ritmos de un vistazo (crecimiento
+                // semanal + semanas en riesgo); debajo, el detalle solo del ritmo
+                // elegido — en vez de tres bloques largos con una gráfica cada uno.
+                HStack(spacing: 8) {
                     ForEach(scenarios) { scenario in
-                        scenarioRow(scenario, isCurrent: scenario.isCurrentPace)
-                        if scenario.id != scenarios.last?.id { Divider() }
+                        VStack(spacing: 4) {
+                            Text(scenario.name).font(.caption2.bold())
+                                .foregroundStyle(scenario.isCurrentPace ? EterTheme.primary : .secondary)
+                            Text("+\(Int((scenario.weeklyGrowthRate * 100).rounded()))%/sem")
+                                .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                            Text(scenario.weeksAtRisk == 0 ? "sin riesgo" : "\(scenario.weeksAtRisk) sem. riesgo")
+                                .font(.caption2.bold()).foregroundStyle(riskColor(scenario))
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9).padding(.horizontal, 6)
+                        .background(scenario.isCurrentPace ? EterTheme.primary.opacity(0.10) : EterTheme.raisedSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: EterTheme.controlRadius)
+                                .stroke(scenario.isCurrentPace ? EterTheme.primary.opacity(0.5) : Color.clear, lineWidth: 1)
+                        )
                     }
                 }
-                Text("La banda de ritmo es una relación genérica de la literatura (Banister 1975 · Busso 2003), no ajustada a tus propios datos — a diferencia de tus previsiones de carrera, que sí lo son. El riesgo (ratio de carga aguda/habitual) sí es tu propio historial real, proyectado hacia delante bajo cada ritmo. Tu ritmo elegido arriba es el que realmente usa tu plan de hoy y de la semana: decide cuándo tocar descansar (ratio de carga) y también cuánto puede crecer por semana tu tirada larga o tu salida más larga de nado/bici — el mismo \(Int((currentPace.weeklyGrowthRate * 100).rounded()))%/semana que ves arriba en \"\(currentPace.rawValue)\", no una cifra aparte.")
+                if let current = scenarios.first(where: { $0.isCurrentPace }) {
+                    scenarioRow(current, isCurrent: false)
+                }
+                Text("La banda de ritmo es una referencia genérica de la literatura (Banister 1975 · Busso 2003); el riesgo (ratio de carga aguda/habitual) sí es tu historial real proyectado. El ritmo elegido es el que usa tu plan: decide cuándo tocar descansar y cuánto puede crecer por semana tu tirada larga.")
                     .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
             }
         }.cardStyle()

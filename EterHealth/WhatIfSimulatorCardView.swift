@@ -1,10 +1,10 @@
 import SwiftUI
 
-// The combinable "¿qué pasa si...?" — see WhatIfSimulatorEngine's own
-// header for why this exists alongside (not instead of) the older
-// single-choice decisionSimulatorCard: a real evening is rarely just one
-// thing, and alcohol here is real dose (NIAAA standard drinks), not a
-// bare drink count.
+// The combinable "¿qué pasa si esta noche...?" — el simulador de estilo de
+// vida (alcohol, cafeína, horario), en su propia tarjeta y aparte del simulador
+// de decisión de entrenamiento (ahora integrado dentro de "Próximos 7 días").
+// Una noche real rara vez es una sola cosa, y el alcohol aquí es dosis real
+// (bebidas estándar NIAAA), no un simple recuento de copas.
 struct WhatIfSimulatorCardView: View {
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
@@ -30,9 +30,7 @@ struct WhatIfSimulatorCardView: View {
                 Text("Marca al menos una cosa arriba para ver el efecto proyectado.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-        }
-        // Sin .cardStyle(): se renderiza dentro de combinedSimulatorCard (Hoy),
-        // que aporta el marco. Único punto de uso.
+        }.cardStyle()
     }
 
     // MARK: - Alcohol

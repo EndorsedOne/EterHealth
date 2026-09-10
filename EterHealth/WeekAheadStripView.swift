@@ -56,12 +56,12 @@ private extension PlannedSessionKind {
 struct WeekAheadStripView: View {
     let realDays: [TrainingPlanEngine.DayForecast]
     var simulatedDays: [TrainingPlanEngine.DayForecast]? = nil
-    var simulatedDecisionLabel: String? = nil
-    @State private var showSimulated = false
+    @Binding var decision: SimulatedDecision?
+    var decisionSummary: String? = nil
     @State private var selectedDate: Date?
 
     private var days: [TrainingPlanEngine.DayForecast] {
-        (showSimulated ? simulatedDays : nil) ?? realDays
+        (decision != nil ? simulatedDays : nil) ?? realDays
     }
 
     private var selected: TrainingPlanEngine.DayForecast? {
@@ -74,20 +74,22 @@ struct WeekAheadStripView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             EterSectionHeader("Tu semana de entrenamiento", eyebrow: "Próximos 7 días")
-            if let simulatedDays, simulatedDays.count == realDays.count {
-                Picker("Vista", selection: $showSimulated) {
-                    // "Plan real" read as a settled forecast rather than
-                    // the live, recalculated-as-you-train projection the
-                    // caption below already describes — "condicional"
-                    // names what it actually is without a wording change
-                    // to the (already honest) explanatory text itself.
-                    Text("Plan condicional").tag(false)
-                    Text("Simulación").tag(true)
-                }.pickerStyle(.segmented)
-                if showSimulated, let simulatedDecisionLabel {
-                    Text("Mostrando: si hoy haces \"\(simulatedDecisionLabel.lowercased())\" en vez de tu plan real.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
+            // Simular decisión de entrenamiento, integrado aquí: eliges una opción
+            // y la semana se recalcula al momento — sin un toggle "Simulación" ni
+            // una tarjeta aparte. Solo decisiones de entrenamiento; el estilo de
+            // vida (alcohol, cafeína, horario) es otra pregunta, en su propia card.
+            HStack {
+                Text("¿Y si hoy…?").font(.subheadline.bold())
+                Spacer()
+                Picker("¿Y si hoy…?", selection: $decision) {
+                    Text("Plan real").tag(SimulatedDecision?.none)
+                    ForEach(SimulatedDecision.allCases.filter { !$0.isLifestyle }) { option in
+                        Text(option.rawValue).tag(SimulatedDecision?.some(option))
+                    }
+                }.labelsHidden().pickerStyle(.menu).tint(EterTheme.primary)
+            }
+            if let decisionSummary {
+                Text(decisionSummary).font(.caption2.bold()).foregroundStyle(EterTheme.primary)
             }
             HStack(spacing: 7) {
                 ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
@@ -171,10 +173,10 @@ struct WeekAheadStripView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.15), value: selectedDate)
-                .animation(.easeInOut(duration: 0.15), value: showSimulated)
+                .animation(.easeInOut(duration: 0.15), value: decision)
             }
-            Text(showSimulated
-                ? "Esta vista es hipotética: hoy sustituye tu plan real por la decisión simulada y el resto de la semana se recalcula a partir de ella."
+            Text(decision != nil
+                ? "Vista hipotética: hoy sustituye tu plan real por la decisión elegida y el resto de la semana se recalcula a partir de ella."
                 : "Hoy es tu recomendación real. A partir de mañana, la proyección asume que sigues el plan recomendado cada día —ni reposo indefinido ni el mismo entrenamiento repetido— y mantiene tu disponibilidad de hoy, porque no podemos predecir tu sueño o tu HRV futuros. Se recalcula según entrenas y registras nuevas señales.")
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }.cardStyle()
