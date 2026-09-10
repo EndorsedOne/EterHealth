@@ -46,13 +46,6 @@ private enum ContentSheet: Identifiable {
 // is unified into one dialog that shows whichever is set.
 private enum ConfirmationKind { case restoreBackup, deleteWorkout, deleteImportedWorkout }
 
-private enum PerformanceSignal: String, CaseIterable, Identifiable {
-    case hrv = "HRV"
-    case restingHeartRate = "Reposo"
-    case heartRateRecovery = "Recuperación"
-    var id: String { rawValue }
-}
-
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var health: HealthStore
@@ -96,7 +89,6 @@ struct ContentView: View {
     @State private var todayStrengthRoutine: StrengthRoutine?
     @State private var automaticBackupRevision = 0
     @State private var dashboardRefreshTask: Task<Void, Never>?
-    @State private var selectedPerformanceSignal: PerformanceSignal = .hrv
     @StateObject private var dashboard = DashboardViewModel()
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
@@ -891,35 +883,6 @@ struct ContentView: View {
         }
     }
 
-    private var physiologicalPerformanceCard: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Señales fisiológicas").font(.headline)
-                    Text("Selecciona una señal; solo se dibuja una gráfica cada vez.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            Picker("Señal fisiológica", selection: $selectedPerformanceSignal) {
-                ForEach(PerformanceSignal.allCases) { signal in Text(signal.rawValue).tag(signal) }
-            }.pickerStyle(.segmented)
-
-            Group {
-                switch selectedPerformanceSignal {
-                case .hrv:
-                    baselineCard("HRV personal", unit: "ms", points: health.hrvHistory,
-                                 favorableHigh: true, color: .purple, appliesCardStyle: false)
-                case .restingHeartRate:
-                    baselineCard("Pulso en reposo personal", unit: "ppm", points: health.restingHeartRateHistory,
-                                 favorableHigh: false, color: .red, appliesCardStyle: false)
-                case .heartRateRecovery:
-                    heartRateRecoveryCardContent
-                }
-            }
-        }.cardStyle()
-    }
-
     private var trainingBalanceCard: some View {
         let balance = dashboard.balance ?? PerformanceEngine.balance(health: health, imports: imports, context: twinContext)
         return VStack(alignment: .leading, spacing: 15) {
@@ -1129,63 +1092,6 @@ struct ContentView: View {
         }.cardStyle()
     }
 
-    private func baselineCard(_ title: String, unit: String, points: [TrendPoint], favorableHigh: Bool,
-                              color: Color, appliesCardStyle: Bool = true) -> some View {
-        let recent = Array(points.suffix(42))
-        let baselineValues = Array(recent.dropLast().suffix(28)).map(\.value)
-        let mean = baselineValues.isEmpty ? nil : baselineValues.reduce(0, +) / Double(baselineValues.count)
-        let deviation = mean.map { average in sqrt(baselineValues.reduce(0) { $0 + pow($1 - average, 2) } / Double(max(1, baselineValues.count))) }
-        let content = VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading) { Text(title).font(.headline); Text("Tu banda habitual de 28 días").font(.caption).foregroundStyle(.secondary) }
-                Spacer()
-                if let last = recent.last { Text("\(last.value, specifier: "%.1f") \(unit)").font(.subheadline.bold()).foregroundStyle(color) }
-            }
-            if recent.count < 7 || mean == nil || deviation == nil {
-                Text("Aún no hay suficientes mediciones para una línea base personal.").font(.caption).foregroundStyle(.secondary).frame(height: 75)
-            } else if let mean, let deviation {
-                Chart {
-                    RectangleMark(xStart: nil, xEnd: nil, yStart: .value("Inferior", mean - deviation), yEnd: .value("Superior", mean + deviation))
-                        .foregroundStyle(color.opacity(0.12))
-                    ForEach(recent) { point in
-                        LineMark(x: .value("Fecha", point.date), y: .value(title, point.value)).foregroundStyle(color).lineStyle(StrokeStyle(lineWidth: 2))
-                    }
-                    RuleMark(y: .value("Base", mean)).foregroundStyle(color.opacity(0.65)).lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                }.chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()) } }.frame(height: 135)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Línea base de \(title)")
-                    .accessibilityValue("Último valor \(recent.last?.value.formatted(.number.precision(.fractionLength(1))) ?? "sin dato") \(unit). Base \(mean.formatted(.number.precision(.fractionLength(1))))")
-                if let last = recent.last {
-                    let delta = last.value - mean
-                    let recentWeek = Array(recent.suffix(7)).map(\.value)
-                    let low = recentWeek.min() ?? last.value
-                    let high = recentWeek.max() ?? last.value
-                    // Half a personal standard deviation is treated as
-                    // "within normal noise" — small wobbles inside that
-                    // band aren't worth coloring as good or bad news.
-                    let favorability = Favorability.of(delta: delta, favorableHigh: favorableHigh, deadZone: deviation * 0.5)
-                    // Apple Health's own widgets pair a headline number with a
-                    // sentence — how it compares, and the range it's actually
-                    // moved in — instead of leaving the number to speak for
-                    // itself. Same shape here: direction vs. personal baseline,
-                    // then the last 7 days' spread — now colored so "better or
-                    // worse" reads at a glance instead of requiring the
-                    // sentence to be read in full every time.
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: favorability == .neutral ? "equal.circle.fill" : delta >= 0 ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                            .foregroundStyle(favorability.color).font(.caption)
-                        Text("\(abs(delta), specifier: "%.1f") \(unit) \((delta >= 0) == favorableHigh ? "por encima" : "por debajo") de tu base habitual de \(mean, specifier: "%.1f") \(unit). En los últimos 7 días ha ido de \(low, specifier: "%.1f") a \(high, specifier: "%.1f") \(unit).")
-                            .font(.caption).foregroundStyle(.secondary).lineSpacing(2)
-                    }
-                }
-            }
-        }
-        return Group {
-            if appliesCardStyle { content.cardStyle() }
-            else { content }
-        }
-    }
-
     private var capacityCard: some View {
         let vo2 = health.vo2MaxHistory.last?.value
         let hrvLong = average(health.hrvHistory.suffix(30).map(\.value))
@@ -1199,31 +1105,6 @@ struct ContentView: View {
                 capacityMetric("RHR 30d", rhrLong, "ppm")
             }
         }.cardStyle()
-    }
-
-    private var heartRateRecoveryCardContent: some View {
-        let points = health.heartRateRecoveryHistory
-        return VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Label("Recuperación cardiaca", systemImage: "heart.circle").font(.headline)
-                Spacer()
-                if let last = points.last { Text("−\(Int(last.value.rounded())) ppm").font(.subheadline.bold()).foregroundStyle(.purple) }
-            }
-            if points.isEmpty {
-                Text("No hay todavía entrenamientos con muestras válidas al finalizar y un minuto después. No se calcula una estimación cuando faltan esos dos puntos.")
-                    .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
-            } else {
-                Chart(points) { point in
-                    LineMark(x: .value("Fecha", point.date), y: .value("Caída", point.value)).foregroundStyle(.purple).lineStyle(StrokeStyle(lineWidth: 2.3))
-                    PointMark(x: .value("Fecha", point.date), y: .value("Caída", point.value)).foregroundStyle(.purple)
-                }.chartXAxis { AxisMarks(values: .automatic(desiredCount: 4)) { _ in AxisValueLabel(format: .dateTime.month(.abbreviated).day()) } }.frame(height: 125)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Evolución de la recuperación cardiaca")
-                    .accessibilityValue(points.map { "\($0.date.formatted(date: .abbreviated, time: .omitted)): caída de \(Int($0.value.rounded())) pulsaciones" }.joined(separator: ". "))
-                Text("Caída del pulso entre el final de la sesión y aproximadamente 60 segundos después. Compara sobre todo sesiones de naturaleza similar.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-        }
     }
 
     private func capacityMetric(_ title: String, _ value: Double?, _ unit: String) -> some View {
@@ -1846,8 +1727,9 @@ struct ContentView: View {
         .accessibilityValue([value + " " + unit, insight].compactMap { $0 }.joined(separator: ". "))
     }
 
-    // Same "value + how it compares to your own recent pattern" shape as
-    // baselineCard, condensed to one short line for the compact Hoy tiles.
+    // "Valor + cómo se compara con tu propia pauta reciente", condensado a una
+    // línea para los tiles compactos de Hoy (mismo lenguaje que la banda personal
+    // de Salud).
     private func todayComparisonInsight(_ points: [TrendPoint], unit: String, decimals: Int = 1) -> String? {
         let recent = Array(points.suffix(8))
         guard recent.count >= 4, let last = recent.last else { return nil }

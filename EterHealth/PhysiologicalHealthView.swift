@@ -733,11 +733,10 @@ struct PhysiologicalHealthView: View {
 
     private func trendCard(_ title: String, unit: String, points: [TrendPoint], color: Color, favorableHigh: Bool) -> some View {
         // Same personal-baseline reference every other rendering of these
-        // metrics uses (personalBaselineCard's gauge, ContentView's
-        // baselineCard) — this chart used to show the raw series with no
-        // reference at all, so "is this good" had no answer here even
-        // though the exact same question is answered elsewhere on this
-        // same page.
+        // metrics uses (personalBaselineCard's gauge) — this chart used to
+        // show the raw series with no reference at all, so "is this good" had
+        // no answer here even though the exact same question is answered
+        // elsewhere on this same page.
         let recentValues = Array(points.suffix(56)).map(\.value)
         let mean = recentValues.isEmpty ? nil : recentValues.reduce(0, +) / Double(recentValues.count)
         return VStack(alignment: .leading, spacing: 12) {
