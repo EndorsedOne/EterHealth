@@ -1237,11 +1237,9 @@ struct ContentView: View {
                     }
                 }
             }
-            Divider()
-            Text("SIGUIENTE SESIÓN · \(plan.nextSession.rawValue.uppercased())").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(EterTheme.positive)
-            // El gist de la próxima sesión en una línea. El detalle completo y la
-            // ejecución viven en la pestaña Entrenamiento.
-            Text(plan.recommendation).font(.subheadline).lineSpacing(3)
+            // "Plan actual" describe DÓNDE estás en el bloque (fase, descarga,
+            // cobertura de la semana). La siguiente sesión no se repite aquí: vive
+            // en "Tu semana de entrenamiento" (abajo) y en la pestaña Entrenamiento.
         }.cardStyle()
     }
 
