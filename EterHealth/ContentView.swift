@@ -117,14 +117,14 @@ struct ContentView: View {
                         goalDistances: dashboard.goalDistances
                     )
                 } else if selectedTab == 2 {
-                    deferredTab(title: "Preparando fuerza", systemImage: "dumbbell.fill")
+                    deferredTab(title: "Preparando entrenamiento", systemImage: "dumbbell.fill")
                         .task {
                             if dashboard.assessment == nil { scheduleDashboardRefresh() }
                             loadPerformanceIfNeeded()
                         }
-                } else { deferredTab(title: "Fuerza", systemImage: "dumbbell.fill") }
+                } else { deferredTab(title: "Entrenamiento", systemImage: "dumbbell.fill") }
             }
-                .tabItem { Label("Fuerza", systemImage: "dumbbell.fill") }.tag(2)
+                .tabItem { Label("Entrenamiento", systemImage: "dumbbell.fill") }.tag(2)
             appPage {
                 if selectedTab == 3 { healthPage }
                 else { deferredTab(title: "Salud", systemImage: "heart.text.square") }
@@ -426,11 +426,10 @@ struct ContentView: View {
                 todayTrendsCard
                 currentPlanCard
                 proposedWorkoutCard
-                // "Próximos 7 días" ya integra el simulador de decisión de
-                // entrenamiento. El de estilo de vida (alcohol, cafeína, horario)
-                // es otra pregunta distinta, así que va en su propia tarjeta debajo.
+                // "Tu semana de entrenamiento" integra en una sola ventana el
+                // strip de 7 días y el simulador combinable (entrenamiento y
+                // estilo de vida), interactivo y sin texto de relleno.
                 weekAheadCard
-                WhatIfSimulatorCardView()
                 LazyVGrid(columns: columns, spacing: 12) {
                     metric("Sueño", value: String(format: "%.1f", health.snapshot.sleepHours), unit: "h", icon: "moon.fill",
                            insight: todayComparisonInsight(health.sleepHistory, unit: "h"))

@@ -186,7 +186,7 @@ struct StrengthTrainingView: View {
         )
         let strengthForecasts = Array(forecasts.filter { $0.kind == .strength }.prefix(3))
         VStack(alignment: .leading, spacing: 18) {
-            EterPageHeader(eyebrow: "Fuerza", title: "Entrena y progresa")
+            EterPageHeader(eyebrow: "Entrenamiento", title: "Entrena y progresa")
 
             // Lo opcional para hoy va primero y visible: es lo que puedes hacer
             // ahora mismo si te apetece y te encuentras bien. Debajo, tu próxima

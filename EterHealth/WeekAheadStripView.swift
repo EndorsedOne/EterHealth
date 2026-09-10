@@ -58,10 +58,22 @@ struct WeekAheadStripView: View {
     var simulatedDays: [TrainingPlanEngine.DayForecast]? = nil
     @Binding var decision: SimulatedDecision?
     var decisionSummary: String? = nil
+
+    @EnvironmentObject private var health: HealthStore
+    @EnvironmentObject private var imports: ImportStore
+    @EnvironmentObject private var checkIns: DailyCheckInStore
+    @EnvironmentObject private var travel: TravelEpisodeStore
+
+    private enum SimMode: String, CaseIterable { case training = "Entrenamiento", lifestyle = "Estilo de vida" }
+    @State private var simMode: SimMode = .training
+    @State private var life = WhatIfScenario()
     @State private var selectedDate: Date?
 
+    // La simulación de entrenamiento reescribe la semana (override del plan); la
+    // de estilo de vida no cambia el plan, solo proyecta la disponibilidad de
+    // mañana — por eso el strip solo refleja la decisión de entrenamiento.
     private var days: [TrainingPlanEngine.DayForecast] {
-        (decision != nil ? simulatedDays : nil) ?? realDays
+        (simMode == .training && decision != nil ? simulatedDays : nil) ?? realDays
     }
 
     private var selected: TrainingPlanEngine.DayForecast? {
@@ -72,25 +84,12 @@ struct WeekAheadStripView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        let lifeProj: WhatIfProjection? = (simMode == .lifestyle && !life.isEmpty)
+            ? WhatIfSimulatorEngine.simulate(life, health: health, imports: imports, checkIn: checkIns.entry(),
+                                             travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
+            : nil
+        return VStack(alignment: .leading, spacing: 13) {
             EterSectionHeader("Tu semana de entrenamiento", eyebrow: "Próximos 7 días")
-            // Simular decisión de entrenamiento, integrado aquí: eliges una opción
-            // y la semana se recalcula al momento — sin un toggle "Simulación" ni
-            // una tarjeta aparte. Solo decisiones de entrenamiento; el estilo de
-            // vida (alcohol, cafeína, horario) es otra pregunta, en su propia card.
-            HStack {
-                Text("¿Y si hoy…?").font(.subheadline.bold())
-                Spacer()
-                Picker("¿Y si hoy…?", selection: $decision) {
-                    Text("Plan real").tag(SimulatedDecision?.none)
-                    ForEach(SimulatedDecision.allCases.filter { !$0.isLifestyle }) { option in
-                        Text(option.rawValue).tag(SimulatedDecision?.some(option))
-                    }
-                }.labelsHidden().pickerStyle(.menu).tint(EterTheme.primary)
-            }
-            if let decisionSummary {
-                Text(decisionSummary).font(.caption2.bold()).foregroundStyle(EterTheme.primary)
-            }
             HStack(spacing: 7) {
                 ForEach(Array(days.enumerated()), id: \.element.id) { index, day in
                     dayChip(day, isToday: index == 0)
@@ -174,12 +173,88 @@ struct WeekAheadStripView: View {
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.15), value: selectedDate)
                 .animation(.easeInOut(duration: 0.15), value: decision)
+                .animation(.easeInOut(duration: 0.15), value: simMode)
             }
-            Text(decision != nil
-                ? "Vista hipotética: hoy sustituye tu plan real por la decisión elegida y el resto de la semana se recalcula a partir de ella."
-                : "Hoy es tu recomendación real. A partir de mañana, la proyección asume que sigues el plan recomendado cada día —ni reposo indefinido ni el mismo entrenamiento repetido— y mantiene tu disponibilidad de hoy, porque no podemos predecir tu sueño o tu HRV futuros. Se recalcula según entrenas y registras nuevas señales.")
-                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+            Divider()
+            simulateSection(lifeProj: lifeProj)
         }.cardStyle()
+    }
+
+    // MARK: - "¿Qué pasa si…?" integrado en la misma ventana
+
+    private func simulateSection(lifeProj: WhatIfProjection?) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("¿QUÉ PASA SI…?").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+            Picker("Modo de simulación", selection: $simMode) {
+                ForEach(SimMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if simMode == .training {
+                        simChip("Plan real", active: decision == nil) { decision = nil }
+                        ForEach(SimulatedDecision.allCases.filter { !$0.isLifestyle }) { option in
+                            simChip(option.rawValue, active: decision == option) {
+                                decision = decision == option ? nil : option
+                            }
+                        }
+                    } else {
+                        simChip("🍷 Una copa", active: !life.drinks.isEmpty) {
+                            life.drinks = life.drinks.isEmpty ? [DrinkSelection(type: .wine, count: 1)] : []
+                        }
+                        simChip("☕ Café tarde", active: life.caffeineHour != nil) {
+                            if life.caffeineHour == nil { life.caffeineHour = 17; life.caffeineMg = 80 }
+                            else { life.caffeineHour = nil; life.caffeineMg = 0 }
+                        }
+                        simChip("🌙 Acostarme tarde", active: life.extraBedtimeMinutes > 0) {
+                            life.extraBedtimeMinutes = life.extraBedtimeMinutes > 0 ? 0 : 60
+                        }
+                        simChip("🍽 Cena copiosa", active: life.lateOrHeavyDinner) {
+                            life.lateOrHeavyDinner.toggle()
+                        }
+                    }
+                }.padding(.vertical, 1)
+            }
+            simulateResult(lifeProj: lifeProj)
+        }
+    }
+
+    @ViewBuilder private func simulateResult(lifeProj: WhatIfProjection?) -> some View {
+        if simMode == .training {
+            if decision != nil, let decisionSummary {
+                Text(decisionSummary).font(.caption.bold()).foregroundStyle(EterTheme.primary)
+            } else {
+                Text("Toca una opción y la semana de arriba se recalcula al momento.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        } else if life.isEmpty {
+            Text("Marca lo que harías esta noche para ver el efecto en mañana.")
+                .font(.caption2).foregroundStyle(.secondary)
+        } else if let proj = lifeProj {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Mañana ≈\(proj.projectedReadiness)%")
+                    .font(.headline).foregroundStyle(readinessColor(proj.projectedReadiness))
+                Text("\(proj.totalReadinessImpact >= 0 ? "+" : "")\(proj.totalReadinessImpact) pt")
+                    .font(.caption.bold()).monospacedDigit()
+                    .foregroundStyle(proj.totalReadinessImpact >= 0 ? EterTheme.positive : EterTheme.negative)
+                Spacer()
+            }
+        }
+    }
+
+    private func simChip(_ title: String, active: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.caption.bold())
+                .padding(.horizontal, 13).padding(.vertical, 8)
+                .background(active ? EterTheme.primary : EterTheme.raisedSurface)
+                .foregroundStyle(active ? Color.white : Color.primary)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .eterTouchTarget()
+    }
+
+    private func readinessColor(_ score: Int) -> Color {
+        score >= 70 ? EterTheme.positive : score >= 45 ? EterTheme.warning : EterTheme.danger
     }
 
     // .recovery covers two genuinely different situations: real rest, and
