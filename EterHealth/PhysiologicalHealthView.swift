@@ -17,7 +17,9 @@ struct PhysiologicalHealthView: View {
             personalBaselineCard
             cardiovascularContextCard
             extendedHealthSignalsCard
-            TemperatureCheckInCardView(points: health.wristTemperatureHistory)
+            // La temperatura de muñeca ya es una fila de "Señales ampliadas" (con
+            // su delta vs. línea base). Se retira la tarjeta dedicada para no tener
+            // dos casas del mismo dato.
             sleepCard
             trendCharts
         }
@@ -200,7 +202,8 @@ struct PhysiologicalHealthView: View {
             HStack(spacing: 10) {
                 cardiovascularValue("Tensión", systolic.flatMap { upper in diastolic.map { "\(Int(upper.rounded()))/\(Int($0.rounded()))" } } ?? "—", "mmHg")
                 cardiovascularValue("LDL", ldl.map { $0.value.formatted(.number.precision(.fractionLength(0...1))) } ?? "—", ldl?.unit ?? "")
-                cardiovascularValue("VO₂ máx.", health.vo2MaxHistory.last.map { $0.value.formatted(.number.precision(.fractionLength(1))) } ?? "—", "ml/kg/min")
+                // VO₂ máx. vive en "Evolución fisiológica" (abajo), con su propia
+                // tendencia y referencia. Se retira de aquí para no duplicarlo.
             }
             if systolic == nil || diastolic == nil {
                 Text("No hay tensión arterial legible. Puedes registrarla en Apple Salud y Éter incorporará su evolución.")
@@ -225,9 +228,6 @@ struct PhysiologicalHealthView: View {
             tips.append(tip)
         }
         if let ldl, let tip = WellnessRecommendationEngine.lab(name: ldl.name, status: ldl.status) {
-            tips.append(tip)
-        }
-        if let vo2 = health.vo2MaxHistory.last?.value, let tip = WellnessRecommendationEngine.vo2Max(vo2) {
             tips.append(tip)
         }
         return tips
@@ -546,7 +546,8 @@ struct PhysiologicalHealthView: View {
             }
             personalBaselineRow(profile.hrv, unit: "ms")
             personalBaselineRow(profile.restingHeartRate, unit: "ppm")
-            personalBaselineRow(profile.sleep, unit: "h")
+            // El sueño de anoche y su media viven en "Sueño de anoche" (con fases y
+            // arquitectura). Se retira la fila de sueño de la base para no duplicarlo.
             Divider()
             if profile.muscleRecoveryHours.isEmpty {
                 Text("Recuperación muscular todavía provisional: hacen falta más repeticiones del mismo ejercicio con diferentes intervalos de descanso.")

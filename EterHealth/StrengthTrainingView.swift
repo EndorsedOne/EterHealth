@@ -190,9 +190,15 @@ struct StrengthTrainingView: View {
 
             recommendedStrengthSection(strengthForecasts, assessment: assessment, plan: plan)
 
-            // Distinta de la próxima sesión calendarizada: qué es lo óptimo si
-            // hoy te apetece entrenar, según tu recuperación actual.
-            OptionalTodaySection(assessment: assessment)
+            // "Opcional para hoy" era una segunda recomendación de "entrena esto"
+            // como tarjeta co-igual justo bajo la principal — se confundían (lo
+            // reconocía el propio comentario original). Ahora es un desplegable
+            // secundario: la sesión discrecional si hoy apetece, distinta de la
+            // próxima sesión calendarizada.
+            DisclosureGroup("Opcional para hoy") {
+                OptionalTodaySection(assessment: assessment).padding(.top, 8)
+            }
+            .tint(EterTheme.accent)
 
             strengthProgressSection
 

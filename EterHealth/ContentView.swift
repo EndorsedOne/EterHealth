@@ -434,11 +434,10 @@ struct ContentView: View {
                 todayTrendsCard
                 currentPlanCard
                 proposedWorkoutCard
-                // Simular decisión antes de la semana: la lógica es
-                // "¿qué pasaría si...?" primero, "así queda tu semana
-                // resultante" después — no al revés.
-                decisionSimulatorCard
-                WhatIfSimulatorCardView()
+                // Un único simulador "¿qué pasa si…?" con dos modos (entrenamiento
+                // / estilo de vida) en vez de dos tarjetas contiguas que producían
+                // la misma salida ("Mañana %") con el mismo layout de métricas.
+                combinedSimulatorCard
                 weekAheadCard
                 LazyVGrid(columns: columns, spacing: 12) {
                     metric("Sueño", value: String(format: "%.1f", health.snapshot.sleepHours), unit: "h", icon: "moon.fill",
@@ -457,7 +456,8 @@ struct ContentView: View {
                     metric("Pasos", value: health.snapshot.steps.formatted(), unit: "", icon: "figure.walk",
                            insight: stepsInsight)
                 }
-                latestSessionCard
+                // "Última sesión" se retira de Hoy: es un subconjunto de "Últimos
+                // entrenamientos" (Rendimiento), su casa canónica.
                 updateControl
             }
         }
@@ -497,29 +497,6 @@ struct ContentView: View {
         // hay tendencia que enseñar todavía.
         if let result = dashboard.energyTimeline, result.currentHour > 0.5, result.curve.count > 1 {
             TodayTrendsCardView(result: result)
-        }
-    }
-
-    @ViewBuilder private var latestSessionCard: some View {
-        if let workout = health.recentWorkouts.first {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("ÚLTIMA SESIÓN").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
-                HStack(alignment: .top) {
-                    Image(systemName: "applewatch").font(.title3)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(workout.activity).font(.headline)
-                        Text("\(workout.date.formatted(date: .abbreviated, time: .shortened)) · \(Int(workout.durationMinutes.rounded())) min")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 8) {
-                        if let calories = workout.calories { Text("\(Int(calories.rounded())) kcal").font(.caption.bold()) }
-                        Button(role: .destructive) { workoutPendingDeletion = workout } label: {
-                            Label("Eliminar", systemImage: "trash").font(.caption2.bold())
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }.cardStyle()
         }
     }
 
@@ -692,7 +669,8 @@ struct ContentView: View {
             backupCard
             injuryCard
             travelCard
-            updateControl
+            // "Actualizar ahora" vive solo en Hoy (control canónico); aquí era un
+            // duplicado exacto.
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     EterSectionHeader("Perfil híbrido", eyebrow: "Objetivos activos")
@@ -893,11 +871,20 @@ struct ContentView: View {
                 trainingBalanceCard
                 weeklySummary(summary)
                 trainingLoadCard(summary)
-                TrainingScenarioCardView()
                 intensityFocusCard(summary)
-                activityCalendar(summary)
-                physiologicalPerformanceCard
-                capacityCard
+                // Análisis de consulta ocasional plegado: escenario, calendario y
+                // capacidad son referencia, no uso diario. La base fisiológica
+                // (HRV/pulso reposo/HRR) se retira de Rendimiento: su casa
+                // canónica es Salud, donde ya vive con su tendencia.
+                DisclosureGroup("Análisis avanzado") {
+                    VStack(alignment: .leading, spacing: 16) {
+                        TrainingScenarioCardView()
+                        activityCalendar(summary)
+                        capacityCard
+                    }
+                    .padding(.top, 8)
+                }
+                .tint(EterTheme.accent)
             }
         } else {
             ProgressView("Preparando rendimiento")
@@ -1352,6 +1339,22 @@ struct ContentView: View {
         return WeekAheadStripView(realDays: week, simulatedDays: simulatedWeek, simulatedDecisionLabel: simulatedDecision.rawValue)
     }
 
+    private enum SimulatorMode: String, CaseIterable { case training = "Entrenamiento", lifestyle = "Estilo de vida" }
+    @State private var simulatorMode: SimulatorMode = .training
+
+    // Un solo card "Simular mañana" con segmentado: entrenamiento (decisión de
+    // sesión) o estilo de vida (alcohol, cafeína, horario). Antes eran dos
+    // tarjetas contiguas con la misma salida ("Mañana %") y el mismo layout.
+    private var combinedSimulatorCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("SIMULAR MAÑANA").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+            Picker("Modo de simulación", selection: $simulatorMode) {
+                ForEach(SimulatorMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+            if simulatorMode == .training { decisionSimulatorCard } else { WhatIfSimulatorCardView() }
+        }.cardStyle()
+    }
+
     private var decisionSimulatorCard: some View {
         let simulation = simulateDecision(simulatedDecision, checkIn: checkIns.entry())
         return VStack(alignment: .leading, spacing: 14) {
@@ -1402,7 +1405,7 @@ struct ContentView: View {
             }
             Text("Mañana refleja la decisión de hoy. A partir de ahí, la proyección asume que sigues el plan que éter recomendaría cada día — no reposo indefinido — y mantiene tu disponibilidad de hoy, ya que no podemos predecir tu sueño o HRV futuros. Se recalcula cuando entrenas o registras nuevas señales.")
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            Label("Esta misma decisión puede sustituir el entrenamiento de hoy en \"Próximos 7 días\" arriba — activa \"Simulación\" en esa tarjeta.", systemImage: "arrow.up")
+            Label("Esta misma decisión puede sustituir el entrenamiento de hoy en \"Próximos 7 días\" abajo — activa \"Simulación\" en esa tarjeta.", systemImage: "arrow.down")
                 .font(.caption2.bold()).foregroundStyle(EterTheme.primary)
             Divider()
             ForEach(simulation.tradeoffs, id: \.self) { item in
@@ -1413,7 +1416,8 @@ struct ContentView: View {
             }
             Text("Relación aguda/habitual proyectada: \(simulation.projectedRatio, specifier: "%.2f") · confianza \(simulation.confidence.rawValue.lowercased()).")
                 .font(.caption2).foregroundStyle(.secondary)
-        }.cardStyle()
+        }
+        // Sin .cardStyle(): el contenedor combinedSimulatorCard aporta el marco.
     }
 
     private func simulatorMetric(_ title: String, _ value: String) -> some View {
@@ -1511,8 +1515,13 @@ struct ContentView: View {
             }
             Divider()
             Text("SIGUIENTE SESIÓN · \(plan.nextSession.rawValue.uppercased())").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(EterTheme.positive)
-            Text(plan.recommendation).font(.subheadline).lineSpacing(3)
-            Text(plan.rationale).font(.caption2).foregroundStyle(.secondary)
+            // El detalle de la sesión (duración, ejercicios, ejecución) lo posee
+            // "Entrenamiento propuesto", la tarjeta inmediatamente inferior. Antes
+            // repetíamos aquí plan.recommendation + plan.rationale, que renderizaban
+            // el mismo párrafo que su workout.note — y con minutos que no cuadraban
+            // (p. ej. 25–40 aquí vs 25–35 en la propuesta). Una sola fuente ahora.
+            Text("Su duración, ejercicios y ejecución están en «Entrenamiento propuesto», abajo.")
+                .font(.caption2).foregroundStyle(.secondary)
         }.cardStyle()
     }
 

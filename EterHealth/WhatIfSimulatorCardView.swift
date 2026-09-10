@@ -30,7 +30,9 @@ struct WhatIfSimulatorCardView: View {
                 Text("Marca al menos una cosa arriba para ver el efecto proyectado.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-        }.cardStyle()
+        }
+        // Sin .cardStyle(): se renderiza dentro de combinedSimulatorCard (Hoy),
+        // que aporta el marco. Único punto de uso.
     }
 
     // MARK: - Alcohol
