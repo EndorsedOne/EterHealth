@@ -185,14 +185,20 @@ struct StrengthTrainingView: View {
             health: health, imports: imports, checkIn: checkIns.entry(), context: context, days: 14
         )
         let strengthForecasts = Array(forecasts.filter { $0.kind == .strength }.prefix(3))
+        // La próxima sesión entrenable de CUALQUIER disciplina (no solo fuerza):
+        // en un día de carrera, la pestaña muestra el rodaje real con su detalle en
+        // vez de "ahora no toca forzar una sesión".
+        let nextTrainable = forecasts.first { $0.kind != .recovery && $0.kind != .raceDay }
         VStack(alignment: .leading, spacing: 18) {
-            EterPageHeader(eyebrow: "Fuerza", title: "Entrena y progresa")
+            EterPageHeader(eyebrow: "Entrenamiento", title: "Entrena y progresa")
 
-            recommendedStrengthSection(strengthForecasts, assessment: assessment, plan: plan)
-
-            // Distinta de la próxima sesión calendarizada: qué es lo óptimo si
-            // hoy te apetece entrenar, según tu recuperación actual.
+            // Lo opcional para hoy va primero y visible: es lo que puedes hacer
+            // ahora mismo si te apetece y te encuentras bien. Debajo, tu próxima
+            // sesión calendarizada (distinta: la que el plan te tiene reservada).
             OptionalTodaySection(assessment: assessment)
+
+            recommendedStrengthSection(strengthForecasts: strengthForecasts, nextTrainable: nextTrainable,
+                                       assessment: assessment, plan: plan)
 
             strengthProgressSection
 
@@ -227,61 +233,102 @@ struct StrengthTrainingView: View {
     }
 
     @ViewBuilder private func recommendedStrengthSection(
-        _ forecasts: [TrainingPlanEngine.DayForecast], assessment: TwinAssessment, plan: WeeklyPlanStatus
+        strengthForecasts: [TrainingPlanEngine.DayForecast], nextTrainable: TrainingPlanEngine.DayForecast?,
+        assessment: TwinAssessment, plan: WeeklyPlanStatus
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            EterSectionHeader("Tu próxima sesión", eyebrow: "Recomendación de fuerza")
-            Text("Una opción principal y dos variantes válidas para el mismo momento. La secuencia futura se muestra aparte para no confundir dos días de pierna con dos alternativas iguales.")
-                .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+            EterSectionHeader("Tu próxima sesión", eyebrow: "Recomendación")
 
-            if forecasts.isEmpty {
+            if let next = nextTrainable, next.kind == .strength, let primary = strengthForecasts.first {
+                Text("Una opción principal y dos variantes válidas para el mismo momento. La secuencia futura se muestra aparte para no confundir dos días de pierna con dos alternativas iguales.")
+                    .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+                recommendedStrengthCard(primary, rank: 0, assessment: assessment)
+
+                let variants = strengthVariants(for: primary, assessment: assessment, plan: plan)
+                if !variants.isEmpty {
+                    Text("OTRAS FORMAS DE CUBRIRLA").font(.caption2.bold())
+                        .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+                    ForEach(Array(variants.enumerated()), id: \.element.id) { index, routine in
+                        strengthVariantCard(routine, index: index)
+                    }
+                }
+
+                if strengthForecasts.count > 1 {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("SECUENCIA PREVISTA").font(.caption2.bold())
+                            .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(strengthForecasts) { forecast in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(forecast.date.formatted(.dateTime.weekday(.abbreviated).day()))
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                        Text(forecast.strengthPattern?.label ?? "Fuerza")
+                                            .font(.caption.bold())
+                                    }
+                                    .padding(.horizontal, 11).padding(.vertical, 8)
+                                    .background(EterTheme.raisedSurface)
+                                    .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
+                                }
+                            }
+                        }
+                        Text("Es una previsión cronológica: puede repetir patrón si sigue existiendo déficit y hay recuperación suficiente. Se recalcula después de cada sesión.")
+                            .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                    }
+                }
+            } else if let next = nextTrainable {
+                // Sesión de cardio (carrera, bici, natación, brick, híbrido): antes
+                // aquí salía "ahora no toca forzar una sesión". Ahora se muestra la
+                // sesión real con su detalle (duración, zona, prescripción).
+                cardioSessionCard(next)
+                if let nextStrength = strengthForecasts.first {
+                    Text("Próxima fuerza: \(nextStrength.date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)))\(nextStrength.strengthPattern.map { " · \($0.label)" } ?? "").")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("Ahora no toca forzar una sesión", systemImage: "calendar.badge.clock")
-                        .font(.headline)
-                    Text("El plan de los próximos días prioriza otros estímulos o recuperación. Cuando vuelva a encajar fuerza, aparecerá aquí con ejercicios y volumen concretos.")
+                    Label("Toca recuperar", systemImage: "leaf.fill").font(.headline)
+                    Text("El plan prioriza recuperación en los próximos días. Cuando vuelva a tocar entrenar, la sesión aparecerá aquí con su detalle.")
                         .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
                     Button { activeSheet = .dayProposal } label: {
                         Label("Consultar una opción para hoy", systemImage: "sparkles")
                     }.buttonStyle(EterAccentButtonStyle())
                 }.cardStyle()
-            } else {
-                if let primary = forecasts.first {
-                    recommendedStrengthCard(primary, rank: 0, assessment: assessment)
-
-                    let variants = strengthVariants(for: primary, assessment: assessment, plan: plan)
-                    if !variants.isEmpty {
-                        Text("OTRAS FORMAS DE CUBRIRLA").font(.caption2.bold())
-                            .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
-                        ForEach(Array(variants.enumerated()), id: \.element.id) { index, routine in
-                            strengthVariantCard(routine, index: index)
-                        }
-                    }
-
-                    if forecasts.count > 1 {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("SECUENCIA PREVISTA").font(.caption2.bold())
-                                .tracking(EterTheme.eyebrowTracking).foregroundStyle(.secondary)
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(forecasts) { forecast in
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(forecast.date.formatted(.dateTime.weekday(.abbreviated).day()))
-                                                .font(.caption2).foregroundStyle(.secondary)
-                                            Text(forecast.strengthPattern?.label ?? "Fuerza")
-                                                .font(.caption.bold())
-                                        }
-                                        .padding(.horizontal, 11).padding(.vertical, 8)
-                                        .background(EterTheme.raisedSurface)
-                                        .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
-                                    }
-                                }
-                            }
-                            Text("Es una previsión cronológica: puede repetir patrón si sigue existiendo déficit y hay recuperación suficiente. Se recalcula después de cada sesión.")
-                                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-                        }
-                    }
-                }
             }
+        }
+    }
+
+    private func cardioSessionCard(_ forecast: TrainingPlanEngine.DayForecast) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("MEJOR ENCAJE").font(.caption2.bold()).tracking(EterTheme.eyebrowTracking).foregroundStyle(EterTheme.positive)
+                    Text(forecast.kind.rawValue).font(.title3.bold())
+                    Text(forecast.date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if forecast.isDeload {
+                    Text("DESCARGA").font(.caption2.bold()).foregroundStyle(EterTheme.warning)
+                }
+                Image(systemName: cardioIcon(forecast.kind)).font(.title2).foregroundStyle(EterTheme.positive)
+            }
+            HStack(spacing: 14) {
+                if let minutes = forecast.targetMinutes { Label("\(minutes) min", systemImage: "clock") }
+                Label(forecast.intensityLabel, systemImage: "gauge.with.dots.needle.50percent")
+            }.font(.caption2).foregroundStyle(.secondary)
+            Text(forecast.prescription).font(.caption).lineSpacing(2)
+            Text(forecast.rationale).font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+        }.cardStyle()
+    }
+
+    private func cardioIcon(_ kind: PlannedSessionKind) -> String {
+        switch kind {
+        case .easyRun, .qualityRun, .longRun: return "figure.run"
+        case .swim: return "figure.pool.swim"
+        case .bike: return "bicycle"
+        case .brick, .hybrid: return "figure.mixed.cardio"
+        default: return "figure.run"
         }
     }
 

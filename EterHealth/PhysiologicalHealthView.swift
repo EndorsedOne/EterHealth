@@ -10,6 +10,12 @@ struct PhysiologicalHealthView: View {
 
     private let columns = [GridItem(.flexible()), GridItem(.flexible())]
 
+    private enum TrendMetric: String, CaseIterable, Identifiable {
+        case vo2 = "VO₂ máx.", hrv = "HRV", rhr = "Pulso reposo"
+        var id: String { rawValue }
+    }
+    @State private var selectedTrend: TrendMetric = .vo2
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             longevityIndexCard
@@ -17,7 +23,9 @@ struct PhysiologicalHealthView: View {
             personalBaselineCard
             cardiovascularContextCard
             extendedHealthSignalsCard
-            TemperatureCheckInCardView(points: health.wristTemperatureHistory)
+            // La temperatura de muñeca ya es una fila de "Señales ampliadas" (con
+            // su delta vs. línea base). Se retira la tarjeta dedicada para no tener
+            // dos casas del mismo dato.
             sleepCard
             trendCharts
         }
@@ -200,7 +208,8 @@ struct PhysiologicalHealthView: View {
             HStack(spacing: 10) {
                 cardiovascularValue("Tensión", systolic.flatMap { upper in diastolic.map { "\(Int(upper.rounded()))/\(Int($0.rounded()))" } } ?? "—", "mmHg")
                 cardiovascularValue("LDL", ldl.map { $0.value.formatted(.number.precision(.fractionLength(0...1))) } ?? "—", ldl?.unit ?? "")
-                cardiovascularValue("VO₂ máx.", health.vo2MaxHistory.last.map { $0.value.formatted(.number.precision(.fractionLength(1))) } ?? "—", "ml/kg/min")
+                // VO₂ máx. vive en "Evolución fisiológica" (abajo), con su propia
+                // tendencia y referencia. Se retira de aquí para no duplicarlo.
             }
             if systolic == nil || diastolic == nil {
                 Text("No hay tensión arterial legible. Puedes registrarla en Apple Salud y Éter incorporará su evolución.")
@@ -225,9 +234,6 @@ struct PhysiologicalHealthView: View {
             tips.append(tip)
         }
         if let ldl, let tip = WellnessRecommendationEngine.lab(name: ldl.name, status: ldl.status) {
-            tips.append(tip)
-        }
-        if let vo2 = health.vo2MaxHistory.last?.value, let tip = WellnessRecommendationEngine.vo2Max(vo2) {
             tips.append(tip)
         }
         return tips
@@ -546,7 +552,8 @@ struct PhysiologicalHealthView: View {
             }
             personalBaselineRow(profile.hrv, unit: "ms")
             personalBaselineRow(profile.restingHeartRate, unit: "ppm")
-            personalBaselineRow(profile.sleep, unit: "h")
+            // El sueño de anoche y su media viven en "Sueño de anoche" (con fases y
+            // arquitectura). Se retira la fila de sueño de la base para no duplicarlo.
             Divider()
             if profile.muscleRecoveryHours.isEmpty {
                 Text("Recuperación muscular todavía provisional: hacen falta más repeticiones del mismo ejercicio con diferentes intervalos de descanso.")
@@ -713,30 +720,39 @@ struct PhysiologicalHealthView: View {
     }
 
 
+    // Una sola ventana con tres botones (VO₂ máx. · HRV · Pulso reposo): antes
+    // eran tres tarjetas apiladas. El selector muestra una variable cada vez.
     private var trendCharts: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             EterSectionHeader("Evolución fisiológica")
-            if health.vo2MaxHistory.isEmpty {
-                VStack(alignment: .leading, spacing: 7) {
-                    Label("VO₂ máx. todavía sin registros", systemImage: "lungs.fill").font(.headline)
-                    Text("El Apple Watch lo estima durante caminatas, carreras o senderismo al aire libre; el entrenamiento de fuerza no genera esta medida.")
-                        .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
-                }.cardStyle()
-            } else {
-                trendCard("VO₂ máx.", unit: "ml/kg/min", points: health.vo2MaxHistory, color: EterTheme.positive, favorableHigh: true)
+            Picker("Señal fisiológica", selection: $selectedTrend) {
+                ForEach(TrendMetric.allCases) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+            switch selectedTrend {
+            case .vo2:
+                if health.vo2MaxHistory.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("VO₂ máx. todavía sin registros", systemImage: "lungs.fill").font(.headline)
+                        Text("El Apple Watch lo estima durante caminatas, carreras o senderismo al aire libre; el entrenamiento de fuerza no genera esta medida.")
+                            .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+                    }
+                } else {
+                    trendCard("VO₂ máx.", unit: "ml/kg/min", points: health.vo2MaxHistory, color: EterTheme.positive, favorableHigh: true)
+                }
+            case .hrv:
+                trendCard("Variabilidad cardíaca", unit: "ms", points: health.hrvHistory, color: Color(red: 0.42, green: 0.33, blue: 0.72), favorableHigh: true)
+            case .rhr:
+                trendCard("Pulso en reposo", unit: "ppm", points: health.restingHeartRateHistory, color: Color(red: 0.78, green: 0.30, blue: 0.25), favorableHigh: false)
             }
-            trendCard("Variabilidad cardíaca", unit: "ms", points: health.hrvHistory, color: Color(red: 0.42, green: 0.33, blue: 0.72), favorableHigh: true)
-            trendCard("Pulso en reposo", unit: "ppm", points: health.restingHeartRateHistory, color: Color(red: 0.78, green: 0.30, blue: 0.25), favorableHigh: false)
-        }
+        }.cardStyle()
     }
 
     private func trendCard(_ title: String, unit: String, points: [TrendPoint], color: Color, favorableHigh: Bool) -> some View {
         // Same personal-baseline reference every other rendering of these
-        // metrics uses (personalBaselineCard's gauge, ContentView's
-        // baselineCard) — this chart used to show the raw series with no
-        // reference at all, so "is this good" had no answer here even
-        // though the exact same question is answered elsewhere on this
-        // same page.
+        // metrics uses (personalBaselineCard's gauge) — this chart used to
+        // show the raw series with no reference at all, so "is this good" had
+        // no answer here even though the exact same question is answered
+        // elsewhere on this same page.
         let recentValues = Array(points.suffix(56)).map(\.value)
         let mean = recentValues.isEmpty ? nil : recentValues.reduce(0, +) / Double(recentValues.count)
         return VStack(alignment: .leading, spacing: 12) {
@@ -778,7 +794,9 @@ struct PhysiologicalHealthView: View {
                     }
                 }
             }
-        }.cardStyle()
+        }
+        // Sin .cardStyle(): se renderiza dentro de "Evolución fisiológica",
+        // que aporta el marco único de la ventana con selector.
     }
 
 
