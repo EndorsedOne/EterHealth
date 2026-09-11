@@ -170,6 +170,7 @@ struct StrengthTrainingView: View {
     let assessment: TwinAssessment
     let plan: WeeklyPlanStatus
     let goalDistances: [GoalDistance]
+    let performance: PerformanceSummary
 
     private var context: TwinContext {
         TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
@@ -201,6 +202,10 @@ struct StrengthTrainingView: View {
                                        assessment: assessment, plan: plan)
 
             strengthProgressSection
+
+            // Constancia de entrenamiento (movida desde Rendimiento): la carga
+            // diaria de los últimos 28 días encaja mejor en la pestaña de entreno.
+            activityCalendar(performance)
 
             // Objetivos de fuerza (press banca, sentadilla, peso muerto,
             // hipertrofia). Los de carrera/híbridos viven en Rendimiento.
@@ -532,6 +537,7 @@ struct StrengthTrainingView: View {
                     strengthSummaryMetric("Series efectivas", "\(summary.effectiveSets28Days)", "list.number")
                     strengthSummaryMetric("Récords 28d", "\(summary.records28Days)", "trophy.fill")
                 }
+                strengthEvolutionInsight(summary)
             }.cardStyle()
 
             strengthCoverageCard
@@ -551,8 +557,66 @@ struct StrengthTrainingView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // La parte accionable de "Evolución de fuerza": en vez de tres contadores,
+    // dice DÓNDE progresas y QUÉ revisar, con el cambio de 1RM estimado por
+    // ejercicio (state/changePercent del propio motor — nada inventado).
+    @ViewBuilder private func strengthEvolutionInsight(_ summary: StrengthProgressSummary) -> some View {
+        let progressing = summary.exercises.filter { $0.state == "Progresando" }
+        let review = summary.exercises.filter { $0.state == "Revisar tendencia" }
+        let topLifts = Array(summary.exercises.prefix(4))
+        let verdict: String = {
+            if let r = review.first {
+                return "Atención: \(r.name) baja en 1RM estimado — revisa carga, técnica o recuperación antes de subir."
+            }
+            if !progressing.isEmpty {
+                return "\(progressing.count == 1 ? "Progresa" : "Progresan") \(progressing.prefix(3).map(\.name).joined(separator: ", ")). Mantén la progresión donde ya funciona."
+            }
+            if summary.exercises.contains(where: { $0.state == "Estable" }) {
+                return "Fuerza estable: busca un pequeño progreso (peso o una repetición más) en tu ejercicio principal."
+            }
+            return "Construyendo historial: registra series con peso y repeticiones para ver la tendencia de tu 1RM."
+        }()
+        Divider()
+        Text(verdict).font(.caption.bold()).lineSpacing(2)
+        ForEach(topLifts) { lift in
+            HStack {
+                Text(lift.name).font(.caption).lineLimit(1)
+                Spacer()
+                if let change = lift.changePercent {
+                    Text("\(change >= 0 ? "+" : "")\(String(format: "%.1f", change))% 1RM")
+                        .font(.caption2.bold()).monospacedDigit().foregroundStyle(progressStateColor(lift.state))
+                }
+                Text(lift.state).font(.caption2.bold()).foregroundStyle(progressStateColor(lift.state))
+            }
+        }
+    }
+
+    private func progressStateColor(_ state: String) -> Color {
+        switch state {
+        case "Progresando": return EterTheme.positive
+        case "Revisar tendencia": return EterTheme.negative
+        default: return .secondary
+        }
+    }
+
+    // Movida desde Rendimiento: constancia (carga diaria) de los últimos 28 días.
+    private func activityCalendar(_ summary: PerformanceSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack { Text("Consistencia").font(.headline); Spacer(); Text("28 días").font(.caption).foregroundStyle(.secondary) }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) {
+                ForEach(summary.daily) { day in
+                    RoundedRectangle(cornerRadius: 5).fill(day.load == 0 ? Color.primary.opacity(0.09) : day.load < 35 ? EterTheme.positive.opacity(0.45) : day.load < 75 ? EterTheme.positive.opacity(0.75) : EterTheme.warning.opacity(0.8))
+                        .frame(height: 22).overlay(Text(day.sessions > 1 ? "\(day.sessions)" : "").font(.caption2.bold()).foregroundStyle(.white))
+                }
+            }
+            Text("El color representa carga, no una obligación de entrenar: los días de descanso también forman parte del ciclo.").font(.caption2).foregroundStyle(.secondary)
+        }.cardStyle()
+    }
+
     private var strengthCoverageCard: some View {
         let coverage = StrengthProgressEngine.coverage(imports.workouts, profile: goals.profile, healthWorkouts: health.recentWorkouts)
+        let totalSets = coverage.items.reduce(0) { $0 + $1.completed }
+        let covered = coverage.items.filter { $0.completed >= $0.target.lowerBound }.count
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -561,6 +625,12 @@ struct StrengthTrainingView: View {
                 }
                 Spacer()
                 Text("Ciclo \(coverage.days)d").font(.caption).foregroundStyle(.secondary)
+            }
+            // Cabecera de agregados (como en "Resumen semanal"): un vistazo antes
+            // del desglose por patrón. Ambos derivados de los propios items.
+            HStack(spacing: 10) {
+                strengthSummaryMetric("Series de trabajo", "\(totalSets)", "list.number")
+                strengthSummaryMetric("Patrones cubiertos", "\(covered)/\(coverage.items.count)", "checkmark.circle.fill")
             }
             ForEach(coverage.items) { item in
                 VStack(spacing: 5) {

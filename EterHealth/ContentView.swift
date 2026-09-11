@@ -109,11 +109,11 @@ struct ContentView: View {
                 if selectedTab == 2,
                    let assessment = dashboard.assessment,
                    let plan = dashboard.plan,
-                   dashboard.performance != nil,
+                   let performance = dashboard.performance,
                    dashboard.running != nil {
                     StrengthTrainingView(
                         assessment: assessment, plan: plan,
-                        goalDistances: dashboard.goalDistances
+                        goalDistances: dashboard.goalDistances, performance: performance
                     )
                 } else if selectedTab == 2 {
                     deferredTab(title: "Preparando entrenamiento", systemImage: "dumbbell.fill")
@@ -614,7 +614,9 @@ struct ContentView: View {
            dashboard.performance != nil, dashboard.balance != nil {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
-                GoalDistanceCard(strengthOnly: false, distances: dashboard.goalDistances)
+                // "Distancia al objetivo" se retira de Rendimiento: "Performance
+                // forecast" (sección de running, abajo) ya muestra tiempo previsto,
+                // objetivo y cuánto falta por distancia y disciplina.
                 loadIntensitySection
                 RunningPerformanceView(running: running, plan: plan)
                 recentTraining
@@ -856,15 +858,18 @@ struct ContentView: View {
         if let summary = dashboard.performance {
             VStack(alignment: .leading, spacing: 16) {
                 trainingBalanceCard
-                weeklySummary(summary)
+                weeklySummary(summary, running: dashboard.running)
                 trainingLoadCard(summary)
-                intensityFocusCard(summary)
+                // "Intensidad y zonas" se unifica en la card de running (sección de
+                // running, abajo), que ya trae el reparto fácil/duro accionable.
                 // La base fisiológica (HRV/pulso reposo/HRR) se mantiene retirada
                 // de Rendimiento: su casa canónica es Salud. El resto va visible;
                 // el selector de ritmo (TrainingScenarioCardView) es ahora compacto.
                 TrainingScenarioCardView()
-                activityCalendar(summary)
-                capacityCard
+                // "Consistencia" se mueve a la pestaña Entrenamiento (es más de
+                // constancia de entrenamiento que de rendimiento). "Capacidad a
+                // largo plazo" (VO₂/HRV/RHR) se retira: ya vive en Salud ·
+                // "Evolución fisiológica".
             }
         } else {
             ProgressView("Preparando rendimiento")
@@ -905,16 +910,25 @@ struct ContentView: View {
         }
     }
 
-    private func weeklySummary(_ summary: PerformanceSummary) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private func weeklySummary(_ summary: PerformanceSummary, running: RunningPerformanceSummary?) -> some View {
+        // Los últimos 7 días de summary.daily son esta semana; el resto (hasta 28)
+        // es contexto. weekKm sale del resumen de running (misma fuente que la
+        // "Tolerancia semanal"); nada inventado.
+        let activeDays = summary.daily.suffix(7).filter { $0.sessions > 0 }.count
+        let weekKm = running?.weeks.last?.kilometers ?? 0
+        return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) { Text("Resumen semanal").font(.headline); Text("Últimos 7 días").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Text(summary.sessionChange == 0 ? "=" : summary.sessionChange > 0 ? "+\(summary.sessionChange)" : "\(summary.sessionChange)")
-                    .font(.subheadline.bold()).foregroundStyle(summary.sessionChange >= 0 ? .green : .orange)
+                Text(summary.sessionChange == 0 ? "= que la semana pasada"
+                     : summary.sessionChange > 0 ? "+\(summary.sessionChange) vs semana pasada"
+                     : "\(summary.sessionChange) vs semana pasada")
+                    .font(.caption2.bold()).foregroundStyle(summary.sessionChange >= 0 ? EterTheme.positive : EterTheme.warning)
             }
             LazyVGrid(columns: columns, spacing: 14) {
                 performanceMetric("Sesiones", "\(summary.sessions)", "figure.run")
+                performanceMetric("Días activos", "\(activeDays)/7", "calendar")
+                if weekKm > 0 { performanceMetric("Kilómetros", "\(String(format: "%.1f", weekKm)) km", "location.fill") }
                 performanceMetric("Duración", durationText(summary.minutes), "clock")
                 performanceMetric("Energía", summary.calories > 0 ? "\(Int(summary.calories)) kcal" : "Sin datos", "flame.fill")
                 performanceMetric("Fuerza", "\(summary.strengthSets) series", "dumbbell.fill")
@@ -984,112 +998,8 @@ struct ContentView: View {
         }
     }
 
-    private func intensityFocusCard(_ summary: PerformanceSummary) -> some View {
-        // The 12-32% "hard" range already used for running-only intensity is a
-        // reasonable general reference here too (this card spans every workout
-        // type), rather than inventing a separate arbitrary threshold.
-        let target = RunningPerformanceEngine.hardIntensityTarget(for: TrainingPlanEngine.activeBlock(on: Date(), profile: goals.profile))
-        let hard = summary.highAerobic + summary.anaerobic
-        return VStack(alignment: .leading, spacing: 14) {
-            Label("Intensidad y zonas de FC", systemImage: "heart.text.square.fill").font(.headline)
-            HStack(alignment: .top, spacing: 10) {
-                focusMetric("Suave", subtitle: "Z1–Z2", summary.lowAerobic, .blue,
-                            comparedTo: (100 - target.upperBound)...(100 - target.lowerBound))
-                focusMetric("Intenso", subtitle: "Z3–Z4", summary.highAerobic, .orange, comparedTo: nil)
-                focusMetric("Anaeróbico", subtitle: "Z5", summary.anaerobic, .purple, comparedTo: nil)
-            }
-            twoTierBar(segments: [(summary.lowAerobic, .blue), (summary.highAerobic, .orange), (summary.anaerobic, .purple)])
-            Text(hard > target.upperBound
-                 ? "El objetivo general para esta fase es \(Int(target.lowerBound))–\(Int(target.upperBound))% intenso + anaeróbico; llevas \(Int(hard.rounded()))%."
-                 : "Suave = Z1–Z2 · Intenso = Z3–Z4 · Anaeróbico = Z5. Distribución de los últimos 10 días, todos los entrenamientos.")
-                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            if !health.heartRateZones.isEmpty {
-                Divider()
-                Text("Zonas de frecuencia cardíaca · últimos 10 días").font(.subheadline.bold())
-                Chart(health.heartRateZones) { item in
-                    BarMark(x: .value("Porcentaje", item.percentage), y: .value("Zona", "Z\(item.zone)"))
-                        .foregroundStyle(zoneColor(item.zone).gradient)
-                        .annotation(position: .trailing) { Text("\(Int(item.percentage.rounded()))%").font(.caption.bold()).monospacedDigit() }
-                }
-                .chartXScale(domain: 0...100)
-                .chartXAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { value in AxisGridLine().foregroundStyle(Color.primary.opacity(0.10)); AxisValueLabel { if let number = value.as(Int.self) { Text("\(number)%") } } } }
-                .frame(height: 175)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Distribución por zonas de frecuencia cardiaca")
-                .accessibilityValue(health.heartRateZones.map { "Zona \($0.zone): \(Int($0.percentage.rounded())) por ciento" }.joined(separator: ". "))
-                Text(goals.profile.maximumHeartRate.map {
-                    "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Calibradas con tu FC máxima de \($0) ppm."
-                } ?? "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Provisionales; configura tu FC máxima en Plan del gemelo para calibrarlas.")
-                    .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            }
-        }.cardStyle()
-    }
 
-    private func focusMetric(_ title: String, subtitle: String, _ value: Double, _ color: Color, comparedTo target: ClosedRange<Double>?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(color)
-            Text("\(Int(value.rounded()))").font(.title.bold()).monospacedDigit() + Text("%").font(.caption.bold()).foregroundStyle(.secondary)
-            Text(subtitle).font(.caption2).foregroundStyle(.secondary)
-            if let target {
-                Label(target.contains(value) ? "En objetivo" : value < target.lowerBound ? "Por debajo" : "Por encima",
-                      systemImage: target.contains(value) ? "checkmark" : value < target.lowerBound ? "chevron.down" : "chevron.up")
-                    .font(.caption2.bold()).foregroundStyle(target.contains(value) ? EterTheme.positive : .secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 
-    private func twoTierBar(segments: [(Double, Color)]) -> some View {
-        GeometryReader { proxy in
-            VStack(spacing: 3) {
-                HStack(spacing: 2) {
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                        Rectangle().fill(segment.1).frame(width: proxy.size.width * segment.0 / 100)
-                    }
-                }.frame(height: 13).clipShape(Capsule())
-                HStack(spacing: 2) {
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                        Rectangle().fill(segment.1.opacity(0.35)).frame(width: proxy.size.width * segment.0 / 100)
-                    }
-                }.frame(height: 5).clipShape(Capsule())
-            }
-        }.frame(height: 21)
-    }
-
-    private func activityCalendar(_ summary: PerformanceSummary) -> some View {
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack { Text("Consistencia").font(.headline); Spacer(); Text("28 días").font(.caption).foregroundStyle(.secondary) }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) {
-                ForEach(summary.daily) { day in
-                    RoundedRectangle(cornerRadius: 5).fill(day.load == 0 ? Color.primary.opacity(0.09) : day.load < 35 ? EterTheme.positive.opacity(0.45) : day.load < 75 ? EterTheme.positive.opacity(0.75) : EterTheme.warning.opacity(0.8))
-                        .frame(height: 22).overlay(Text(day.sessions > 1 ? "\(day.sessions)" : "").font(.caption2.bold()).foregroundStyle(.white))
-                }
-            }
-            Text("El color representa carga, no una obligación de entrenar: los días de descanso también forman parte del ciclo.").font(.caption2).foregroundStyle(.secondary)
-        }.cardStyle()
-    }
-
-    private var capacityCard: some View {
-        let vo2 = health.vo2MaxHistory.last?.value
-        let hrvLong = average(health.hrvHistory.suffix(30).map(\.value))
-        let rhrLong = average(health.restingHeartRateHistory.suffix(30).map(\.value))
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Capacidad a largo plazo").font(.headline)
-            Text("Mantenemos las señales separadas para no ocultarlas tras un índice opaco.").font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
-                capacityMetric("VO₂ máx.", vo2, "ml/kg/min")
-                capacityMetric("HRV 30d", hrvLong, "ms")
-                capacityMetric("RHR 30d", rhrLong, "ppm")
-            }
-        }.cardStyle()
-    }
-
-    private func capacityMetric(_ title: String, _ value: Double?, _ unit: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption2).foregroundStyle(.secondary); Text(value.map { String(format: "%.1f", $0) } ?? "—").font(.headline).monospacedDigit(); Text(unit).font(.caption2).foregroundStyle(.secondary) }
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func average(_ values: [Double]) -> Double? { values.isEmpty ? nil : values.reduce(0, +) / Double(values.count) }
     private func durationText(_ minutes: Double) -> String { "\(Int(minutes) / 60)h \(Int(minutes) % 60)m" }
     // Same load-ratio-risk concept TrainingScenarioCardView models with
     // EterTheme tokens — this one had drifted to raw color literals.
@@ -1495,15 +1405,6 @@ struct ContentView: View {
         }
     }
 
-    private func zoneColor(_ zone: Int) -> Color {
-        switch zone {
-        case 1: return .gray
-        case 2: return .blue
-        case 3: return .green
-        case 4: return .orange
-        default: return .red
-        }
-    }
 
     private func metric(_ title: String, value: String, unit: String, icon: String, insight: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 12) {
