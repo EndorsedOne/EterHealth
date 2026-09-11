@@ -572,6 +572,8 @@ struct StrengthTrainingView: View {
 
     private var strengthCoverageCard: some View {
         let coverage = StrengthProgressEngine.coverage(imports.workouts, profile: goals.profile, healthWorkouts: health.recentWorkouts)
+        let totalSets = coverage.items.reduce(0) { $0 + $1.completed }
+        let covered = coverage.items.filter { $0.completed >= $0.target.lowerBound }.count
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -580,6 +582,12 @@ struct StrengthTrainingView: View {
                 }
                 Spacer()
                 Text("Ciclo \(coverage.days)d").font(.caption).foregroundStyle(.secondary)
+            }
+            // Cabecera de agregados (como en "Resumen semanal"): un vistazo antes
+            // del desglose por patrón. Ambos derivados de los propios items.
+            HStack(spacing: 10) {
+                strengthSummaryMetric("Series de trabajo", "\(totalSets)", "list.number")
+                strengthSummaryMetric("Patrones cubiertos", "\(covered)/\(coverage.items.count)", "checkmark.circle.fill")
             }
             ForEach(coverage.items) { item in
                 VStack(spacing: 5) {
