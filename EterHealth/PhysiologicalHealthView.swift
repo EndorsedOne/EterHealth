@@ -21,7 +21,9 @@ struct PhysiologicalHealthView: View {
             longevityIndexCard
             biologicalAgeCard
             personalBaselineCard
-            cardiovascularContextCard
+            // "Contexto cardiovascular" retirado: LDL y su consejo ya están en
+            // "Analíticas clínicas" (abajo), y la tensión, cuando exista, se lee en
+            // Apple Salud. Evita duplicar la misma señal en dos sitios.
             extendedHealthSignalsCard
             // La temperatura de muñeca ya es una fila de "Señales ampliadas" (con
             // su delta vs. línea base). Se retira la tarjeta dedicada para no tener
@@ -180,75 +182,6 @@ struct PhysiologicalHealthView: View {
             Text("El coeficiente es el peso que la fórmula publicada asigna a cada variable, no una cifra en años: la relación entre esta combinación y la edad estimada no es lineal.")
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }
-    }
-
-    private var cardiovascularContextCard: some View {
-        let systolic = health.systolicBloodPressureHistory.last?.value
-        let diastolic = health.diastolicBloodPressureHistory.last?.value
-        let ldl = imports.labs.first { $0.name.localizedCaseInsensitiveContains("ldl") }
-        let pressureDate = [health.systolicBloodPressureHistory.last?.date, health.diastolicBloodPressureHistory.last?.date]
-            .compactMap { $0 }.max()
-        return VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Contexto cardiovascular").font(.headline)
-                    Text("Señales complementarias, no un diagnóstico ni una puntuación clínica").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                DataTrustBadge(trust: DataTrust(
-                    nature: .measured,
-                    source: "Apple Salud y analíticas importadas",
-                    measuredAt: pressureDate ?? ldl?.date,
-                    samples: health.systolicBloodPressureHistory.count + health.diastolicBloodPressureHistory.count + (ldl == nil ? 0 : 1),
-                    level: ConfidenceEngine.samples(health.systolicBloodPressureHistory.count + health.diastolicBloodPressureHistory.count + (ldl == nil ? 0 : 1), medium: 2, high: 8, label: "mediciones cardiovasculares").level,
-                    explanation: "La tensión procede de Apple Salud; LDL procede del informe de laboratorio importado.",
-                    limitations: "La tensión depende de técnica, dispositivo y contexto. El riesgo cardiovascular real requiere edad, antecedentes, tabaquismo y valoración profesional."
-                ))
-            }
-            HStack(spacing: 10) {
-                cardiovascularValue("Tensión", systolic.flatMap { upper in diastolic.map { "\(Int(upper.rounded()))/\(Int($0.rounded()))" } } ?? "—", "mmHg")
-                cardiovascularValue("LDL", ldl.map { $0.value.formatted(.number.precision(.fractionLength(0...1))) } ?? "—", ldl?.unit ?? "")
-                // VO₂ máx. vive en "Evolución fisiológica" (abajo), con su propia
-                // tendencia y referencia. Se retira de aquí para no duplicarlo.
-            }
-            if systolic == nil || diastolic == nil {
-                Text("No hay tensión arterial legible. Puedes registrarla en Apple Salud y Éter incorporará su evolución.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if let pressureDate {
-                Text("Última tensión: \(pressureDate.formatted(date: .abbreviated, time: .shortened)). Interpreta la tendencia y las mediciones repetidas, no una lectura aislada.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            // General lifestyle guidance for a value genuinely outside a
-            // broadly-agreed optimal range — never a diagnosis. Only ever
-            // appears for metrics with well-established directionality;
-            // see WellnessRecommendationEngine's own reasoning.
-            ForEach(cardiovascularRecommendations(systolic: systolic, diastolic: diastolic, ldl: ldl), id: \.self) { tip in
-                Label(tip, systemImage: "lightbulb.fill").font(.caption2).foregroundStyle(EterTheme.primary).lineSpacing(2)
-            }
-        }.cardStyle()
-    }
-
-    private func cardiovascularRecommendations(systolic: Double?, diastolic: Double?, ldl: LabResult?) -> [String] {
-        var tips: [String] = []
-        if let systolic, let diastolic, let tip = WellnessRecommendationEngine.bloodPressure(systolic: systolic, diastolic: diastolic) {
-            tips.append(tip)
-        }
-        if let ldl, let tip = WellnessRecommendationEngine.lab(name: ldl.name, status: ldl.status) {
-            tips.append(tip)
-        }
-        return tips
-    }
-
-    private func cardiovascularValue(_ title: String, _ value: String, _ unit: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.subheadline.bold()).monospacedDigit().minimumScaleFactor(0.75)
-            Text(unit).font(.caption2).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
-        .accessibilityValue("\(value) \(unit)")
     }
 
     // favorableHigh: nil for the two signals with no settled personal-
