@@ -170,6 +170,7 @@ struct StrengthTrainingView: View {
     let assessment: TwinAssessment
     let plan: WeeklyPlanStatus
     let goalDistances: [GoalDistance]
+    let performance: PerformanceSummary
 
     private var context: TwinContext {
         TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
@@ -201,6 +202,10 @@ struct StrengthTrainingView: View {
                                        assessment: assessment, plan: plan)
 
             strengthProgressSection
+
+            // Constancia de entrenamiento (movida desde Rendimiento): la carga
+            // diaria de los últimos 28 días encaja mejor en la pestaña de entreno.
+            activityCalendar(performance)
 
             // Objetivos de fuerza (press banca, sentadilla, peso muerto,
             // hipertrofia). Los de carrera/híbridos viven en Rendimiento.
@@ -549,6 +554,20 @@ struct StrengthTrainingView: View {
             Text(value).font(.title3.bold()).monospacedDigit()
             Text(title).font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // Movida desde Rendimiento: constancia (carga diaria) de los últimos 28 días.
+    private func activityCalendar(_ summary: PerformanceSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack { Text("Consistencia").font(.headline); Spacer(); Text("28 días").font(.caption).foregroundStyle(.secondary) }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) {
+                ForEach(summary.daily) { day in
+                    RoundedRectangle(cornerRadius: 5).fill(day.load == 0 ? Color.primary.opacity(0.09) : day.load < 35 ? EterTheme.positive.opacity(0.45) : day.load < 75 ? EterTheme.positive.opacity(0.75) : EterTheme.warning.opacity(0.8))
+                        .frame(height: 22).overlay(Text(day.sessions > 1 ? "\(day.sessions)" : "").font(.caption2.bold()).foregroundStyle(.white))
+                }
+            }
+            Text("El color representa carga, no una obligación de entrenar: los días de descanso también forman parte del ciclo.").font(.caption2).foregroundStyle(.secondary)
+        }.cardStyle()
     }
 
     private var strengthCoverageCard: some View {

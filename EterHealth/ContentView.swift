@@ -109,11 +109,11 @@ struct ContentView: View {
                 if selectedTab == 2,
                    let assessment = dashboard.assessment,
                    let plan = dashboard.plan,
-                   dashboard.performance != nil,
+                   let performance = dashboard.performance,
                    dashboard.running != nil {
                     StrengthTrainingView(
                         assessment: assessment, plan: plan,
-                        goalDistances: dashboard.goalDistances
+                        goalDistances: dashboard.goalDistances, performance: performance
                     )
                 } else if selectedTab == 2 {
                     deferredTab(title: "Preparando entrenamiento", systemImage: "dumbbell.fill")
@@ -858,7 +858,7 @@ struct ContentView: View {
         if let summary = dashboard.performance {
             VStack(alignment: .leading, spacing: 16) {
                 trainingBalanceCard
-                weeklySummary(summary)
+                weeklySummary(summary, running: dashboard.running)
                 trainingLoadCard(summary)
                 // "Intensidad y zonas" se unifica en la card de running (sección de
                 // running, abajo), que ya trae el reparto fácil/duro accionable.
@@ -866,8 +866,10 @@ struct ContentView: View {
                 // de Rendimiento: su casa canónica es Salud. El resto va visible;
                 // el selector de ritmo (TrainingScenarioCardView) es ahora compacto.
                 TrainingScenarioCardView()
-                activityCalendar(summary)
-                capacityCard
+                // "Consistencia" se mueve a la pestaña Entrenamiento (es más de
+                // constancia de entrenamiento que de rendimiento). "Capacidad a
+                // largo plazo" (VO₂/HRV/RHR) se retira: ya vive en Salud ·
+                // "Evolución fisiológica".
             }
         } else {
             ProgressView("Preparando rendimiento")
@@ -908,16 +910,25 @@ struct ContentView: View {
         }
     }
 
-    private func weeklySummary(_ summary: PerformanceSummary) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private func weeklySummary(_ summary: PerformanceSummary, running: RunningPerformanceSummary?) -> some View {
+        // Los últimos 7 días de summary.daily son esta semana; el resto (hasta 28)
+        // es contexto. weekKm sale del resumen de running (misma fuente que la
+        // "Tolerancia semanal"); nada inventado.
+        let activeDays = summary.daily.suffix(7).filter { $0.sessions > 0 }.count
+        let weekKm = running?.weeks.last?.kilometers ?? 0
+        return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) { Text("Resumen semanal").font(.headline); Text("Últimos 7 días").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Text(summary.sessionChange == 0 ? "=" : summary.sessionChange > 0 ? "+\(summary.sessionChange)" : "\(summary.sessionChange)")
-                    .font(.subheadline.bold()).foregroundStyle(summary.sessionChange >= 0 ? .green : .orange)
+                Text(summary.sessionChange == 0 ? "= que la semana pasada"
+                     : summary.sessionChange > 0 ? "+\(summary.sessionChange) vs semana pasada"
+                     : "\(summary.sessionChange) vs semana pasada")
+                    .font(.caption2.bold()).foregroundStyle(summary.sessionChange >= 0 ? EterTheme.positive : EterTheme.warning)
             }
             LazyVGrid(columns: columns, spacing: 14) {
                 performanceMetric("Sesiones", "\(summary.sessions)", "figure.run")
+                performanceMetric("Días activos", "\(activeDays)/7", "calendar")
+                if weekKm > 0 { performanceMetric("Kilómetros", "\(String(format: "%.1f", weekKm)) km", "location.fill") }
                 performanceMetric("Duración", durationText(summary.minutes), "clock")
                 performanceMetric("Energía", summary.calories > 0 ? "\(Int(summary.calories)) kcal" : "Sin datos", "flame.fill")
                 performanceMetric("Fuerza", "\(summary.strengthSets) series", "dumbbell.fill")
@@ -988,40 +999,7 @@ struct ContentView: View {
     }
 
 
-    private func activityCalendar(_ summary: PerformanceSummary) -> some View {
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack { Text("Consistencia").font(.headline); Spacer(); Text("28 días").font(.caption).foregroundStyle(.secondary) }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) {
-                ForEach(summary.daily) { day in
-                    RoundedRectangle(cornerRadius: 5).fill(day.load == 0 ? Color.primary.opacity(0.09) : day.load < 35 ? EterTheme.positive.opacity(0.45) : day.load < 75 ? EterTheme.positive.opacity(0.75) : EterTheme.warning.opacity(0.8))
-                        .frame(height: 22).overlay(Text(day.sessions > 1 ? "\(day.sessions)" : "").font(.caption2.bold()).foregroundStyle(.white))
-                }
-            }
-            Text("El color representa carga, no una obligación de entrenar: los días de descanso también forman parte del ciclo.").font(.caption2).foregroundStyle(.secondary)
-        }.cardStyle()
-    }
 
-    private var capacityCard: some View {
-        let vo2 = health.vo2MaxHistory.last?.value
-        let hrvLong = average(health.hrvHistory.suffix(30).map(\.value))
-        let rhrLong = average(health.restingHeartRateHistory.suffix(30).map(\.value))
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Capacidad a largo plazo").font(.headline)
-            Text("Mantenemos las señales separadas para no ocultarlas tras un índice opaco.").font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
-                capacityMetric("VO₂ máx.", vo2, "ml/kg/min")
-                capacityMetric("HRV 30d", hrvLong, "ms")
-                capacityMetric("RHR 30d", rhrLong, "ppm")
-            }
-        }.cardStyle()
-    }
-
-    private func capacityMetric(_ title: String, _ value: Double?, _ unit: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption2).foregroundStyle(.secondary); Text(value.map { String(format: "%.1f", $0) } ?? "—").font(.headline).monospacedDigit(); Text(unit).font(.caption2).foregroundStyle(.secondary) }
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func average(_ values: [Double]) -> Double? { values.isEmpty ? nil : values.reduce(0, +) / Double(values.count) }
     private func durationText(_ minutes: Double) -> String { "\(Int(minutes) / 60)h \(Int(minutes) % 60)m" }
     // Same load-ratio-risk concept TrainingScenarioCardView models with
     // EterTheme tokens — this one had drifted to raw color literals.
