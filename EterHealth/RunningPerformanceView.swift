@@ -403,7 +403,7 @@ struct RunningPerformanceView: View {
         let configuredZones = goals.profile.maximumHeartRate != nil || goals.profile.manualHeartRateZones != nil
         return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Distribución fácil / duro").font(.headline)
+                Text("Intensidad y zonas").font(.headline)
                 Spacer()
                 Text(status).font(.caption2.bold()).foregroundStyle(color)
                     .padding(.horizontal, 9).padding(.vertical, 5)
@@ -423,6 +423,25 @@ struct RunningPerformanceView: View {
             }.frame(height: 13)
                 .accessibilityHidden(true)
             HStack { Text("Fácil Z1–Z2 · \(Int(running.easyPercentage.rounded()))%").foregroundStyle(.blue); Spacer(); Text("Duro Z3–Z5 · \(Int(running.hardPercentage.rounded()))%").foregroundStyle(.orange) }.font(.caption.bold())
+            // Zonas de FC (todos los entrenamientos) unificadas aquí: antes eran una
+            // card aparte "Intensidad y zonas de FC" en la sección de carga.
+            if !health.heartRateZones.isEmpty {
+                Divider()
+                Text("Zonas de FC · todos los entrenamientos · 10 días").font(.caption2.bold()).foregroundStyle(.secondary)
+                Chart(health.heartRateZones) { item in
+                    BarMark(x: .value("Porcentaje", item.percentage), y: .value("Zona", "Z\(item.zone)"))
+                        .foregroundStyle(zoneColor(item.zone).gradient)
+                        .annotation(position: .trailing) { Text("\(Int(item.percentage.rounded()))%").font(.caption.bold()).monospacedDigit() }
+                }
+                .chartXScale(domain: 0...100)
+                .chartXAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { value in AxisGridLine().foregroundStyle(Color.primary.opacity(0.10)); AxisValueLabel { if let number = value.as(Int.self) { Text("\(number)%") } } } }
+                .frame(height: 160)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Distribución por zonas de frecuencia cardiaca")
+                .accessibilityValue(health.heartRateZones.map { "Zona \($0.zone): \(Int($0.percentage.rounded())) por ciento" }.joined(separator: ". "))
+                Text("Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             VStack(alignment: .leading, spacing: 5) {
                 Label(runningIntensityHeadline(running.hardPercentage, target: target), systemImage: running.hardPercentage > target.upperBound ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                     .font(.caption.bold()).foregroundStyle(color)
@@ -453,6 +472,10 @@ struct RunningPerformanceView: View {
 
     private func runningIntensityColor(_ status: String) -> Color {
         switch status { case "ALINEADO": return EterTheme.positive; case "POCA CALIDAD": return .blue; case "INTENSIDAD ALTA": return EterTheme.negative; default: return EterTheme.danger }
+    }
+
+    private func zoneColor(_ zone: Int) -> Color {
+        switch zone { case 1: return .gray; case 2: return .blue; case 3: return .green; case 4: return .orange; default: return .red }
     }
 
     private func runningIntensityHeadline(_ hard: Double, target: ClosedRange<Double>) -> String {

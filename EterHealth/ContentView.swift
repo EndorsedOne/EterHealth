@@ -614,7 +614,9 @@ struct ContentView: View {
            dashboard.performance != nil, dashboard.balance != nil {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
-                GoalDistanceCard(strengthOnly: false, distances: dashboard.goalDistances)
+                // "Distancia al objetivo" se retira de Rendimiento: "Performance
+                // forecast" (sección de running, abajo) ya muestra tiempo previsto,
+                // objetivo y cuánto falta por distancia y disciplina.
                 loadIntensitySection
                 RunningPerformanceView(running: running, plan: plan)
                 recentTraining
@@ -858,7 +860,8 @@ struct ContentView: View {
                 trainingBalanceCard
                 weeklySummary(summary)
                 trainingLoadCard(summary)
-                intensityFocusCard(summary)
+                // "Intensidad y zonas" se unifica en la card de running (sección de
+                // running, abajo), que ya trae el reparto fácil/duro accionable.
                 // La base fisiológica (HRV/pulso reposo/HRR) se mantiene retirada
                 // de Rendimiento: su casa canónica es Salud. El resto va visible;
                 // el selector de ritmo (TrainingScenarioCardView) es ahora compacto.
@@ -984,77 +987,6 @@ struct ContentView: View {
         }
     }
 
-    private func intensityFocusCard(_ summary: PerformanceSummary) -> some View {
-        // The 12-32% "hard" range already used for running-only intensity is a
-        // reasonable general reference here too (this card spans every workout
-        // type), rather than inventing a separate arbitrary threshold.
-        let target = RunningPerformanceEngine.hardIntensityTarget(for: TrainingPlanEngine.activeBlock(on: Date(), profile: goals.profile))
-        let hard = summary.highAerobic + summary.anaerobic
-        return VStack(alignment: .leading, spacing: 14) {
-            Label("Intensidad y zonas de FC", systemImage: "heart.text.square.fill").font(.headline)
-            HStack(alignment: .top, spacing: 10) {
-                focusMetric("Suave", subtitle: "Z1–Z2", summary.lowAerobic, .blue,
-                            comparedTo: (100 - target.upperBound)...(100 - target.lowerBound))
-                focusMetric("Intenso", subtitle: "Z3–Z4", summary.highAerobic, .orange, comparedTo: nil)
-                focusMetric("Anaeróbico", subtitle: "Z5", summary.anaerobic, .purple, comparedTo: nil)
-            }
-            twoTierBar(segments: [(summary.lowAerobic, .blue), (summary.highAerobic, .orange), (summary.anaerobic, .purple)])
-            Text(hard > target.upperBound
-                 ? "El objetivo general para esta fase es \(Int(target.lowerBound))–\(Int(target.upperBound))% intenso + anaeróbico; llevas \(Int(hard.rounded()))%."
-                 : "Suave = Z1–Z2 · Intenso = Z3–Z4 · Anaeróbico = Z5. Distribución de los últimos 10 días, todos los entrenamientos.")
-                .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            if !health.heartRateZones.isEmpty {
-                Divider()
-                Text("Zonas de frecuencia cardíaca · últimos 10 días").font(.subheadline.bold())
-                Chart(health.heartRateZones) { item in
-                    BarMark(x: .value("Porcentaje", item.percentage), y: .value("Zona", "Z\(item.zone)"))
-                        .foregroundStyle(zoneColor(item.zone).gradient)
-                        .annotation(position: .trailing) { Text("\(Int(item.percentage.rounded()))%").font(.caption.bold()).monospacedDigit() }
-                }
-                .chartXScale(domain: 0...100)
-                .chartXAxis { AxisMarks(values: [0, 25, 50, 75, 100]) { value in AxisGridLine().foregroundStyle(Color.primary.opacity(0.10)); AxisValueLabel { if let number = value.as(Int.self) { Text("\(number)%") } } } }
-                .frame(height: 175)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Distribución por zonas de frecuencia cardiaca")
-                .accessibilityValue(health.heartRateZones.map { "Zona \($0.zone): \(Int($0.percentage.rounded())) por ciento" }.joined(separator: ". "))
-                Text(goals.profile.maximumHeartRate.map {
-                    "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Calibradas con tu FC máxima de \($0) ppm."
-                } ?? "Z1 recuperación · Z2 base aeróbica · Z3 tempo · Z4 umbral · Z5 alta intensidad. Provisionales; configura tu FC máxima en Plan del gemelo para calibrarlas.")
-                    .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
-            }
-        }.cardStyle()
-    }
-
-    private func focusMetric(_ title: String, subtitle: String, _ value: Double, _ color: Color, comparedTo target: ClosedRange<Double>?) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(color)
-            Text("\(Int(value.rounded()))").font(.title.bold()).monospacedDigit() + Text("%").font(.caption.bold()).foregroundStyle(.secondary)
-            Text(subtitle).font(.caption2).foregroundStyle(.secondary)
-            if let target {
-                Label(target.contains(value) ? "En objetivo" : value < target.lowerBound ? "Por debajo" : "Por encima",
-                      systemImage: target.contains(value) ? "checkmark" : value < target.lowerBound ? "chevron.down" : "chevron.up")
-                    .font(.caption2.bold()).foregroundStyle(target.contains(value) ? EterTheme.positive : .secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func twoTierBar(segments: [(Double, Color)]) -> some View {
-        GeometryReader { proxy in
-            VStack(spacing: 3) {
-                HStack(spacing: 2) {
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                        Rectangle().fill(segment.1).frame(width: proxy.size.width * segment.0 / 100)
-                    }
-                }.frame(height: 13).clipShape(Capsule())
-                HStack(spacing: 2) {
-                    ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                        Rectangle().fill(segment.1.opacity(0.35)).frame(width: proxy.size.width * segment.0 / 100)
-                    }
-                }.frame(height: 5).clipShape(Capsule())
-            }
-        }.frame(height: 21)
-    }
 
     private func activityCalendar(_ summary: PerformanceSummary) -> some View {
         return VStack(alignment: .leading, spacing: 12) {
@@ -1495,15 +1427,6 @@ struct ContentView: View {
         }
     }
 
-    private func zoneColor(_ zone: Int) -> Color {
-        switch zone {
-        case 1: return .gray
-        case 2: return .blue
-        case 3: return .green
-        case 4: return .orange
-        default: return .red
-        }
-    }
 
     private func metric(_ title: String, value: String, unit: String, icon: String, insight: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 12) {
