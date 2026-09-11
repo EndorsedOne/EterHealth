@@ -537,6 +537,7 @@ struct StrengthTrainingView: View {
                     strengthSummaryMetric("Series efectivas", "\(summary.effectiveSets28Days)", "list.number")
                     strengthSummaryMetric("Récords 28d", "\(summary.records28Days)", "trophy.fill")
                 }
+                strengthEvolutionInsight(summary)
             }.cardStyle()
 
             strengthCoverageCard
@@ -554,6 +555,48 @@ struct StrengthTrainingView: View {
             Text(value).font(.title3.bold()).monospacedDigit()
             Text(title).font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // La parte accionable de "Evolución de fuerza": en vez de tres contadores,
+    // dice DÓNDE progresas y QUÉ revisar, con el cambio de 1RM estimado por
+    // ejercicio (state/changePercent del propio motor — nada inventado).
+    @ViewBuilder private func strengthEvolutionInsight(_ summary: StrengthProgressSummary) -> some View {
+        let progressing = summary.exercises.filter { $0.state == "Progresando" }
+        let review = summary.exercises.filter { $0.state == "Revisar tendencia" }
+        let topLifts = Array(summary.exercises.prefix(4))
+        let verdict: String = {
+            if let r = review.first {
+                return "Atención: \(r.name) baja en 1RM estimado — revisa carga, técnica o recuperación antes de subir."
+            }
+            if !progressing.isEmpty {
+                return "\(progressing.count == 1 ? "Progresa" : "Progresan") \(progressing.prefix(3).map(\.name).joined(separator: ", ")). Mantén la progresión donde ya funciona."
+            }
+            if summary.exercises.contains(where: { $0.state == "Estable" }) {
+                return "Fuerza estable: busca un pequeño progreso (peso o una repetición más) en tu ejercicio principal."
+            }
+            return "Construyendo historial: registra series con peso y repeticiones para ver la tendencia de tu 1RM."
+        }()
+        Divider()
+        Text(verdict).font(.caption.bold()).lineSpacing(2)
+        ForEach(topLifts) { lift in
+            HStack {
+                Text(lift.name).font(.caption).lineLimit(1)
+                Spacer()
+                if let change = lift.changePercent {
+                    Text("\(change >= 0 ? "+" : "")\(String(format: "%.1f", change))% 1RM")
+                        .font(.caption2.bold()).monospacedDigit().foregroundStyle(progressStateColor(lift.state))
+                }
+                Text(lift.state).font(.caption2.bold()).foregroundStyle(progressStateColor(lift.state))
+            }
+        }
+    }
+
+    private func progressStateColor(_ state: String) -> Color {
+        switch state {
+        case "Progresando": return EterTheme.positive
+        case "Revisar tendencia": return EterTheme.negative
+        default: return .secondary
+        }
     }
 
     // Movida desde Rendimiento: constancia (carga diaria) de los últimos 28 días.
