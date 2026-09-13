@@ -654,21 +654,65 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// guardado con su fase dentro reportaría una fase falsa en cuanto la app
     /// pasara tres días sin abrirse, y ese es justo el fallo que el check
     /// diario ya tenía.
+    /// La parada vigente en un instante: la última cuya salida ya ocurrió.
+    /// nil antes de salir de casa.
+    func currentStopIndex(at date: Date) -> Int? {
+        guard let first = stops.first?.departure, date >= first else { return nil }
+        return stops.lastIndex { ($0.departure ?? .distantFuture) <= date }
+    }
+
+    /// Días de adaptación de UNA parada, sobre SU propio salto y no sobre el
+    /// acumulado desde casa: si ya te adaptaste a Bangkok, Seúl son +2 h, no
+    /// +8 h. Ese es todo el punto del multidestino.
+    ///
+    /// Límite conocido y no disimulado: se asume que llegas a cada parada ya
+    /// adaptado a la anterior. Si sales de Bangkok a medio adaptar, el salto
+    /// real hacia Seúl es algo mayor que esas 2 h. Modelar la adaptación
+    /// parcial arrastrada exige un estado continuo de fase circadiana que este
+    /// modelo no tiene, y aproximarlo sería inventar precisión.
+    func adaptationEnd(forStopAt index: Int, rates: ReentrainmentRates = .prior)
+        -> (date: Date, basis: TravelPhaseBasis)? {
+        guard stops.indices.contains(index) else { return nil }
+        // Las paradas con medición propia reutilizan las funciones de siempre,
+        // para que un viaje de ida y vuelta se comporte exactamente igual que
+        // antes: la primera parada tiene destinationStabilityDays y la de
+        // vuelta homeStabilityDays. Una parada intermedia no tiene medición
+        // —measuredOutcome sólo guarda esas dos— y cae a la estimación.
+        if index == 0 { return destinationAdaptationEnd(rates: rates) }
+        if returnsHome && index == stops.count - 1 { return homeReadaptationEnd(rates: rates) }
+        guard let arrival = stops[index].arrival else { return nil }
+        guard resolvedStayPolicy == .adaptToDestination else {
+            return (arrival, .estimatedDurationElapsed)
+        }
+        let days = CircadianReentrainment.daysToRealign(offsetHours: stops[index].shiftHours, rates: rates)
+        return (arrival.addingTimeInterval(days * 86_400), .estimatedDurationElapsed)
+    }
+
+    /// El huso en el que estás en un instante dado. Con varias paradas,
+    /// "el destino" deja de ser un sitio y pasa a ser el de la parada vigente.
+    func currentDestinationTimeZoneID(at date: Date) -> String? {
+        guard let index = currentStopIndex(at: date) else { return homeTimeZoneID }
+        return stops[index].destinationTimeZoneID
+    }
+
     func phase(at date: Date, rates: ReentrainmentRates = .prior) -> TravelPhase {
         if isCancelled { return .cancelled }
-        guard let outboundDeparture, let destinationArrival else { return .preDeparture }
-        if date < outboundDeparture { return .preDeparture }
-        if date < destinationArrival { return .outboundTransit }
+        guard let firstDeparture = stops.first?.departure, date >= firstDeparture else { return .preDeparture }
+        guard let index = currentStopIndex(at: date) else { return .preDeparture }
+        let stop = stops[index]
+        // La vuelta es la parada que termina en casa: su tránsito es "Vuelta"
+        // y su adaptación es "Readaptación". Cualquier otra parada —la
+        // primera o una intermedia— es ida y adaptación al destino.
+        let isReturn = returnsHome && index == stops.count - 1
 
-        if let returnDeparture, date >= returnDeparture {
-            guard let homeArrival else { return .returnTransit }
-            if date < homeArrival { return .returnTransit }
-            guard let end = homeReadaptationEnd(rates: rates) else { return .recovered }
-            return date < end.date ? .homeReadaptation : .recovered
+        guard let arrival = stop.arrival else { return isReturn ? .returnTransit : .outboundTransit }
+        if date < arrival { return isReturn ? .returnTransit : .outboundTransit }
+
+        guard let end = adaptationEnd(forStopAt: index, rates: rates) else {
+            return isReturn ? .recovered : .destinationStable
         }
-
-        guard let end = destinationAdaptationEnd(rates: rates) else { return .destinationStable }
-        return date < end.date ? .destinationAdaptation : .destinationStable
+        if date < end.date { return isReturn ? .homeReadaptation : .destinationAdaptation }
+        return isReturn ? .recovered : .destinationStable
     }
 
     /// Cuándo termina la fase actual, para que la línea temporal pueda decir

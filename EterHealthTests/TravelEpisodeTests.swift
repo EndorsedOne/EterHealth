@@ -34,6 +34,100 @@ final class TravelEpisodeTests: XCTestCase {
 
     // MARK: - Desplazamiento con signo y horario de verano
 
+    // MULTIDESTINO, fases. El itinerario real que motivó esto: Madrid →
+    // Bangkok (estancia) → Seúl (estancia) → Madrid. Con el modelo de ida y
+    // vuelta, meter Seúl como escala marcaba los días en Bangkok como
+    // "en tránsito" y la adaptación a Bangkok no existía.
+    func testEachStopGetsItsOwnTransitAdaptationAndStay() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 20, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 20, 20))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+        episode.stops.append(TravelStop(flights: [home]))
+
+        // En vuelo a Bangkok.
+        XCTAssertEqual(episode.phase(at: local("Asia/Bangkok", 2026, 9, 12, 2)), .outboundTransit)
+        // Ya en Bangkok: adaptación a Bangkok — NO "en tránsito", que es lo
+        // que la escala hacía.
+        XCTAssertEqual(episode.phase(at: local("Asia/Bangkok", 2026, 9, 13, 12)), .destinationAdaptation)
+        // En vuelo a Seúl: vuelve a ser tránsito de ida, no vuelta.
+        XCTAssertEqual(episode.phase(at: local("Asia/Seoul", 2026, 9, 16, 14)), .outboundTransit)
+        // En Seúl: su propia adaptación, no la estancia de Bangkok.
+        XCTAssertEqual(episode.phase(at: local("Asia/Seoul", 2026, 9, 17, 12)), .destinationAdaptation)
+        // Volando a casa.
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 9, 20, 15)), .returnTransit)
+        // Y en casa, readaptación.
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 9, 21, 12)), .homeReadaptation)
+    }
+
+    // La adaptación de cada parada se calcula sobre SU salto. Seúl son +2 h
+    // desde Bangkok: si se calculara sobre el acumulado (+8 h desde Madrid),
+    // la app pediría días de adaptación que no corresponden.
+    func testIntermediateStopAdaptsOverItsOwnJumpNotTheCumulativeOne() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+
+        let bangkokEnd = episode.adaptationEnd(forStopAt: 0)!.date
+        let seoulEnd = episode.adaptationEnd(forStopAt: 1)!.date
+        let bangkokDays = bangkokEnd.timeIntervalSince(episode.stops[0].arrival!) / 86_400
+        let seoulDays = seoulEnd.timeIntervalSince(episode.stops[1].arrival!) / 86_400
+
+        XCTAssertGreaterThan(bangkokDays, seoulDays,
+                             "+5 h a Bangkok cuesta más adaptación que las +2 h de Bangkok a Seúl.")
+        XCTAssertGreaterThan(seoulDays, 0, "Pero Seúl SÍ tiene adaptación propia: no es cero.")
+    }
+
+    // Y el caso de ida y vuelta de siempre se comporta exactamente igual que
+    // antes: la generalización no puede cambiar lo que ya funcionaba.
+    func testTwoStopTripKeepsItsOriginalPhaseSequence() {
+        let out = segment("Europe/Madrid", local("Europe/Madrid", 2026, 7, 1, 10),
+                          "Asia/Tokyo", local("Asia/Tokyo", 2026, 7, 2, 8))
+        let back = segment("Asia/Tokyo", local("Asia/Tokyo", 2026, 7, 12, 10),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 7, 12, 18))
+        let episode = TravelEpisode(title: "Tokio", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Tokyo",
+                                    outboundFlights: [out], returnFlights: [back])
+
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 6, 28, 12)), .preDeparture)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 2, 2)), .outboundTransit)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 3, 12)), .destinationAdaptation)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 10, 12)), .destinationStable)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 12, 14)), .returnTransit)
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 7, 13, 12)), .homeReadaptation)
+    }
+
+    // Dónde estás AHORA deja de ser un campo declarado y pasa a ser la parada
+    // vigente: con varias paradas, "el destino" ya no es un sitio.
+    func testCurrentDestinationFollowsTheStopYouAreIn() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+
+        XCTAssertEqual(episode.currentDestinationTimeZoneID(at: local("Europe/Madrid", 2026, 9, 1, 12)),
+                       "Europe/Madrid", "Antes de salir, estás en casa.")
+        XCTAssertEqual(episode.currentDestinationTimeZoneID(at: local("Asia/Bangkok", 2026, 9, 14, 12)),
+                       "Asia/Bangkok")
+        XCTAssertEqual(episode.currentDestinationTimeZoneID(at: local("Asia/Seoul", 2026, 9, 18, 12)),
+                       "Asia/Seoul")
+    }
+
     // MULTIDESTINO. Lo que no se puede perder al migrar: `measuredOutcome`
     // guarda los días reales hasta la estabilidad de cada viaje pasado, y de
     // ahí salen las tasas de reajuste aprendidas. Las series de HealthKit sólo
