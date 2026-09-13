@@ -542,6 +542,43 @@ struct TravelEpisodeEditorView: View {
                 FlightListSection(title: "Ida", flights: $draft.outboundFlights,
                                   defaultOrigin: draft.homeTimeZoneID, defaultDestination: draft.destinationTimeZoneID)
 
+                // Destinos intermedios: cada uno con sus propios vuelos (y sus
+                // escalas reales dentro). Van entre la ida y la vuelta porque
+                // eso es lo que son — paradas del camino con estancia, no
+                // escalas de un trayecto.
+                ForEach(Array(draft.intermediateStops.enumerated()), id: \.element.id) { position, stop in
+                    let index = position + 1
+                    FlightListSection(
+                        title: "Destino \(index)",
+                        flights: Binding(
+                            get: { draft.stops.indices.contains(index) ? draft.stops[index].flights : [] },
+                            set: { if draft.stops.indices.contains(index) { draft.stops[index].flights = $0 } }
+                        ),
+                        defaultOrigin: draft.stops[index - 1].destinationTimeZoneID ?? draft.destinationTimeZoneID,
+                        defaultDestination: "",
+                        onRemove: { draft.stops.removeAll { $0.id == stop.id } })
+                }
+
+                Section {
+                    Button {
+                        // Se inserta ANTES de la vuelta si ya la hay: un destino
+                        // nuevo va en el camino, no después de volver a casa.
+                        let insertAt = draft.returnsHome ? draft.stops.count - 1 : draft.stops.count
+                        let previous = draft.stops.indices.contains(insertAt - 1)
+                            ? draft.stops[insertAt - 1].destinationTimeZoneID : nil
+                        let departure = (draft.stops.indices.contains(insertAt - 1)
+                            ? draft.stops[insertAt - 1].arrival : nil)?.addingTimeInterval(3 * 86_400) ?? Date()
+                        draft.stops.insert(TravelStop(flights: [FlightSegment(
+                            departure: departure, arrival: departure.addingTimeInterval(5 * 3_600),
+                            originTimeZoneID: previous ?? draft.destinationTimeZoneID,
+                            destinationTimeZoneID: "")]), at: insertAt)
+                    } label: {
+                        Label("Añadir destino", systemImage: "mappin.and.ellipse")
+                    }
+                } footer: {
+                    Text("Un destino nuevo abre su propia estancia y su propia adaptación. Una escala es un tránsito dentro del mismo trayecto, sin estancia.")
+                }
+
                 // La vuelta arranca donde ACABA la ida de verdad, y sólo cae
                 // al huso declarado si todavía no hay ida. Con el declarado a
                 // secas, un viaje cuyo destino declarado no coincide con los
@@ -648,6 +685,9 @@ private struct FlightListSection: View {
     @Binding var flights: [FlightSegment]
     let defaultOrigin: String
     let defaultDestination: String
+    /// Sólo lo pasan los destinos intermedios: la ida y la vuelta no se
+    /// borran como bloque, se vacían de vuelos.
+    var onRemove: (() -> Void)?
 
     var body: some View {
         Section {
@@ -682,7 +722,14 @@ private struct FlightListSection: View {
                 Label(flights.isEmpty ? "Añadir vuelo" : "Añadir escala", systemImage: "plus.circle")
             }
         } header: {
-            Text(title)
+            HStack {
+                Text(title)
+                if let onRemove {
+                    Spacer()
+                    Button("Quitar destino", role: .destructive, action: onRemove)
+                        .font(.caption).textCase(nil)
+                }
+            }
         } footer: {
             if flights.isEmpty {
                 Text(title == "Ida" ? "Sin la ida no hay episodio que seguir." : "Puedes dejarla vacía y añadirla cuando la tengas: la vuelta genera su propia fase de readaptación.")
