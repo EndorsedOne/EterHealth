@@ -190,6 +190,33 @@ enum TravelStayPolicy: String, Codable, CaseIterable, Identifiable {
 /// desplazamiento según el día del año (ver el test de Madrid–Nueva York en la
 /// ventana en la que Europa ya ha cambiado la hora y Estados Unidos todavía
 /// no: 5 h en vez de las 6 habituales).
+/// Una PARADA del itinerario: cómo llegas a un destino, y por tanto la estancia que
+/// empieza al aterrizar. Sus `flights` son las escalas REALES de ese trayecto
+/// (Madrid–Doha–Bangkok es un tramo con dos vuelos, no dos tramos): una escala
+/// es tránsito sin estancia, y un destino nuevo sí abre estancia.
+///
+/// Esa distinción es justo lo que el modelo de ida+vuelta no podía expresar.
+/// Metiendo Bangkok→Seúl como "escala" de la ida, los días en Bangkok se
+/// etiquetaban "en tránsito" y la adaptación a Bangkok no existía: la fase de
+/// adaptación sólo arranca al aterrizar el ÚLTIMO vuelo de la ida.
+struct TravelStop: Codable, Equatable, Identifiable {
+    let id: UUID
+    var flights: [FlightSegment]
+
+    init(id: UUID = UUID(), flights: [FlightSegment] = []) {
+        self.id = id
+        self.flights = flights.sorted { $0.departure < $1.departure }
+    }
+
+    var departure: Date? { flights.map(\.departure).min() }
+    var arrival: Date? { flights.map(\.arrival).max() }
+    var originTimeZoneID: String? { flights.first?.originTimeZoneID }
+    var destinationTimeZoneID: String? { flights.last?.destinationTimeZoneID }
+    /// Desplazamiento del tramo: la suma de sus escalas, con signo.
+    var shiftHours: Double { flights.reduce(0) { $0 + $1.offsetShiftHours } }
+    var isValid: Bool { !flights.isEmpty && flights.allSatisfy(\.isValid) }
+}
+
 struct FlightSegment: Codable, Equatable, Identifiable {
     let id: UUID
     var departure: Date
@@ -295,8 +322,11 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// abajo y un test que lo comprueba.
     var homeTimeZoneID: String
     var destinationTimeZoneID: String
-    var outboundFlights: [FlightSegment]
-    var returnFlights: [FlightSegment]
+    /// El recorrido completo, en orden. Fuente canónica desde el
+    /// multidestino: `outboundFlights` y `returnFlights` de abajo son ahora
+    /// LECTURAS de esta lista, no dos almacenes paralelos que puedan
+    /// discrepar de ella.
+    var stops: [TravelStop]
     /// Sustituye al `stayEndDate` de la propuesta inicial sólo para el caso
     /// en el que aún no hay vuelta dada de alta: cuando hay vuelos de vuelta,
     /// el fin de la estancia ES su primera salida, y almacenarlo aparte
@@ -329,13 +359,104 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         self.title = title
         self.homeTimeZoneID = homeTimeZoneID
         self.destinationTimeZoneID = destinationTimeZoneID
-        self.outboundFlights = outboundFlights.sorted { $0.departure < $1.departure }
-        self.returnFlights = returnFlights.sorted { $0.departure < $1.departure }
+        var built: [TravelStop] = []
+        if !outboundFlights.isEmpty { built.append(TravelStop(flights: outboundFlights)) }
+        if !returnFlights.isEmpty { built.append(TravelStop(flights: returnFlights)) }
+        self.stops = built
         self.expectedStayEndDate = expectedStayEndDate
         self.declaredStayPolicy = declaredStayPolicy
         self.isCancelled = isCancelled
         self.measuredOutcome = measuredOutcome
         self.note = note
+    }
+
+    // MARK: Compatibilidad con los viajes ya guardados
+
+    /// Claves de las propiedades almacenadas. El codificador sintetizado las
+    /// usa, así que a partir de ahora se escribe `stops` y no los dos campos
+    /// viejos: el formato nuevo es el único que se GENERA.
+    private enum CodingKeys: String, CodingKey {
+        case id, title, homeTimeZoneID, destinationTimeZoneID, stops
+        case expectedStayEndDate, declaredStayPolicy, isCancelled, measuredOutcome, note
+    }
+
+    /// Y estas son las del formato anterior, sólo para LEER. Un episodio
+    /// guardado antes del multidestino no tiene `stops`, y perderlo no sería
+    /// perder unas fechas: `measuredOutcome` guarda los días reales hasta la
+    /// estabilidad de cada viaje pasado, que es de donde salen las tasas de
+    /// reajuste aprendidas (TravelLearningEngine). Con las series de HealthKit
+    /// llegando sólo 90 días atrás, esas mediciones no se pueden recalcular:
+    /// si se pierden, se pierden para siempre.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case outboundFlights, returnFlights
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        homeTimeZoneID = try container.decode(String.self, forKey: .homeTimeZoneID)
+        destinationTimeZoneID = try container.decode(String.self, forKey: .destinationTimeZoneID)
+        expectedStayEndDate = try container.decodeIfPresent(Date.self, forKey: .expectedStayEndDate)
+        declaredStayPolicy = try container.decodeIfPresent(TravelStayPolicy.self, forKey: .declaredStayPolicy)
+        isCancelled = try container.decodeIfPresent(Bool.self, forKey: .isCancelled) ?? false
+        measuredOutcome = try container.decodeIfPresent(TravelMeasuredOutcome.self, forKey: .measuredOutcome)
+        note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+
+        if let stored = try container.decodeIfPresent([TravelStop].self, forKey: .stops) {
+            stops = stored
+            return
+        }
+        // Formato anterior: ida y vuelta pasan a ser el primer y el último
+        // tramo, que es exactamente lo que ya significaban. Un viaje sin
+        // vuelta dada de alta migra a UN solo tramo, y sigue sin tener vuelta:
+        // no se inventa una.
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        let outbound = try legacy.decodeIfPresent([FlightSegment].self, forKey: .outboundFlights) ?? []
+        let returning = try legacy.decodeIfPresent([FlightSegment].self, forKey: .returnFlights) ?? []
+        var migrated: [TravelStop] = []
+        if !outbound.isEmpty { migrated.append(TravelStop(flights: outbound)) }
+        if !returning.isEmpty { migrated.append(TravelStop(flights: returning)) }
+        stops = migrated
+    }
+
+    // MARK: Ida y vuelta como lecturas del recorrido
+
+    /// La ida es el primer tramo.
+    var outboundFlights: [FlightSegment] {
+        get { stops.first?.flights ?? [] }
+        set {
+            if stops.isEmpty { stops = [TravelStop(flights: newValue)] }
+            else { stops[0].flights = newValue.sorted { $0.departure < $1.departure } }
+        }
+    }
+
+    /// La vuelta es el último tramo SÓLO si termina en casa. Mientras el
+    /// recorrido no vuelva —el caso de un viaje en curso con destinos aún por
+    /// añadir— no hay vuelta, y eso es distinto de "la vuelta está vacía".
+    var returnsHome: Bool {
+        guard stops.count > 1, let last = stops.last?.destinationTimeZoneID else { return false }
+        return last == homeTimeZoneID
+    }
+
+    var returnFlights: [FlightSegment] {
+        get { returnsHome ? (stops.last?.flights ?? []) : [] }
+        set {
+            let stop = TravelStop(flights: newValue)
+            if newValue.isEmpty {
+                if returnsHome { stops.removeLast() }
+            } else if returnsHome {
+                stops[stops.count - 1] = stop
+            } else {
+                stops.append(stop)
+            }
+        }
+    }
+
+    /// Los destinos intermedios: todo lo que no es la ida ni la vuelta a casa.
+    var intermediateStops: [TravelStop] {
+        let tail = stops.dropFirst()
+        return Array(returnsHome ? tail.dropLast() : tail)
     }
 
     // MARK: Momentos derivados

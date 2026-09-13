@@ -542,8 +542,14 @@ struct TravelEpisodeEditorView: View {
                 FlightListSection(title: "Ida", flights: $draft.outboundFlights,
                                   defaultOrigin: draft.homeTimeZoneID, defaultDestination: draft.destinationTimeZoneID)
 
+                // La vuelta arranca donde ACABA la ida de verdad, y sólo cae
+                // al huso declarado si todavía no hay ida. Con el declarado a
+                // secas, un viaje cuyo destino declarado no coincide con los
+                // vuelos (el aviso rojo de la pantalla de viajes) proponía
+                // Madrid→Madrid en la vuelta.
                 FlightListSection(title: "Vuelta", flights: $draft.returnFlights,
-                                  defaultOrigin: draft.destinationTimeZoneID, defaultDestination: draft.homeTimeZoneID)
+                                  defaultOrigin: draft.outboundFlights.last?.destinationTimeZoneID ?? draft.destinationTimeZoneID,
+                                  defaultDestination: draft.homeTimeZoneID)
 
                 if draft.returnFlights.isEmpty {
                     Section {
@@ -655,10 +661,22 @@ private struct FlightListSection: View {
                 // ya propone Doha como origen.
                 let origin = flights.last?.destinationTimeZoneID ?? defaultOrigin
                 let departure = flights.last?.arrival.addingTimeInterval(2 * 3_600) ?? Date()
+                // El destino del tramo nuevo se deja SIN elegir. Antes había
+                // aquí un ternario que devolvía `defaultDestination` en las dos
+                // ramas —o sea, nada—, así que una escala nacía con origen y
+                // destino iguales (Bangkok→Bangkok) y parecía que el selector
+                // escribía en los dos sitios a la vez. No era el selector: era
+                // el valor inicial.
+                //
+                // Vacío y no una ciudad cualquiera porque no hay ninguna que
+                // adivinar, y porque `isValid` exige un huso real: con el
+                // destino sin elegir, Guardar se queda deshabilitado hasta que
+                // se rellena, en vez de guardar un tramo que no va a ningún
+                // sitio.
                 flights.append(FlightSegment(
                     departure: departure, arrival: departure.addingTimeInterval(3 * 3_600),
                     originTimeZoneID: origin,
-                    destinationTimeZoneID: flights.isEmpty ? defaultDestination : defaultDestination
+                    destinationTimeZoneID: flights.isEmpty ? defaultDestination : ""
                 ))
             } label: {
                 Label(flights.isEmpty ? "Añadir vuelo" : "Añadir escala", systemImage: "plus.circle")
@@ -694,7 +712,7 @@ private struct FlightSegmentEditor: View {
             NavigationLink {
                 TimeZonePickerView(selection: $flight.originTimeZoneID, title: "Origen")
             } label: {
-                LabeledContent("Origen", value: TravelFormat.zoneName(flight.originTimeZoneID))
+                LabeledContent("Origen", value: TravelFormat.zoneLabel(flight.originTimeZoneID))
             }
             // La hora se introduce y se muestra en el huso del tramo, no en el
             // del dispositivo: es la hora que el atleta lee en el billete.
@@ -703,7 +721,7 @@ private struct FlightSegmentEditor: View {
             NavigationLink {
                 TimeZonePickerView(selection: $flight.destinationTimeZoneID, title: "Destino")
             } label: {
-                LabeledContent("Destino", value: TravelFormat.zoneName(flight.destinationTimeZoneID))
+                LabeledContent("Destino", value: TravelFormat.zoneLabel(flight.destinationTimeZoneID))
             }
             DatePicker("Llegada", selection: $flight.arrival)
                 .environment(\.timeZone, flight.destinationTimeZone ?? .current)
@@ -778,6 +796,12 @@ struct TimeZonePickerView: View {
 enum TravelFormat {
     /// "Asia/Tokyo" → "Tokyo". El identificador completo se muestra debajo en
     /// el selector, así que aquí gana la legibilidad.
+    /// Para una fila que todavía no tiene ciudad: "Seleccionar" en vez de una
+    /// celda en blanco que no invita a tocarla.
+    static func zoneLabel(_ identifier: String) -> String {
+        TimeZone(identifier: identifier) == nil ? "Seleccionar" : zoneName(identifier)
+    }
+
     static func zoneName(_ identifier: String) -> String {
         identifier.split(separator: "/").last.map { $0.replacingOccurrences(of: "_", with: " ") } ?? identifier
     }
