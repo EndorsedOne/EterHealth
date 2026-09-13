@@ -546,17 +546,26 @@ struct TravelEpisodeEditorView: View {
                 // escalas reales dentro). Van entre la ida y la vuelta porque
                 // eso es lo que son — paradas del camino con estancia, no
                 // escalas de un trayecto.
-                ForEach(Array(draft.intermediateStops.enumerated()), id: \.element.id) { position, stop in
-                    let index = position + 1
+                // Identificadas por ID, NO por posición. Con posiciones, el
+                // índice dentro de `stops` deja de ser válido justo cuando
+                // `returnsHome` cambia —o sea, en el instante en que añades la
+                // vuelta— y el enlace escribía en la parada equivocada: la
+                // ciudad que elegías para la vuelta acababa en un destino
+                // nuevo. Además `stops[index - 1]` sin comprobar reventaba.
+                ForEach(draft.intermediateStops) { stop in
+                    let stopID = stop.id
                     FlightListSection(
-                        title: "Destino \(index)",
+                        title: "Destino \(destinationNumber(stopID))",
                         flights: Binding(
-                            get: { draft.stops.indices.contains(index) ? draft.stops[index].flights : [] },
-                            set: { if draft.stops.indices.contains(index) { draft.stops[index].flights = $0 } }
+                            get: { draft.stops.first { $0.id == stopID }?.flights ?? [] },
+                            set: { value in
+                                guard let index = draft.stops.firstIndex(where: { $0.id == stopID }) else { return }
+                                draft.stops[index].flights = value
+                            }
                         ),
-                        defaultOrigin: draft.stops[index - 1].destinationTimeZoneID ?? draft.destinationTimeZoneID,
+                        defaultOrigin: originArrivingBefore(stopID),
                         defaultDestination: "",
-                        onRemove: { draft.stops.removeAll { $0.id == stop.id } })
+                        onRemove: { draft.stops.removeAll { $0.id == stopID } })
                 }
 
                 Section {
@@ -585,8 +594,7 @@ struct TravelEpisodeEditorView: View {
                 // vuelos (el aviso rojo de la pantalla de viajes) proponía
                 // Madrid→Madrid en la vuelta.
                 FlightListSection(title: "Vuelta", flights: $draft.returnFlights,
-                                  defaultOrigin: draft.outboundFlights.last?.destinationTimeZoneID ?? draft.destinationTimeZoneID,
-                                  defaultDestination: draft.homeTimeZoneID)
+                                  defaultOrigin: returnOrigin, defaultDestination: draft.homeTimeZoneID)
 
                 if draft.returnFlights.isEmpty {
                     Section {
@@ -638,6 +646,30 @@ struct TravelEpisodeEditorView: View {
                 }
             }
         }
+    }
+
+    /// El número visible de un destino intermedio, resuelto por ID: su
+    /// posición cambia cuando se añade o quita otro, y renumerar a mano era
+    /// justo la fuente del enlace equivocado.
+    private func destinationNumber(_ id: UUID) -> Int {
+        (draft.intermediateStops.firstIndex { $0.id == id } ?? 0) + 1
+    }
+
+    /// De dónde sales hacia esta parada: el destino de la parada anterior.
+    private func originArrivingBefore(_ id: UUID) -> String {
+        guard let index = draft.stops.firstIndex(where: { $0.id == id }), index > 0,
+              let previous = draft.stops[index - 1].destinationTimeZoneID else {
+            return draft.destinationTimeZoneID
+        }
+        return previous
+    }
+
+    /// La vuelta sale de la ÚLTIMA parada del camino, no de la primera.
+    /// Antes salía de `outboundFlights.last`, que con varias paradas es el
+    /// destino de la IDA (Bangkok) y no donde de verdad estás (Seúl).
+    private var returnOrigin: String {
+        let onTheWay = draft.returnsHome ? Array(draft.stops.dropLast()) : draft.stops
+        return onTheWay.last?.destinationTimeZoneID ?? draft.destinationTimeZoneID
     }
 
     private var canSave: Bool {
