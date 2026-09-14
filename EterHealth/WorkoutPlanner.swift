@@ -91,7 +91,7 @@ enum WorkoutPlanner {
                             muscles: muscles, health: health, imports: imports, context: context, now: now)
         guard let concurrentDay else { return built }
         return applyingConcurrentOrder(built, guidance: concurrentDay,
-                                       zones: health.currentHeartRateZoneBoundaries())
+                                       zones: health.currentHeartRateZoneBoundaries(profile: context.profile))
     }
 
     /// El segundo estímulo del día entra en la ESTRUCTURA de la sesión (una
@@ -157,7 +157,7 @@ enum WorkoutPlanner {
         let profile = context.profile
         let deload = isDeload
         let bodyweightOnly = !profile.gymAvailable
-        let zones = health.currentHeartRateZoneBoundaries()
+        let zones = health.currentHeartRateZoneBoundaries(profile: profile)
         // How far into the current phase we are — 0 at its first day, 1 at
         // its last. Lets a 6-week block ramp volume week to week instead of
         // handing the same session on week 1 as week 6, the gap flagged

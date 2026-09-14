@@ -755,7 +755,7 @@ enum TrainingPlanEngine {
             reviews: reviews,
             thresholdPace: SessionClassification.thresholdPaceSecondsPerKm(
                 fiveK: runningSummaryForIntensity.fiveK, tenK: runningSummaryForIntensity.tenK),
-            thresholdHeartRate: health.currentHeartRateZoneBoundaries().map { Double($0.z3z4) }
+            thresholdHeartRate: health.currentHeartRateZoneBoundaries(profile: profile).map { Double($0.z3z4) }
         )
         // A rolling microcycle avoids the artificial reset produced by Monday.
         let windowStart = calendar.date(byAdding: .day, value: -7, to: now) ?? now
@@ -1597,7 +1597,7 @@ enum TrainingPlanEngine {
             reviews: reviews,
             thresholdPace: SessionClassification.thresholdPaceSecondsPerKm(
                 fiveK: runningSummaryForIntensity.fiveK, tenK: runningSummaryForIntensity.tenK),
-            thresholdHeartRate: health.currentHeartRateZoneBoundaries().map { Double($0.z3z4) }
+            thresholdHeartRate: health.currentHeartRateZoneBoundaries(profile: profile).map { Double($0.z3z4) }
         )
         var state = ForwardState(
             acute: DualLoad(aerobic: loadSummary.dual.acuteAerobic, strength: loadSummary.dual.acuteStrength),
