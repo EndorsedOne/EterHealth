@@ -4246,7 +4246,7 @@ final class EngineTests: XCTestCase {
         let decision = TrainingPlanEngine.balancedDecision(
             runs: 4, targetRuns: 4, strength: 2, targetStrength: 2, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
-            lateWeek: false, readiness: 88, muscles: muscles(legs: 88), goalFocus: focus
+            lateWeek: false, readiness: 88, muscles: trainedMuscles(legs: 88), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
         XCTAssertTrue(decision.rationale.localizedCaseInsensitiveContains("no hay nada obligatorio"))
@@ -4311,7 +4311,7 @@ final class EngineTests: XCTestCase {
             runs: 4, targetRuns: 4, strength: 1, targetStrength: 1, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
             trackedLiftDaysSince: 12,
-            lateWeek: false, readiness: 80, muscles: muscles(legs: 80), goalFocus: focus
+            lateWeek: false, readiness: 80, muscles: trainedMuscles(legs: 80), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
     }
@@ -4324,7 +4324,7 @@ final class EngineTests: XCTestCase {
             runs: 4, targetRuns: 4, strength: 1, targetStrength: 1, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
             trackedLiftDaysSince: nil,
-            lateWeek: false, readiness: 80, muscles: muscles(legs: 80), goalFocus: focus
+            lateWeek: false, readiness: 80, muscles: trainedMuscles(legs: 80), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
     }
@@ -4597,7 +4597,7 @@ final class EngineTests: XCTestCase {
             runs: 4, targetRuns: 4, strength: 2, targetStrength: 2, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
             trackedLiftDaysSince: 8,
-            lateWeek: false, readiness: 88, muscles: muscles(legs: 88), goalFocus: focus
+            lateWeek: false, readiness: 88, muscles: trainedMuscles(legs: 88), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
     }
@@ -4651,12 +4651,13 @@ final class EngineTests: XCTestCase {
     }
 
     func testGymPinsTheTrackedLiftEvenWhenAFresherVariationWouldOtherwiseRankFirst() {
-        let originalProfile = GoalStore.shared.profile
-        defer { GoalStore.shared.save(originalProfile) }
-        var profile = originalProfile
-        profile.goals = [TrainingGoal(id: UUID(), kind: .benchPress, title: "Banca", date: nil,
-                                      targetValue: 100, unit: "kg", priority: .maintenance, isActive: true)]
-        GoalStore.shared.save(profile)
+        // El objetivo va por PARÁMETRO. Este test se quedó a medio migrar
+        // cuando `gym` dejó de leer GoalStore.shared: seguía montando el
+        // objetivo en el singleton —código muerto— y pasaba `goals: []`, así
+        // que no había lift trackeado que anclar y ganaba la variación más
+        // reciente. Y de paso deja de mutar estado compartido.
+        let benchPress = TrainingGoal(id: UUID(), kind: .benchPress, title: "Banca", date: nil,
+                                      targetValue: 100, unit: "kg", priority: .maintenance, isActive: true)
 
         let imports = ImportStore(persistToDisk: false)
         let now = Date()
@@ -4672,7 +4673,7 @@ final class EngineTests: XCTestCase {
                                     muscleSets: ["Pecho": 4])
         imports.restore(workouts: [recent, older], labs: [])
 
-        let workout = WorkoutPlanner.gym(for: .push, imports: imports, light: false, muscles: [], goals: [])
+        let workout = WorkoutPlanner.gym(for: .push, imports: imports, light: false, muscles: [], goals: [benchPress])
         XCTAssertEqual(workout.exercises.first?.name, "Bench Press (Barbell)",
                        "The tracked lift must be pinned first, not displaced by a more recently trained equivalent variation.")
     }
@@ -6256,6 +6257,25 @@ final class EngineTests: XCTestCase {
         // completa por lo mismo. Queda anotado aquí porque el test es donde
         // alguien lo va a buscar; el arreglo (hacer evolucionar esas entradas
         // con el estado simulado) es un cambio propio, no de este PR.
+    }
+
+    /// Músculos con el volumen semanal YA hecho: exactamente su MAV. Para los
+    /// tests que afirman "cupos cumplidos" — decir a la vez `strength: 2/2` y
+    /// `recentSets: 0` es contradictorio, y la rama de mantenimiento lee el
+    /// volumen real, ve todo por debajo del MEV y ofrece fuerza. El fixture
+    /// era el incoherente, no el motor.
+    ///
+    /// Las series se DERIVAN de la tabla de landmarks en vez de escribirse a
+    /// mano: la primera versión de este helper las fijó a los MAV de entonces
+    /// y quedó obsoleta en cuanto la tabla cambió (Cuádriceps pasó de 8 a 12),
+    /// volviendo a caer por debajo del MEV sin que nada avisara.
+    private func trainedMuscles(legs readiness: Int) -> [MuscleReadiness] {
+        func atMAV(_ name: String, _ readiness: Int) -> MuscleReadiness {
+            MuscleReadiness(name: name, readiness: readiness, lastTrained: nil,
+                            recentSets: Int(MuscleVolumeLandmarkTable.landmarks(for: name).mav))
+        }
+        return ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].map { atMAV($0, readiness) }
+            + [atMAV("Pecho", 90), atMAV("Espalda", 90)]
     }
 
     private func muscles(legs readiness: Int) -> [MuscleReadiness] {
