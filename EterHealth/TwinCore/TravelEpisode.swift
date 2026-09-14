@@ -351,18 +351,29 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     var measuredOutcome: TravelMeasuredOutcome?
     var note: String
 
+    /// `stops` gana sobre `outboundFlights`/`returnFlights` cuando se pasa:
+    /// reconstruir el episodio desde ida y vuelta DESCARTA los destinos
+    /// intermedios, que es exactamente lo que hacía que un destino añadido
+    /// desapareciera al guardar.
     init(id: UUID = UUID(), title: String, homeTimeZoneID: String, destinationTimeZoneID: String,
          outboundFlights: [FlightSegment] = [], returnFlights: [FlightSegment] = [],
+         stops: [TravelStop]? = nil,
          expectedStayEndDate: Date? = nil, declaredStayPolicy: TravelStayPolicy? = nil,
          isCancelled: Bool = false, measuredOutcome: TravelMeasuredOutcome? = nil, note: String = "") {
         self.id = id
         self.title = title
         self.homeTimeZoneID = homeTimeZoneID
         self.destinationTimeZoneID = destinationTimeZoneID
-        var built: [TravelStop] = []
-        if !outboundFlights.isEmpty { built.append(TravelStop(flights: outboundFlights)) }
-        if !returnFlights.isEmpty { built.append(TravelStop(flights: returnFlights)) }
-        self.stops = built
+        if let stops {
+            // Se conserva el id de cada parada: es la identidad que usa la UI
+            // para saber qué sección está editando.
+            self.stops = stops.map { TravelStop(id: $0.id, flights: $0.flights) }
+        } else {
+            var built: [TravelStop] = []
+            if !outboundFlights.isEmpty { built.append(TravelStop(flights: outboundFlights)) }
+            if !returnFlights.isEmpty { built.append(TravelStop(flights: returnFlights)) }
+            self.stops = built
+        }
         self.expectedStayEndDate = expectedStayEndDate
         self.declaredStayPolicy = declaredStayPolicy
         self.isCancelled = isCancelled
@@ -514,13 +525,30 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// avisa cuando no, en vez de resolver el conflicto en silencio eligiendo
     /// uno de los dos.
     var declaredZonesMatchFlights: Bool {
-        let outboundOrigin = outboundFlights.first?.originTimeZoneID
-        let outboundDestination = outboundFlights.last?.destinationTimeZoneID
-        let returnOrigin = returnFlights.first?.originTimeZoneID
-        let returnDestination = returnFlights.last?.destinationTimeZoneID
-        for (declared, actual) in [(homeTimeZoneID, outboundOrigin), (destinationTimeZoneID, outboundDestination),
-                                   (destinationTimeZoneID, returnOrigin), (homeTimeZoneID, returnDestination)] {
+        var pairs: [(String, String?)] = [
+            (homeTimeZoneID, stops.first?.flights.first?.originTimeZoneID),
+            (destinationTimeZoneID, stops.first?.destinationTimeZoneID)
+        ]
+        if returnsHome {
+            pairs.append((homeTimeZoneID, returnFlights.last?.destinationTimeZoneID))
+            // Con varias paradas la vuelta NO sale del destino declarado: sale
+            // de la ÚLTIMA parada. Compararla contra el declarado marcaba como
+            // incoherente un itinerario perfectamente válido —
+            // Madrid→Bangkok→Seúl→Madrid daba aviso rojo permanente.
+            if let lastBeforeReturn = stops.dropLast().last?.destinationTimeZoneID {
+                pairs.append((lastBeforeReturn, returnFlights.first?.originTimeZoneID))
+            }
+        }
+        for (declared, actual) in pairs {
             if let actual, actual != declared { return false }
+        }
+        // Y el recorrido tiene que encadenar: cada parada sale de donde
+        // aterrizó la anterior. Ese es el hueco real que un multidestino puede
+        // tener, y el que antes no se comprobaba en absoluto.
+        for (previous, next) in zip(stops, stops.dropFirst()) {
+            guard let arrival = previous.destinationTimeZoneID,
+                  let departure = next.flights.first?.originTimeZoneID else { continue }
+            if arrival != departure { return false }
         }
         return true
     }

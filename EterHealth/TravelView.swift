@@ -704,7 +704,10 @@ struct TravelEpisodeEditorView: View {
         travel.save(TravelEpisode(
             id: episode.id, title: episode.title,
             homeTimeZoneID: episode.homeTimeZoneID, destinationTimeZoneID: episode.destinationTimeZoneID,
-            outboundFlights: episode.outboundFlights, returnFlights: episode.returnFlights,
+            // El itinerario COMPLETO. Pasar sólo ida y vuelta descartaba los
+            // destinos intermedios: añadías Seúl, guardabas, y al reabrir sólo
+            // quedaban ida y vuelta.
+            stops: episode.stops,
             expectedStayEndDate: episode.expectedStayEndDate, declaredStayPolicy: episode.declaredStayPolicy,
             isCancelled: episode.isCancelled, measuredOutcome: episode.measuredOutcome, note: episode.note
         ))

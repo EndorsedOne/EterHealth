@@ -84,6 +84,71 @@ final class TravelEpisodeTests: XCTestCase {
         XCTAssertFalse(episode.returnsHome)
     }
 
+    // El fallo que se veía en la app: añades Seúl, guardas, reabres y sólo
+    // quedan ida y vuelta. Reconstruir el episodio desde outbound/return
+    // DESCARTA los destinos intermedios.
+    func testRebuildingAnEpisodeKeepsItsIntermediateStops() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 17, 0),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 17, 7))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 19, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 19, 22))
+        var original = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                     destinationTimeZoneID: "Asia/Bangkok",
+                                     outboundFlights: [toBangkok])
+        original.stops.append(TravelStop(flights: [toSeoul]))
+        original.stops.append(TravelStop(flights: [home]))
+
+        // Igual que hace el guardado de la pantalla de edición.
+        let rebuilt = TravelEpisode(
+            id: original.id, title: original.title,
+            homeTimeZoneID: original.homeTimeZoneID, destinationTimeZoneID: original.destinationTimeZoneID,
+            stops: original.stops, measuredOutcome: original.measuredOutcome)
+
+        XCTAssertEqual(rebuilt.stops.count, 3, "Seúl no se puede perder al guardar.")
+        XCTAssertEqual(rebuilt.intermediateStops.first?.destinationTimeZoneID, "Asia/Seoul")
+        XCTAssertEqual(rebuilt.stops.map(\.id), original.stops.map(\.id),
+                       "Y conserva la identidad de cada parada, que es lo que la UI usa para editarlas.")
+    }
+
+    // El aviso rojo permanente: con varias paradas la vuelta sale de la ÚLTIMA
+    // parada, no del destino declarado. Compararla contra el declarado marcaba
+    // como incoherente un itinerario perfectamente válido.
+    func testMultiStopItineraryIsNotFlaggedAsInconsistent() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 17, 0),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 17, 7))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 19, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 19, 22))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Bangkok",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+        episode.stops.append(TravelStop(flights: [home]))
+
+        XCTAssertTrue(episode.declaredZonesMatchFlights,
+                      "Madrid→Bangkok→Seúl→Madrid es coherente y no puede dar aviso.")
+    }
+
+    // Pero un hueco real SÍ se detecta: si un tramo no sale de donde aterrizó
+    // el anterior, el itinerario está roto. Antes esto no se comprobaba.
+    func testAGapBetweenStopsIsStillFlagged() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        // Sale de Tokio, pero aterrizaste en Bangkok: falta un trayecto.
+        let fromNowhere = segment("Asia/Tokyo", local("Asia/Tokyo", 2026, 9, 17, 0),
+                                  "Asia/Seoul", local("Asia/Seoul", 2026, 9, 17, 3))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Bangkok",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [fromNowhere]))
+
+        XCTAssertFalse(episode.declaredZonesMatchFlights,
+                       "Un salto de Bangkok a Tokio que nadie voló es un hueco real.")
+    }
+
     // MULTIDESTINO, fases. El itinerario real que motivó esto: Madrid →
     // Bangkok (estancia) → Seúl (estancia) → Madrid. Con el modelo de ida y
     // vuelta, meter Seúl como escala marcaba los días en Bangkok como
