@@ -34,6 +34,322 @@ final class TravelEpisodeTests: XCTestCase {
 
     // MARK: - Desplazamiento con signo y horario de verano
 
+    // Dar de alta la vuelta cuando YA hay un destino intermedio tiene que
+    // AÑADIR una parada, no sobrescribir la intermedia. El fallo que esto fija
+    // se veía en la UI —la ciudad de la vuelta acababa en un destino nuevo—
+    // pero el contrato es del modelo.
+    func testAddingTheReturnWithAnIntermediateStopAppendsInsteadOfReplacing() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+        XCTAssertFalse(episode.returnsHome, "Todavía no hay vuelta.")
+
+        episode.returnFlights = [segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 20, 11),
+                                         "Europe/Madrid", local("Europe/Madrid", 2026, 9, 20, 20))]
+
+        XCTAssertEqual(episode.stops.count, 3, "La vuelta se AÑADE; Seúl no se pierde.")
+        XCTAssertEqual(episode.intermediateStops.count, 1)
+        XCTAssertEqual(episode.intermediateStops.first?.destinationTimeZoneID, "Asia/Seoul")
+        XCTAssertTrue(episode.returnsHome)
+
+        // Y sustituirla después reemplaza esa misma parada, no añade otra.
+        episode.returnFlights = [segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 21, 11),
+                                         "Europe/Madrid", local("Europe/Madrid", 2026, 9, 21, 20))]
+        XCTAssertEqual(episode.stops.count, 3, "Cambiar la vuelta no crea una parada nueva.")
+    }
+
+    // Y vaciarla la quita sin tocar el destino intermedio.
+    func testClearingTheReturnKeepsTheIntermediateStop() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 20, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 20, 20))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+        episode.stops.append(TravelStop(flights: [home]))
+
+        episode.returnFlights = []
+
+        XCTAssertEqual(episode.stops.count, 2)
+        XCTAssertEqual(episode.stops.last?.destinationTimeZoneID, "Asia/Seoul")
+        XCTAssertFalse(episode.returnsHome)
+    }
+
+    // El fallo que se veía en la app: añades Seúl, guardas, reabres y sólo
+    // quedan ida y vuelta. Reconstruir el episodio desde outbound/return
+    // DESCARTA los destinos intermedios.
+    func testRebuildingAnEpisodeKeepsItsIntermediateStops() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 17, 0),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 17, 7))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 19, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 19, 22))
+        var original = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                     destinationTimeZoneID: "Asia/Bangkok",
+                                     outboundFlights: [toBangkok])
+        original.stops.append(TravelStop(flights: [toSeoul]))
+        original.stops.append(TravelStop(flights: [home]))
+
+        // Igual que hace el guardado de la pantalla de edición.
+        let rebuilt = TravelEpisode(
+            id: original.id, title: original.title,
+            homeTimeZoneID: original.homeTimeZoneID, destinationTimeZoneID: original.destinationTimeZoneID,
+            stops: original.stops, measuredOutcome: original.measuredOutcome)
+
+        XCTAssertEqual(rebuilt.stops.count, 3, "Seúl no se puede perder al guardar.")
+        XCTAssertEqual(rebuilt.intermediateStops.first?.destinationTimeZoneID, "Asia/Seoul")
+        XCTAssertEqual(rebuilt.stops.map(\.id), original.stops.map(\.id),
+                       "Y conserva la identidad de cada parada, que es lo que la UI usa para editarlas.")
+    }
+
+    // El aviso rojo permanente: con varias paradas la vuelta sale de la ÚLTIMA
+    // parada, no del destino declarado. Compararla contra el declarado marcaba
+    // como incoherente un itinerario perfectamente válido.
+    func testMultiStopItineraryIsNotFlaggedAsInconsistent() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 17, 0),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 17, 7))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 19, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 19, 22))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Bangkok",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+        episode.stops.append(TravelStop(flights: [home]))
+
+        XCTAssertTrue(episode.declaredZonesMatchFlights,
+                      "Madrid→Bangkok→Seúl→Madrid es coherente y no puede dar aviso.")
+    }
+
+    // Pero un hueco real SÍ se detecta: si un tramo no sale de donde aterrizó
+    // el anterior, el itinerario está roto. Antes esto no se comprobaba.
+    func testAGapBetweenStopsIsStillFlagged() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        // Sale de Tokio, pero aterrizaste en Bangkok: falta un trayecto.
+        let fromNowhere = segment("Asia/Tokyo", local("Asia/Tokyo", 2026, 9, 17, 0),
+                                  "Asia/Seoul", local("Asia/Seoul", 2026, 9, 17, 3))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Bangkok",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [fromNowhere]))
+
+        XCTAssertFalse(episode.declaredZonesMatchFlights,
+                       "Un salto de Bangkok a Tokio que nadie voló es un hueco real.")
+    }
+
+    // MULTIDESTINO, fases. El itinerario real que motivó esto: Madrid →
+    // Bangkok (estancia) → Seúl (estancia) → Madrid. Con el modelo de ida y
+    // vuelta, meter Seúl como escala marcaba los días en Bangkok como
+    // "en tránsito" y la adaptación a Bangkok no existía.
+    func testEachStopGetsItsOwnTransitAdaptationAndStay() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 20, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 20, 20))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+        episode.stops.append(TravelStop(flights: [home]))
+
+        // En vuelo a Bangkok.
+        XCTAssertEqual(episode.phase(at: local("Asia/Bangkok", 2026, 9, 12, 2)), .outboundTransit)
+        // Ya en Bangkok: adaptación a Bangkok — NO "en tránsito", que es lo
+        // que la escala hacía.
+        XCTAssertEqual(episode.phase(at: local("Asia/Bangkok", 2026, 9, 13, 12)), .destinationAdaptation)
+        // En vuelo a Seúl: vuelve a ser tránsito de ida, no vuelta.
+        XCTAssertEqual(episode.phase(at: local("Asia/Seoul", 2026, 9, 16, 14)), .outboundTransit)
+        // En Seúl: su propia adaptación, no la estancia de Bangkok.
+        XCTAssertEqual(episode.phase(at: local("Asia/Seoul", 2026, 9, 17, 12)), .destinationAdaptation)
+        // Volando a casa.
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 9, 20, 15)), .returnTransit)
+        // Y en casa, readaptación.
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 9, 21, 12)), .homeReadaptation)
+    }
+
+    // La adaptación de cada parada se calcula sobre SU salto. Seúl son +2 h
+    // desde Bangkok: si se calculara sobre el acumulado (+8 h desde Madrid),
+    // la app pediría días de adaptación que no corresponden.
+    func testIntermediateStopAdaptsOverItsOwnJumpNotTheCumulativeOne() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+
+        let bangkokEnd = episode.adaptationEnd(forStopAt: 0)!.date
+        let seoulEnd = episode.adaptationEnd(forStopAt: 1)!.date
+        let bangkokDays = bangkokEnd.timeIntervalSince(episode.stops[0].arrival!) / 86_400
+        let seoulDays = seoulEnd.timeIntervalSince(episode.stops[1].arrival!) / 86_400
+
+        XCTAssertGreaterThan(bangkokDays, seoulDays,
+                             "+5 h a Bangkok cuesta más adaptación que las +2 h de Bangkok a Seúl.")
+        XCTAssertGreaterThan(seoulDays, 0, "Pero Seúl SÍ tiene adaptación propia: no es cero.")
+    }
+
+    // Y el caso de ida y vuelta de siempre se comporta exactamente igual que
+    // antes: la generalización no puede cambiar lo que ya funcionaba.
+    func testTwoStopTripKeepsItsOriginalPhaseSequence() {
+        let out = segment("Europe/Madrid", local("Europe/Madrid", 2026, 7, 1, 10),
+                          "Asia/Tokyo", local("Asia/Tokyo", 2026, 7, 2, 8))
+        let back = segment("Asia/Tokyo", local("Asia/Tokyo", 2026, 7, 12, 10),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 7, 12, 18))
+        let episode = TravelEpisode(title: "Tokio", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Tokyo",
+                                    outboundFlights: [out], returnFlights: [back])
+
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 6, 28, 12)), .preDeparture)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 2, 2)), .outboundTransit)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 3, 12)), .destinationAdaptation)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 10, 12)), .destinationStable)
+        XCTAssertEqual(episode.phase(at: local("Asia/Tokyo", 2026, 7, 12, 14)), .returnTransit)
+        XCTAssertEqual(episode.phase(at: local("Europe/Madrid", 2026, 7, 13, 12)), .homeReadaptation)
+    }
+
+    // Dónde estás AHORA deja de ser un campo declarado y pasa a ser la parada
+    // vigente: con varias paradas, "el destino" ya no es un sitio.
+    func testCurrentDestinationFollowsTheStopYouAreIn() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+
+        XCTAssertEqual(episode.currentDestinationTimeZoneID(at: local("Europe/Madrid", 2026, 9, 1, 12)),
+                       "Europe/Madrid", "Antes de salir, estás en casa.")
+        XCTAssertEqual(episode.currentDestinationTimeZoneID(at: local("Asia/Bangkok", 2026, 9, 14, 12)),
+                       "Asia/Bangkok")
+        XCTAssertEqual(episode.currentDestinationTimeZoneID(at: local("Asia/Seoul", 2026, 9, 18, 12)),
+                       "Asia/Seoul")
+    }
+
+    // MULTIDESTINO. Lo que no se puede perder al migrar: `measuredOutcome`
+    // guarda los días reales hasta la estabilidad de cada viaje pasado, y de
+    // ahí salen las tasas de reajuste aprendidas. Las series de HealthKit sólo
+    // llegan 90 días atrás, así que esas mediciones NO se pueden recalcular:
+    // si se pierden en la migración, se pierden para siempre.
+    func testEpisodeSavedBeforeMultiDestinationKeepsItsLearnedOutcome() throws {
+        // JSON exactamente como lo escribía el formato anterior: ida y vuelta
+        // como dos listas, sin `stops`.
+        let json = """
+        {
+          "id": "11111111-1111-1111-1111-111111111111",
+          "title": "Tokio",
+          "homeTimeZoneID": "Europe/Madrid",
+          "destinationTimeZoneID": "Asia/Tokyo",
+          "outboundFlights": [{
+            "id": "22222222-2222-2222-2222-222222222222",
+            "departure": 800000000, "arrival": 800050000,
+            "originTimeZoneID": "Europe/Madrid", "destinationTimeZoneID": "Asia/Tokyo"
+          }],
+          "returnFlights": [{
+            "id": "33333333-3333-3333-3333-333333333333",
+            "departure": 800600000, "arrival": 800650000,
+            "originTimeZoneID": "Asia/Tokyo", "destinationTimeZoneID": "Europe/Madrid"
+          }],
+          "isCancelled": false,
+          "note": "",
+          "measuredOutcome": {
+            "destinationStabilityDays": 4.5,
+            "homeStabilityDays": 2.5,
+            "confoundersRawValue": 0,
+            "lastMeasuredAt": 800700000
+          }
+        }
+        """
+        let episode = try JSONDecoder().decode(TravelEpisode.self, from: Data(json.utf8))
+
+        // Lo aprendido sobrevive intacto.
+        XCTAssertEqual(episode.measuredOutcome?.destinationStabilityDays, 4.5)
+        XCTAssertEqual(episode.measuredOutcome?.homeStabilityDays, 2.5)
+        // Y el recorrido se reinterpreta como dos tramos, que es lo que ida y
+        // vuelta ya significaban.
+        XCTAssertEqual(episode.stops.count, 2)
+        XCTAssertEqual(episode.stops.first?.destinationTimeZoneID, "Asia/Tokyo")
+        XCTAssertTrue(episode.returnsHome)
+        XCTAssertTrue(episode.intermediateStops.isEmpty)
+        // Las lecturas de ida/vuelta siguen dando lo mismo, así que el motor
+        // de aprendizaje —que lee outboundShiftHours y returnShiftHours— no
+        // nota el cambio.
+        XCTAssertEqual(episode.outboundFlights.count, 1)
+        XCTAssertEqual(episode.returnFlights.count, 1)
+        XCTAssertEqual(episode.outboundShiftHours, -episode.returnShiftHours, accuracy: 0.001)
+    }
+
+    // Un viaje en curso sin vuelta dada de alta —el caso real del usuario—
+    // migra a UN tramo y sigue sin vuelta. No se inventa una.
+    func testInProgressEpisodeWithoutReturnMigratesToASingleLeg() throws {
+        let json = """
+        {
+          "id": "44444444-4444-4444-4444-444444444444",
+          "title": "Bangkok",
+          "homeTimeZoneID": "Europe/Madrid",
+          "destinationTimeZoneID": "Asia/Bangkok",
+          "outboundFlights": [{
+            "id": "55555555-5555-5555-5555-555555555555",
+            "departure": 800000000, "arrival": 800059400,
+            "originTimeZoneID": "Europe/Madrid", "destinationTimeZoneID": "Asia/Bangkok"
+          }],
+          "returnFlights": [],
+          "isCancelled": false,
+          "note": ""
+        }
+        """
+        let episode = try JSONDecoder().decode(TravelEpisode.self, from: Data(json.utf8))
+
+        XCTAssertEqual(episode.stops.count, 1)
+        XCTAssertFalse(episode.returnsHome, "Sin vuelta no hay tramo de vuelta que reconocer.")
+        XCTAssertTrue(episode.returnFlights.isEmpty)
+        XCTAssertTrue(episode.intermediateStops.isEmpty)
+    }
+
+    // Y el recorrido de tres destinos que motivó todo esto.
+    func testMultiDestinationTripSeparatesOutboundIntermediateAndReturn() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        let toSeoul = segment("Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+                              "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18))
+        let home = segment("Asia/Seoul", local("Asia/Seoul", 2026, 9, 20, 11),
+                           "Europe/Madrid", local("Europe/Madrid", 2026, 9, 20, 20))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    outboundFlights: [toBangkok])
+        episode.stops.append(TravelStop(flights: [toSeoul]))
+        episode.stops.append(TravelStop(flights: [home]))
+
+        XCTAssertEqual(episode.stops.count, 3)
+        XCTAssertEqual(episode.outboundFlights.count, 1, "La ida sigue siendo el primer tramo.")
+        XCTAssertEqual(episode.intermediateStops.count, 1)
+        XCTAssertEqual(episode.intermediateStops.first?.destinationTimeZoneID, "Asia/Seoul")
+        XCTAssertTrue(episode.returnsHome)
+        XCTAssertEqual(episode.returnFlights.count, 1)
+
+        // Cada tramo lleva SU propio salto: Seúl son +2 h desde Bangkok, no
+        // +8 desde Madrid. Eso es lo que la escala no podía expresar.
+        XCTAssertEqual(episode.stops[1].shiftHours, 2, accuracy: 0.001)
+        XCTAssertEqual(episode.stops[0].shiftHours, 5, accuracy: 0.001)
+    }
+
     func testOffsetShiftIsSignedSoEastIsPositiveAndWestNegative() {
         // Madrid → Tokio: hacia el este, hay que ADELANTAR el reloj.
         let east = segment("Europe/Madrid", local("Europe/Madrid", 2026, 7, 10, 12),

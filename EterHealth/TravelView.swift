@@ -542,8 +542,59 @@ struct TravelEpisodeEditorView: View {
                 FlightListSection(title: "Ida", flights: $draft.outboundFlights,
                                   defaultOrigin: draft.homeTimeZoneID, defaultDestination: draft.destinationTimeZoneID)
 
+                // Destinos intermedios: cada uno con sus propios vuelos (y sus
+                // escalas reales dentro). Van entre la ida y la vuelta porque
+                // eso es lo que son — paradas del camino con estancia, no
+                // escalas de un trayecto.
+                // Identificadas por ID, NO por posición. Con posiciones, el
+                // índice dentro de `stops` deja de ser válido justo cuando
+                // `returnsHome` cambia —o sea, en el instante en que añades la
+                // vuelta— y el enlace escribía en la parada equivocada: la
+                // ciudad que elegías para la vuelta acababa en un destino
+                // nuevo. Además `stops[index - 1]` sin comprobar reventaba.
+                ForEach(draft.intermediateStops) { stop in
+                    let stopID = stop.id
+                    FlightListSection(
+                        title: "Destino \(destinationNumber(stopID))",
+                        flights: Binding(
+                            get: { draft.stops.first { $0.id == stopID }?.flights ?? [] },
+                            set: { value in
+                                guard let index = draft.stops.firstIndex(where: { $0.id == stopID }) else { return }
+                                draft.stops[index].flights = value
+                            }
+                        ),
+                        defaultOrigin: originArrivingBefore(stopID),
+                        defaultDestination: "",
+                        onRemove: { draft.stops.removeAll { $0.id == stopID } })
+                }
+
+                Section {
+                    Button {
+                        // Se inserta ANTES de la vuelta si ya la hay: un destino
+                        // nuevo va en el camino, no después de volver a casa.
+                        let insertAt = draft.returnsHome ? draft.stops.count - 1 : draft.stops.count
+                        let previous = draft.stops.indices.contains(insertAt - 1)
+                            ? draft.stops[insertAt - 1].destinationTimeZoneID : nil
+                        let departure = (draft.stops.indices.contains(insertAt - 1)
+                            ? draft.stops[insertAt - 1].arrival : nil)?.addingTimeInterval(3 * 86_400) ?? Date()
+                        draft.stops.insert(TravelStop(flights: [FlightSegment(
+                            departure: departure, arrival: departure.addingTimeInterval(5 * 3_600),
+                            originTimeZoneID: previous ?? draft.destinationTimeZoneID,
+                            destinationTimeZoneID: "")]), at: insertAt)
+                    } label: {
+                        Label("Añadir destino", systemImage: "mappin.and.ellipse")
+                    }
+                } footer: {
+                    Text("Un destino nuevo abre su propia estancia y su propia adaptación. Una escala es un tránsito dentro del mismo trayecto, sin estancia.")
+                }
+
+                // La vuelta arranca donde ACABA la ida de verdad, y sólo cae
+                // al huso declarado si todavía no hay ida. Con el declarado a
+                // secas, un viaje cuyo destino declarado no coincide con los
+                // vuelos (el aviso rojo de la pantalla de viajes) proponía
+                // Madrid→Madrid en la vuelta.
                 FlightListSection(title: "Vuelta", flights: $draft.returnFlights,
-                                  defaultOrigin: draft.destinationTimeZoneID, defaultDestination: draft.homeTimeZoneID)
+                                  defaultOrigin: returnOrigin, defaultDestination: draft.homeTimeZoneID)
 
                 if draft.returnFlights.isEmpty {
                     Section {
@@ -597,6 +648,30 @@ struct TravelEpisodeEditorView: View {
         }
     }
 
+    /// El número visible de un destino intermedio, resuelto por ID: su
+    /// posición cambia cuando se añade o quita otro, y renumerar a mano era
+    /// justo la fuente del enlace equivocado.
+    private func destinationNumber(_ id: UUID) -> Int {
+        (draft.intermediateStops.firstIndex { $0.id == id } ?? 0) + 1
+    }
+
+    /// De dónde sales hacia esta parada: el destino de la parada anterior.
+    private func originArrivingBefore(_ id: UUID) -> String {
+        guard let index = draft.stops.firstIndex(where: { $0.id == id }), index > 0,
+              let previous = draft.stops[index - 1].destinationTimeZoneID else {
+            return draft.destinationTimeZoneID
+        }
+        return previous
+    }
+
+    /// La vuelta sale de la ÚLTIMA parada del camino, no de la primera.
+    /// Antes salía de `outboundFlights.last`, que con varias paradas es el
+    /// destino de la IDA (Bangkok) y no donde de verdad estás (Seúl).
+    private var returnOrigin: String {
+        let onTheWay = draft.returnsHome ? Array(draft.stops.dropLast()) : draft.stops
+        return onTheWay.last?.destinationTimeZoneID ?? draft.destinationTimeZoneID
+    }
+
     private var canSave: Bool {
         // `allSatisfy` sobre una lista VACÍA devuelve true, así que sin este
         // `!isEmpty` se podía guardar un viaje sin ida. El pie de la sección
@@ -629,7 +704,10 @@ struct TravelEpisodeEditorView: View {
         travel.save(TravelEpisode(
             id: episode.id, title: episode.title,
             homeTimeZoneID: episode.homeTimeZoneID, destinationTimeZoneID: episode.destinationTimeZoneID,
-            outboundFlights: episode.outboundFlights, returnFlights: episode.returnFlights,
+            // El itinerario COMPLETO. Pasar sólo ida y vuelta descartaba los
+            // destinos intermedios: añadías Seúl, guardabas, y al reabrir sólo
+            // quedaban ida y vuelta.
+            stops: episode.stops,
             expectedStayEndDate: episode.expectedStayEndDate, declaredStayPolicy: episode.declaredStayPolicy,
             isCancelled: episode.isCancelled, measuredOutcome: episode.measuredOutcome, note: episode.note
         ))
@@ -642,6 +720,9 @@ private struct FlightListSection: View {
     @Binding var flights: [FlightSegment]
     let defaultOrigin: String
     let defaultDestination: String
+    /// Sólo lo pasan los destinos intermedios: la ida y la vuelta no se
+    /// borran como bloque, se vacían de vuelos.
+    var onRemove: (() -> Void)?
 
     var body: some View {
         Section {
@@ -655,16 +736,35 @@ private struct FlightListSection: View {
                 // ya propone Doha como origen.
                 let origin = flights.last?.destinationTimeZoneID ?? defaultOrigin
                 let departure = flights.last?.arrival.addingTimeInterval(2 * 3_600) ?? Date()
+                // El destino del tramo nuevo se deja SIN elegir. Antes había
+                // aquí un ternario que devolvía `defaultDestination` en las dos
+                // ramas —o sea, nada—, así que una escala nacía con origen y
+                // destino iguales (Bangkok→Bangkok) y parecía que el selector
+                // escribía en los dos sitios a la vez. No era el selector: era
+                // el valor inicial.
+                //
+                // Vacío y no una ciudad cualquiera porque no hay ninguna que
+                // adivinar, y porque `isValid` exige un huso real: con el
+                // destino sin elegir, Guardar se queda deshabilitado hasta que
+                // se rellena, en vez de guardar un tramo que no va a ningún
+                // sitio.
                 flights.append(FlightSegment(
                     departure: departure, arrival: departure.addingTimeInterval(3 * 3_600),
                     originTimeZoneID: origin,
-                    destinationTimeZoneID: flights.isEmpty ? defaultDestination : defaultDestination
+                    destinationTimeZoneID: flights.isEmpty ? defaultDestination : ""
                 ))
             } label: {
                 Label(flights.isEmpty ? "Añadir vuelo" : "Añadir escala", systemImage: "plus.circle")
             }
         } header: {
-            Text(title)
+            HStack {
+                Text(title)
+                if let onRemove {
+                    Spacer()
+                    Button("Quitar destino", role: .destructive, action: onRemove)
+                        .font(.caption).textCase(nil)
+                }
+            }
         } footer: {
             if flights.isEmpty {
                 Text(title == "Ida" ? "Sin la ida no hay episodio que seguir." : "Puedes dejarla vacía y añadirla cuando la tengas: la vuelta genera su propia fase de readaptación.")
@@ -694,7 +794,7 @@ private struct FlightSegmentEditor: View {
             NavigationLink {
                 TimeZonePickerView(selection: $flight.originTimeZoneID, title: "Origen")
             } label: {
-                LabeledContent("Origen", value: TravelFormat.zoneName(flight.originTimeZoneID))
+                LabeledContent("Origen", value: TravelFormat.zoneLabel(flight.originTimeZoneID))
             }
             // La hora se introduce y se muestra en el huso del tramo, no en el
             // del dispositivo: es la hora que el atleta lee en el billete.
@@ -703,7 +803,7 @@ private struct FlightSegmentEditor: View {
             NavigationLink {
                 TimeZonePickerView(selection: $flight.destinationTimeZoneID, title: "Destino")
             } label: {
-                LabeledContent("Destino", value: TravelFormat.zoneName(flight.destinationTimeZoneID))
+                LabeledContent("Destino", value: TravelFormat.zoneLabel(flight.destinationTimeZoneID))
             }
             DatePicker("Llegada", selection: $flight.arrival)
                 .environment(\.timeZone, flight.destinationTimeZone ?? .current)
@@ -778,6 +878,12 @@ struct TimeZonePickerView: View {
 enum TravelFormat {
     /// "Asia/Tokyo" → "Tokyo". El identificador completo se muestra debajo en
     /// el selector, así que aquí gana la legibilidad.
+    /// Para una fila que todavía no tiene ciudad: "Seleccionar" en vez de una
+    /// celda en blanco que no invita a tocarla.
+    static func zoneLabel(_ identifier: String) -> String {
+        TimeZone(identifier: identifier) == nil ? "Seleccionar" : zoneName(identifier)
+    }
+
     static func zoneName(_ identifier: String) -> String {
         identifier.split(separator: "/").last.map { $0.replacingOccurrences(of: "_", with: " ") } ?? identifier
     }
