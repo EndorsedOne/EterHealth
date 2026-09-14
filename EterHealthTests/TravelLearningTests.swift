@@ -51,6 +51,40 @@ final class TravelLearningTests: XCTestCase {
 
     // MARK: - Lo que se aprende es una TASA, no una duración
 
+    func testEveryMeasuredStopBecomesAnIndependentLearningObservation() {
+        let bangkok = TravelStop(flights: [segment(
+            "Europe/Madrid", local("Europe/Madrid", 2026, 9, 1, 10),
+            "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 2, 8)
+        )])
+        let seoul = TravelStop(flights: [segment(
+            "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 8, 10),
+            "Asia/Seoul", local("Asia/Seoul", 2026, 9, 8, 17)
+        )])
+        let home = TravelStop(flights: [segment(
+            "Asia/Seoul", local("Asia/Seoul", 2026, 9, 14, 10),
+            "Europe/Madrid", local("Europe/Madrid", 2026, 9, 14, 18)
+        )])
+        let measuredAt = local("Europe/Madrid", 2026, 9, 20, 12)
+        let episode = TravelEpisode(
+            title: "Asia", homeTimeZoneID: "Europe/Madrid", destinationTimeZoneID: "Asia/Bangkok",
+            stops: [bangkok, seoul, home],
+            measuredOutcome: TravelMeasuredOutcome(
+                destinationStabilityDays: 4, homeStabilityDays: 3,
+                confoundersRawValue: 0, lastMeasuredAt: measuredAt,
+                stopOutcomes: [
+                    TravelStopMeasuredOutcome(stopID: bangkok.id, stabilityDays: 4, confoundersRawValue: 0, lastMeasuredAt: measuredAt),
+                    TravelStopMeasuredOutcome(stopID: seoul.id, stabilityDays: 1, confoundersRawValue: 0, lastMeasuredAt: measuredAt),
+                    TravelStopMeasuredOutcome(stopID: home.id, stabilityDays: 3, confoundersRawValue: 0, lastMeasuredAt: measuredAt)
+                ])
+        )
+
+        let outcomes = TravelLearningEngine.outcomes(from: [episode])
+        XCTAssertEqual(outcomes.count, 3)
+        XCTAssertEqual(Set(outcomes.compactMap(\.stopID)), Set([bangkok.id, seoul.id, home.id]))
+        XCTAssertEqual(outcomes.first(where: { $0.stopID == seoul.id })?.actualDays, 1)
+        XCTAssertEqual(outcomes.first(where: { $0.stopID == seoul.id })?.shiftHours, 2)
+    }
+
     func testLearningARateMakesTripsOfDifferentSizesComparable() {
         // El punto de aprender h/día y no "días hasta estabilizar": un
         // Madrid–Nueva York de 6 h y un Madrid–Tokio de 8 h no son comparables

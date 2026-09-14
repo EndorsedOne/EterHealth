@@ -423,7 +423,8 @@ enum TravelImpactEngine {
     nonisolated static func stabilizedDate(episode: TravelEpisode, at date: Date,
                                            signals: TravelSignalContext,
                                            rates: ReentrainmentRates = .prior,
-                                           measuringLeg: TravelLeg? = nil) -> Date? {
+                                           measuringLeg: TravelLeg? = nil,
+                                           measuringStopIndex: Int? = nil) -> Date? {
         guard let baseline = signals.baseline,
               let sleepFloor = baseline.sleep.lowerNormal,
               let hrvFloor = baseline.hrv.lowerNormal else { return nil }
@@ -431,7 +432,10 @@ enum TravelImpactEngine {
         let phase = episode.phase(at: date, rates: rates)
         let start: Date?
         let localZone: TimeZone?
-        if let measuringLeg {
+        if let measuringStopIndex, episode.stops.indices.contains(measuringStopIndex) {
+            start = episode.stops[measuringStopIndex].arrival
+            localZone = episode.stops[measuringStopIndex].destinationTimeZoneID.flatMap(TimeZone.init(identifier:))
+        } else if let measuringLeg {
             start = measuringLeg == .homeReturn ? episode.homeArrival : episode.destinationArrival
             localZone = measuringLeg == .homeReturn
                 ? TimeZone(identifier: episode.homeTimeZoneID)
@@ -495,24 +499,19 @@ enum TravelImpactEngine {
     nonisolated static func retroactiveStability(
         episode: TravelEpisode, signals: TravelSignalContext,
         rates: ReentrainmentRates = .prior, now: Date = Date()
-    ) -> [(leg: TravelLeg, days: Double)] {
-        var result: [(leg: TravelLeg, days: Double)] = []
-        if let window = episode.stabilityMeasurableUntil(leg: .outbound, rates: rates), window < now,
-           let arrival = episode.destinationArrival {
-            // La ida no se puede medir más allá de la vuelta a casa.
-            let limit = min(window, episode.homeArrival ?? window)
-            if let stabilized = stabilizedDate(episode: episode, at: limit, signals: signals,
-                                               rates: rates, measuringLeg: .outbound),
-               stabilized >= arrival {
-                result.append((.outbound, stabilized.timeIntervalSince(arrival) / 86_400))
-            }
-        }
-        if let window = episode.stabilityMeasurableUntil(leg: .homeReturn, rates: rates), window < now,
-           let homeArrival = episode.homeArrival {
-            if let stabilized = stabilizedDate(episode: episode, at: window, signals: signals,
-                                               rates: rates, measuringLeg: .homeReturn),
-               stabilized >= homeArrival {
-                result.append((.homeReturn, stabilized.timeIntervalSince(homeArrival) / 86_400))
+    ) -> [(stopID: UUID, leg: TravelLeg, days: Double)] {
+        var result: [(stopID: UUID, leg: TravelLeg, days: Double)] = []
+        for index in episode.stops.indices {
+            guard let window = episode.stabilityMeasurableUntil(stopIndex: index, rates: rates),
+                  window < now, let arrival = episode.stops[index].arrival else { continue }
+            if let stabilized = stabilizedDate(
+                episode: episode, at: window, signals: signals, rates: rates,
+                measuringStopIndex: index
+            ), stabilized >= arrival {
+                let leg: TravelLeg = episode.returnsHome && index == episode.stops.count - 1
+                    ? .homeReturn : .outbound
+                result.append((episode.stops[index].id, leg,
+                               stabilized.timeIntervalSince(arrival) / 86_400))
             }
         }
         return result

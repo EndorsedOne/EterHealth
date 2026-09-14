@@ -35,6 +35,8 @@ struct TravelLegOutcome: Equatable, Identifiable {
     let episodeID: UUID
     let title: String
     let leg: TravelLeg
+    let stopID: UUID?
+    let destinationTimeZoneID: String?
     /// Con signo, como en todo el modelo: + este, − oeste.
     let shiftHours: Double
     let arrival: Date
@@ -46,7 +48,7 @@ struct TravelLegOutcome: Equatable, Identifiable {
     let actualDays: Double?
     let confounders: TravelConfounders
 
-    var id: String { "\(episodeID.uuidString)-\(leg.rawValue)" }
+    var id: String { "\(episodeID.uuidString)-\(stopID?.uuidString ?? leg.rawValue)" }
     var isAdvance: Bool { shiftHours > 0 }
 
     /// La tasa observada. Sin desplazamiento no hay tasa que medir, y con
@@ -127,9 +129,8 @@ enum TravelLearningEngine {
     static let minimumPriorMultiple = 0.5
     static let maximumPriorMultiple = 2.0
 
-    /// Los tramos medidos de un historial de episodios. Un episodio aporta
-    /// hasta dos: la ida y la vuelta, que son fases distintas con tasas
-    /// distintas y por tanto observaciones independientes.
+    /// Los tramos medidos de un historial. Cada parada aporta una observación:
+    /// Bangkok y Seúl no se colapsan en el viejo slot genérico de "ida".
     nonisolated static func outcomes(from episodes: [TravelEpisode]) -> [TravelLegOutcome] {
         var result: [TravelLegOutcome] = []
         for episode in episodes {
@@ -137,27 +138,22 @@ enum TravelLearningEngine {
             // mantenido nunca intentó adaptarse: medir su "tasa" daría un
             // número que no describe ninguna re-sincronización.
             guard !episode.isCancelled, episode.resolvedStayPolicy == .adaptToDestination else { continue }
-            let measured = episode.measuredOutcome
-            let confounders = measured?.confounders ?? .none
-            if let arrival = episode.destinationArrival {
+            for index in episode.stops.indices {
+                let stop = episode.stops[index]
+                guard let arrival = stop.arrival else { continue }
+                let isHomeReturn = episode.returnsHome && index == episode.stops.count - 1
                 result.append(TravelLegOutcome(
-                    episodeID: episode.id, title: episode.title, leg: .outbound,
-                    shiftHours: episode.outboundShiftHours, arrival: arrival,
+                    episodeID: episode.id, title: episode.title,
+                    leg: isHomeReturn ? .homeReturn : .outbound,
+                    stopID: stop.id, destinationTimeZoneID: stop.destinationTimeZoneID,
+                    shiftHours: stop.shiftHours, arrival: arrival,
                     // El prior SIEMPRE, no las tasas aprendidas: la comparación
                     // que la pantalla muestra es "lo que la literatura predijo
                     // frente a lo que te pasó", y usar aquí lo aprendido la
                     // convertiría en un espejo de sí misma.
-                    priorDays: CircadianReentrainment.daysToRealign(offsetHours: episode.outboundShiftHours),
-                    actualDays: measured?.destinationStabilityDays,
-                    confounders: confounders))
-            }
-            if let homeArrival = episode.homeArrival {
-                result.append(TravelLegOutcome(
-                    episodeID: episode.id, title: episode.title, leg: .homeReturn,
-                    shiftHours: episode.returnShiftHours, arrival: homeArrival,
-                    priorDays: CircadianReentrainment.daysToRealign(offsetHours: episode.returnShiftHours),
-                    actualDays: measured?.homeStabilityDays,
-                    confounders: confounders))
+                    priorDays: CircadianReentrainment.daysToRealign(offsetHours: stop.shiftHours),
+                    actualDays: episode.measuredStabilityDays(forStopAt: index),
+                    confounders: episode.measuredConfounders(forStopAt: index)))
             }
         }
         return result.sorted { $0.arrival > $1.arrival }

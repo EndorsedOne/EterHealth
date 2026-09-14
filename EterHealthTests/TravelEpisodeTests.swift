@@ -63,6 +63,38 @@ final class TravelEpisodeTests: XCTestCase {
         XCTAssertEqual(episode.stops.count, 3, "Cambiar la vuelta no crea una parada nueva.")
     }
 
+    func testIntermediatePhaseBasisAndEndBelongToThatStop() {
+        let bangkok = TravelStop(flights: [segment(
+            "Europe/Madrid", local("Europe/Madrid", 2026, 9, 1, 10),
+            "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 2, 8)
+        )])
+        let seoul = TravelStop(flights: [segment(
+            "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 10, 10),
+            "Asia/Seoul", local("Asia/Seoul", 2026, 9, 10, 17)
+        )])
+        let home = TravelStop(flights: [segment(
+            "Asia/Seoul", local("Asia/Seoul", 2026, 9, 20, 10),
+            "Europe/Madrid", local("Europe/Madrid", 2026, 9, 20, 18)
+        )])
+        let measuredAt = local("Asia/Seoul", 2026, 9, 12, 12)
+        let episode = TravelEpisode(
+            title: "Asia", homeTimeZoneID: "Europe/Madrid", destinationTimeZoneID: "Asia/Bangkok",
+            stops: [bangkok, seoul, home],
+            measuredOutcome: TravelMeasuredOutcome(
+                destinationStabilityDays: nil, homeStabilityDays: nil,
+                confoundersRawValue: 0, lastMeasuredAt: measuredAt,
+                stopOutcomes: [TravelStopMeasuredOutcome(
+                    stopID: seoul.id, stabilityDays: 1, confoundersRawValue: 0, lastMeasuredAt: measuredAt
+                )])
+        )
+        let stableInSeoul = local("Asia/Seoul", 2026, 9, 12, 12)
+
+        XCTAssertEqual(episode.phase(at: stableInSeoul), .destinationStable)
+        XCTAssertEqual(episode.phaseBasis(at: stableInSeoul), .measuredStability)
+        XCTAssertEqual(episode.currentPhaseEnd(at: stableInSeoul), home.departure,
+                       "La estancia estable de Seúl termina al salir de Seúl, no en la vuelta global ni en Bangkok.")
+    }
+
     // Y vaciarla la quita sin tocar el destino intermedio.
     func testClearingTheReturnKeepsTheIntermediateStop() {
         let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),

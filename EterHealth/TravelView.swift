@@ -208,18 +208,20 @@ private struct CurrentTravelCard: View {
     }
 
     private var routeDescription: String {
-        [TravelFormat.zoneName(episode.homeTimeZoneID), TravelFormat.zoneName(episode.destinationTimeZoneID)]
+        let stop = activeStop
+        return [TravelFormat.zoneName(stop?.originTimeZoneID ?? episode.homeTimeZoneID),
+                TravelFormat.zoneName(stop?.destinationTimeZoneID ?? episode.destinationTimeZoneID)]
             .joined(separator: " → ")
     }
 
     private var shiftDescription: String {
-        let hours = episode.outboundShiftHours
+        let hours = activeStop?.shiftHours ?? episode.outboundShiftHours
         guard hours != 0 else { return "Sin cambio" }
         return String(format: "%+.0f h", hours)
     }
 
     private var directionDescription: String? {
-        let hours = episode.outboundShiftHours
+        let hours = activeStop?.shiftHours ?? episode.outboundShiftHours
         guard hours != 0 else { return nil }
         return hours > 0
             ? "Hacia el este · hay que adelantar el reloj, la dirección que más cuesta"
@@ -233,24 +235,23 @@ private struct CurrentTravelCard: View {
 
     private var transitDetail: String? {
         var parts: [String] = []
-        let layovers = phase == .returnTransit || phase == .homeReadaptation
-            ? episode.returnLayovers : episode.outboundLayovers
+        let layovers = max(0, (activeStop?.flights.count ?? 1) - 1)
         if layovers > 0 { parts.append("\(layovers) escala\(layovers == 1 ? "" : "s")") }
-        let overnight = phase == .returnTransit || phase == .homeReadaptation
-            ? episode.hasOvernightReturn : episode.hasOvernightOutbound
+        let overnight = activeStop?.flights.contains(where: \.isOvernight) ?? false
         if overnight { parts.append("vuelo nocturno") }
         return parts.isEmpty ? "Sin escalas, vuelo diurno" : parts.joined(separator: " · ")
     }
 
-    /// El tránsito que importa según dónde estemos: la ida hasta que se
-    /// vuelve, la vuelta a partir de ahí.
+    private var activeStop: TravelStop? {
+        guard let index = episode.currentStopIndex(at: now), episode.stops.indices.contains(index) else { return nil }
+        return episode.stops[index]
+    }
+
+    /// El tránsito de la parada activa, no la ida/vuelta global del formato
+    /// antiguo.
     private var relevantTransit: TimeInterval? {
-        switch phase {
-        case .returnTransit, .homeReadaptation, .recovered:
-            return episode.returnTransitDuration ?? episode.outboundTransitDuration
-        default:
-            return episode.outboundTransitDuration
-        }
+        guard let departure = activeStop?.departure, let arrival = activeStop?.arrival else { return nil }
+        return arrival.timeIntervalSince(departure)
     }
 
     private var remainingDescription: String? {
@@ -303,11 +304,14 @@ private struct TravelTimelineStrip: View {
     }
 
     private func phaseDetail(_ phase: TravelPhase) -> String? {
+        let stopIndex = episode.currentStopIndex(at: now)
+        let activeShift = stopIndex.flatMap { episode.stops.indices.contains($0) ? episode.stops[$0].shiftHours : nil }
+        let activeDays = activeShift.map { CircadianReentrainment.daysToRealign(offsetHours: $0, rates: rates) }
         switch phase {
         case .destinationAdaptation:
-            return "Adaptación estimada: \(TravelFormat.days(episode.destinationAdaptationDays(rates: rates))) desde la llegada."
+            return "Adaptación estimada: \(TravelFormat.days(activeDays ?? episode.destinationAdaptationDays(rates: rates))) desde la llegada a esta parada."
         case .homeReadaptation:
-            return "Readaptación estimada: \(TravelFormat.days(episode.homeReadaptationDays(rates: rates))) desde la vuelta — su propia fase, con la tasa de la dirección contraria a la ida."
+            return "Readaptación estimada: \(TravelFormat.days(activeDays ?? episode.homeReadaptationDays(rates: rates))) desde la vuelta — su propia fase, con la tasa de este tramo."
         case .destinationStable:
             guard episode.resolvedStayPolicy == .adaptToDestination else {
                 return "Sin adaptación en destino: se mantiene el horario de origen."
@@ -405,7 +409,7 @@ private struct OutcomeRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("\(outcome.title) · \(outcome.leg.rawValue)").font(.caption.bold())
+                Text("\(outcome.title) · \(stopLabel)").font(.caption.bold())
                 Spacer()
                 Text(outcome.arrival.formatted(date: .abbreviated, time: .omitted))
                     .font(.caption2).foregroundStyle(.secondary)
@@ -425,6 +429,12 @@ private struct OutcomeRow: View {
             parts.append("fuera de la estimación: " + outcome.confounders.descriptions.joined(separator: ", "))
         }
         return parts.joined(separator: " · ")
+    }
+
+    private var stopLabel: String {
+        guard let zone = outcome.destinationTimeZoneID,
+              let city = zone.split(separator: "/").last else { return outcome.leg.rawValue }
+        return city.replacingOccurrences(of: "_", with: " ")
     }
 }
 
@@ -461,6 +471,18 @@ private struct CompletedTravelRow: View {
     private var closureDescription: String {
         if episode.resolvedStayPolicy == .keepHomeSchedule {
             return "Estancia corta: mantuviste el horario de origen. Se registra como contexto, pero no mide adaptación circadiana."
+        }
+        if let perStop = measured?.stopOutcomes, !perStop.isEmpty {
+            let measuredByID = Dictionary(uniqueKeysWithValues: perStop.map { ($0.stopID, $0) })
+            let details = episode.stops.compactMap { stop -> String? in
+                guard let value = measuredByID[stop.id], let zone = stop.destinationTimeZoneID else { return nil }
+                return "\(TravelFormat.zoneName(zone)) \(String(format: "%.1f", value.stabilityDays)) d"
+            }
+            let excluded = perStop.filter { !$0.confounders.isEmpty }.count
+            let suffix = excluded == 0
+                ? "todas utilizables para aprender"
+                : "\(excluded) excluida\(excluded == 1 ? "" : "s") del aprendizaje por factores de confusión"
+            return "\(perStop.count)/\(episode.stops.count) paradas confirmadas: \(details.joined(separator: " · ")) · \(suffix)."
         }
         let outbound = measured?.destinationStabilityDays
         let home = measured?.homeStabilityDays

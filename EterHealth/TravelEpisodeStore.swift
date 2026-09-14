@@ -113,10 +113,10 @@ final class TravelEpisodeStore: ObservableObject {
         if let active = currentEpisode(at: date) { return active }
         return episodes
             .filter { episode in
-                guard episode.phase(at: date, rates: learnedRates) == .recovered,
-                      let window = episode.stabilityMeasurableUntil(leg: .homeReturn, rates: learnedRates)
-                else { return false }
-                return date <= window
+                guard episode.phase(at: date, rates: learnedRates) == .recovered else { return false }
+                return episode.stops.indices.contains { index in
+                    (episode.stabilityMeasurableUntil(stopIndex: index, rates: learnedRates).map { date <= $0 }) ?? false
+                }
             }
             .max { ($0.homeArrival ?? .distantPast) < ($1.homeArrival ?? .distantPast) }
     }
@@ -131,12 +131,10 @@ final class TravelEpisodeStore: ObservableObject {
     func recordStabilityIfConfirmed(_ impact: TravelImpact, at date: Date = Date()) {
         guard let stabilizedAt = impact.stabilizedAt,
               let episode = episodeForEvaluation(at: date) else { return }
-        // `.recovered` cuenta como tramo de vuelta: es la fase en la que la
-        // ventana de gracia sigue abierta.
-        let leg: TravelLeg = [.homeReadaptation, .recovered].contains(impact.phase) ? .homeReturn : .outbound
-        guard let anchor = leg == .homeReturn ? episode.homeArrival : episode.destinationArrival,
+        guard let stopIndex = episode.currentStopIndex(at: date), episode.stops.indices.contains(stopIndex),
+              let anchor = episode.stops[stopIndex].arrival,
               stabilizedAt >= anchor else { return }
-        recordStability(episodeID: episode.id, leg: leg,
+        recordStability(episodeID: episode.id, stopID: episode.stops[stopIndex].id,
                         days: stabilizedAt.timeIntervalSince(anchor) / 86_400,
                         confounders: impact.confounders, at: date)
     }
@@ -159,16 +157,35 @@ final class TravelEpisodeStore: ObservableObject {
     /// ninguna ventana que nadie consulte.
     func recordStability(episodeID: UUID, leg: TravelLeg, days: Double,
                          confounders: TravelConfounders, at date: Date = Date()) {
-        guard days >= 0, var episode = episodes.first(where: { $0.id == episodeID }) else { return }
+        guard let episode = episodes.first(where: { $0.id == episodeID }) else { return }
+        let index = leg == .outbound ? 0 : episode.stops.count - 1
+        guard episode.stops.indices.contains(index) else { return }
+        recordStability(episodeID: episodeID, stopID: episode.stops[index].id,
+                        days: days, confounders: confounders, at: date)
+    }
+
+    /// Versión canónica multidestino: cada parada conserva su propia medida
+    /// y sus confusores. Los slots antiguos se siguen rellenando como espejo
+    /// para que copias y pantallas de versiones previas no pierdan información.
+    func recordStability(episodeID: UUID, stopID: UUID, days: Double,
+                         confounders: TravelConfounders, at date: Date = Date()) {
+        guard days >= 0, var episode = episodes.first(where: { $0.id == episodeID }),
+              let stopIndex = episode.stops.firstIndex(where: { $0.id == stopID }) else { return }
         var outcome = episode.measuredOutcome
             ?? TravelMeasuredOutcome(destinationStabilityDays: nil, homeStabilityDays: nil,
                                      confoundersRawValue: 0, lastMeasuredAt: date)
-        switch leg {
-        case .outbound:
-            guard outcome.destinationStabilityDays == nil else { return }
+        var stopOutcomes = outcome.stopOutcomes ?? []
+        guard !stopOutcomes.contains(where: { $0.stopID == stopID }) else { return }
+        stopOutcomes.append(TravelStopMeasuredOutcome(
+            stopID: stopID, stabilityDays: days,
+            confoundersRawValue: confounders.rawValue, lastMeasuredAt: date
+        ))
+        outcome.stopOutcomes = stopOutcomes
+        if stopIndex == 0, outcome.destinationStabilityDays == nil {
             outcome.destinationStabilityDays = days
-        case .homeReturn:
-            guard outcome.homeStabilityDays == nil else { return }
+        }
+        if episode.returnsHome, stopIndex == episode.stops.count - 1,
+           outcome.homeStabilityDays == nil {
             outcome.homeStabilityDays = days
         }
         // Unión y no reemplazo: si la ida estuvo confundida por alcohol y la
@@ -199,8 +216,8 @@ final class TravelEpisodeStore: ObservableObject {
         let rates = learnedRates
         // Ventanas de gracia ya cerradas (pasadas). Si ninguna, la ruta en vivo
         // se encarga y aquí no hay nada que reconstruir.
-        let pastWindows = [TravelLeg.outbound, .homeReturn]
-            .compactMap { episode.stabilityMeasurableUntil(leg: $0, rates: rates) }
+        let pastWindows = episode.stops.indices
+            .compactMap { episode.stabilityMeasurableUntil(stopIndex: $0, rates: rates) }
             .filter { $0 < now }
         guard let windowEnd = pastWindows.max() else { return }
 
@@ -220,7 +237,8 @@ final class TravelEpisodeStore: ObservableObject {
             confounders: .none
         )
         for outcome in TravelImpactEngine.retroactiveStability(episode: episode, signals: signals, rates: rates, now: now) {
-            recordStability(episodeID: episode.id, leg: outcome.leg, days: outcome.days, confounders: .none, at: now)
+            recordStability(episodeID: episode.id, stopID: outcome.stopID,
+                            days: outcome.days, confounders: .none, at: now)
         }
     }
 
@@ -231,8 +249,8 @@ final class TravelEpisodeStore: ObservableObject {
     func backfillAllPending(health: HealthStore, imports: ImportStore, now: Date = Date()) async {
         let pending = episodes.filter { episode in
             !episode.isCancelled &&
-            [TravelLeg.outbound, .homeReturn].contains { leg in
-                (episode.stabilityMeasurableUntil(leg: leg, rates: learnedRates).map { $0 < now }) ?? false
+            episode.stops.indices.contains { index in
+                (episode.stabilityMeasurableUntil(stopIndex: index, rates: learnedRates).map { $0 < now }) ?? false
             }
         }.map(\.id)
         for id in pending { await backfillStability(for: id, health: health, imports: imports, now: now) }

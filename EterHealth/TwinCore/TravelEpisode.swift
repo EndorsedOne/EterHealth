@@ -647,17 +647,53 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
                 .estimatedDurationElapsed)
     }
 
+    /// Resultado medido de una parada concreta. Para episodios antiguos, que
+    /// sólo guardaban ida/vuelta, proyectamos esos dos slots sobre la primera
+    /// parada y la última que vuelve a casa.
+    func measuredStabilityDays(forStopAt index: Int) -> Double? {
+        guard stops.indices.contains(index) else { return nil }
+        if let value = measuredOutcome?.stopOutcomes?.first(where: { $0.stopID == stops[index].id })?.stabilityDays {
+            return value
+        }
+        if index == 0 { return measuredOutcome?.destinationStabilityDays }
+        if returnsHome && index == stops.count - 1 { return measuredOutcome?.homeStabilityDays }
+        return nil
+    }
+
+    func measuredConfounders(forStopAt index: Int) -> TravelConfounders {
+        guard stops.indices.contains(index) else { return .none }
+        if let value = measuredOutcome?.stopOutcomes?.first(where: { $0.stopID == stops[index].id }) {
+            return value.confounders
+        }
+        return measuredOutcome?.confounders ?? .none
+    }
+
+    /// Hasta cuándo puede confirmarse una parada concreta. El límite nunca
+    /// invade la parada siguiente: una noche en Seúl no puede terminar de
+    /// medir la adaptación a Bangkok.
+    func stabilityMeasurableUntil(stopIndex: Int, rates: ReentrainmentRates = .prior) -> Date? {
+        guard stops.indices.contains(stopIndex), measuredStabilityDays(forStopAt: stopIndex) == nil,
+              let arrival = stops[stopIndex].arrival else { return nil }
+        let days = resolvedStayPolicy == .adaptToDestination
+            ? CircadianReentrainment.daysToRealign(offsetHours: stops[stopIndex].shiftHours, rates: rates)
+            : 0
+        let graceEnd = arrival.addingTimeInterval(days * Self.stabilityGraceMultiple * 86_400)
+        if stops.indices.contains(stopIndex + 1), let nextDeparture = stops[stopIndex + 1].departure {
+            return min(graceEnd, nextDeparture)
+        }
+        return graceEnd
+    }
+
     /// Hasta cuándo tiene sentido seguir buscando la confirmación de
     /// estabilidad de un tramo que nunca se midió. nil cuando ya está medido
     /// (no hay nada que buscar) o cuando no hay tramo.
     func stabilityMeasurableUntil(leg: TravelLeg, rates: ReentrainmentRates = .prior) -> Date? {
         switch leg {
         case .outbound:
-            guard measuredOutcome?.destinationStabilityDays == nil, let arrival = destinationArrival else { return nil }
-            return arrival.addingTimeInterval(destinationAdaptationDays(rates: rates) * Self.stabilityGraceMultiple * 86_400)
+            return stops.isEmpty ? nil : stabilityMeasurableUntil(stopIndex: 0, rates: rates)
         case .homeReturn:
-            guard measuredOutcome?.homeStabilityDays == nil, let homeArrival else { return nil }
-            return homeArrival.addingTimeInterval(homeReadaptationDays(rates: rates) * Self.stabilityGraceMultiple * 86_400)
+            guard returnsHome else { return nil }
+            return stabilityMeasurableUntil(stopIndex: stops.count - 1, rates: rates)
         }
     }
 
@@ -701,14 +737,10 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     func adaptationEnd(forStopAt index: Int, rates: ReentrainmentRates = .prior)
         -> (date: Date, basis: TravelPhaseBasis)? {
         guard stops.indices.contains(index) else { return nil }
-        // Las paradas con medición propia reutilizan las funciones de siempre,
-        // para que un viaje de ida y vuelta se comporte exactamente igual que
-        // antes: la primera parada tiene destinationStabilityDays y la de
-        // vuelta homeStabilityDays. Una parada intermedia no tiene medición
-        // —measuredOutcome sólo guarda esas dos— y cae a la estimación.
-        if index == 0 { return destinationAdaptationEnd(rates: rates) }
-        if returnsHome && index == stops.count - 1 { return homeReadaptationEnd(rates: rates) }
         guard let arrival = stops[index].arrival else { return nil }
+        if let measured = measuredStabilityDays(forStopAt: index) {
+            return (arrival.addingTimeInterval(measured * 86_400), .measuredStability)
+        }
         guard resolvedStayPolicy == .adaptToDestination else {
             return (arrival, .estimatedDurationElapsed)
         }
@@ -758,7 +790,10 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         case .destinationAdaptation, .homeReadaptation:
             guard let index = currentStopIndex(at: date) else { return nil }
             return adaptationEnd(forStopAt: index, rates: rates)?.date
-        case .destinationStable: return stayEnd
+        case .destinationStable:
+            guard let index = currentStopIndex(at: date) else { return nil }
+            if stops.indices.contains(index + 1) { return stops[index + 1].departure }
+            return expectedStayEndDate
         case .recovered, .cancelled: return nil
         }
     }
@@ -784,9 +819,11 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
         case .destinationAdaptation, .homeReadaptation:
             return .inProgress
         case .destinationStable:
-            return destinationAdaptationEnd(rates: rates)?.basis ?? .notApplicable
+            guard let index = currentStopIndex(at: date) else { return .notApplicable }
+            return adaptationEnd(forStopAt: index, rates: rates)?.basis ?? .notApplicable
         case .recovered:
-            return homeReadaptationEnd(rates: rates)?.basis ?? .estimatedDurationElapsed
+            guard let index = currentStopIndex(at: date) else { return .estimatedDurationElapsed }
+            return adaptationEnd(forStopAt: index, rates: rates)?.basis ?? .estimatedDurationElapsed
         }
     }
 }
@@ -826,7 +863,24 @@ struct TravelMeasuredOutcome: Codable, Equatable {
     /// alguien añada un caso nuevo al OptionSet.
     var confoundersRawValue: Int
     var lastMeasuredAt: Date
+    /// Medición por parada. Optional para que los JSON anteriores a
+    /// multidestino sigan decodificando sin migraciones destructivas; los dos
+    /// campos de arriba permanecen como espejo compatible de primera parada y
+    /// regreso a casa.
+    var stopOutcomes: [TravelStopMeasuredOutcome]? = nil
 
     var confounders: TravelConfounders { TravelConfounders(rawValue: confoundersRawValue) }
-    var hasAnything: Bool { destinationStabilityDays != nil || homeStabilityDays != nil }
+    var hasAnything: Bool {
+        destinationStabilityDays != nil || homeStabilityDays != nil || !(stopOutcomes ?? []).isEmpty
+    }
+}
+
+struct TravelStopMeasuredOutcome: Codable, Equatable, Identifiable {
+    let stopID: UUID
+    var stabilityDays: Double
+    var confoundersRawValue: Int
+    var lastMeasuredAt: Date
+
+    var id: UUID { stopID }
+    var confounders: TravelConfounders { TravelConfounders(rawValue: confoundersRawValue) }
 }

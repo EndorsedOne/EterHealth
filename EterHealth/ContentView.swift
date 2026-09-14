@@ -355,7 +355,7 @@ struct ContentView: View {
             // vuelve a invocar esto, ya con hasCriticalHistory en true. Tras la
             // primera valoración (assessment != nil) esto nunca vuelve a frenar.
             if dashboard.assessment == nil && !health.hasCriticalHistory {
-                Task { await health.loadExtendedHistory() }
+                Task { await health.loadExtendedHistory(profile: goals.profile) }
                 return
             }
             refreshDashboard()
@@ -370,7 +370,7 @@ struct ContentView: View {
     private func loadPerformanceIfNeeded() {
         guard health.authorizationRequested else { return }
         Task { @MainActor in
-            await health.loadExtendedHistory()
+            await health.loadExtendedHistory(profile: goals.profile)
             await dashboard.refreshPerformance(health: health, imports: imports,
                                                reviews: workoutReviews.reviews, context: twinContext)
         }

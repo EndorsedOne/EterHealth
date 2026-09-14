@@ -259,8 +259,11 @@ final class HealthStore: ObservableObject {
     /// estos históricos, así que esas pestañas quedaban vacías y el gemelo se
     /// congelaba con líneas base vacías.
     func loadExtendedHistory(profile: AthletePlanProfile? = nil) async {
-        guard !hasLoadedHistory, !isHistoryLoading else { return }
+        // El perfil se captura ANTES del guard. Si dos tareas compiten en el
+        // primer arranque y la segunda llega mientras la carga ya está en
+        // curso, sus límites de zonas no deben perderse por el early return.
         if let profile { athleteProfile = profile }
+        guard !hasLoadedHistory, !isHistoryLoading else { return }
         isHistoryLoading = true
         defer { isHistoryLoading = false }
 
