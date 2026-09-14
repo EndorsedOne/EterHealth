@@ -1942,7 +1942,14 @@ enum TrainingPlanEngine {
             // series reales dependen de la readiness prevista, no del fallback.
             // Se reencuadra como lo que es: la próxima sesión de fuerza prevista.
             if kind == .strength {
-                rationale = "Próxima sesión de fuerza prevista para esta fecha: para entonces el patrón vuelve a estar recuperado y con el volumen por debajo de tu objetivo semanal. Es una sesión completa planificada, no un extra opcional de hoy."
+                // Nombra el PATRÓN. Decía "el patrón" en genérico mientras el
+                // día de hoy sí dice cuál es, así que la tira semanal mostraba
+                // tres "Fuerza" seguidos sin decir si eran pierna, empuje o
+                // tirón — y con eso no se puede planificar una semana. La
+                // rotación siempre estuvo bien (pierna → empuje → tirón); lo
+                // que faltaba era contarla.
+                let named = forecastPattern.map { "de \($0.inline)" } ?? "de fuerza"
+                rationale = "Próxima sesión \(named) prevista para esta fecha: para entonces el patrón vuelve a estar recuperado y con el volumen por debajo de tu objetivo semanal. Es una sesión completa planificada, no un extra opcional de hoy."
             }
             let forecastStrengthIsLight = state.readiness < 62
             let strengthWorkout = kind == .strength ? WorkoutPlanner.session(
