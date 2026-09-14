@@ -559,7 +559,7 @@ final class EngineTests: XCTestCase {
         // TwinCore PR1: assess no longer reads LifestyleFactorStore.shared
         // internally — the saved event above is passed explicitly instead,
         // same real data, just an explicit argument now.
-        let assessment = TwinEngine.assess(health: HealthStore(), imports: ImportStore(), checkIn: nil,
+        let assessment = TwinEngine.assess(health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil,
                                            context: TwinContext(profile: neutralProfile, events: LifestyleFactorStore.shared.events, reviews: [],
                                                                 activeInjuries: [], calibration: neutralCalibration, personalAnchor: neutralAnchor),
                                            now: now)
@@ -1691,7 +1691,7 @@ final class EngineTests: XCTestCase {
     }
 
     func testTrainingScenarioSimulateReturnsEmptyWithoutRealLoadHistory() {
-        XCTAssertTrue(TrainingScenarioEngine.simulate(health: HealthStore(), imports: ImportStore(), currentPace: .optimal).isEmpty,
+        XCTAssertTrue(TrainingScenarioEngine.simulate(health: HealthStore(), imports: ImportStore(persistToDisk: false), currentPace: .optimal).isEmpty,
                      "No real load history at all — must not fabricate three futures out of nothing.")
     }
 
@@ -1705,7 +1705,7 @@ final class EngineTests: XCTestCase {
         health.recentWorkouts = (0..<10).map { offset in
             healthWorkout(activity: "Carrera", kilometers: 8, minutes: 45, date: Date().addingTimeInterval(-Double(offset) * 86_400))
         }
-        let scenarios = TrainingScenarioEngine.simulate(health: health, imports: ImportStore(), currentPace: .aggressive)
+        let scenarios = TrainingScenarioEngine.simulate(health: health, imports: ImportStore(persistToDisk: false), currentPace: .aggressive)
         guard !scenarios.isEmpty else { return }
         XCTAssertEqual(scenarios.filter(\.isCurrentPace).count, 1, "Exactly one scenario must be flagged as the athlete's real current pace.")
         XCTAssertEqual(scenarios.first { $0.isCurrentPace }?.name, ProgressionPace.aggressive.rawValue)
@@ -2185,7 +2185,7 @@ final class EngineTests: XCTestCase {
     }
 
     func testHealthKitStrengthMirrorIsDetectedButRunIsNot() {
-        let store = ImportStore()
+        let store = ImportStore(persistToDisk: false)
         let start = Date(timeIntervalSince1970: 10_000)
         let imported = ImportedWorkout(title: "Push", start: start, end: start.addingTimeInterval(3_600),
                                        exercises: [], muscleSets: ["Pecho": 4])
@@ -2435,7 +2435,7 @@ final class EngineTests: XCTestCase {
         profile.goals = []
         GoalStore.shared.save(profile)
 
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let names = ["Bench Press (Barbell)", "Bench Press (Dumbbell)", "Push Up",
                      "Standing Military Press (Barbell)", "Lateral Raise (Dumbbell)", "Triceps Extension (Cable)"]
@@ -2606,7 +2606,7 @@ final class EngineTests: XCTestCase {
     }
 
     func testAddStrengthWorkoutAppliesTheSameSecondaryMoverDiscountToMuscleSets() {
-        let store = ImportStore()
+        let store = ImportStore(persistToDisk: false)
         let title = "InvolvementTest-\(UUID().uuidString)"
         let exercises = [
             ImportedExercise(name: "Seated Cable Row - Bar Grip", sets: 6, volume: 600, totalReps: 60, averageWeight: 10, setDetails: nil),
@@ -2634,7 +2634,7 @@ final class EngineTests: XCTestCase {
         // muscleSets as if saved before the secondary-mover discount
         // shipped (full, undiscounted credit), alongside the real
         // exercises/setDetails that should win instead.
-        let store = ImportStore()
+        let store = ImportStore(persistToDisk: false)
         let title = "StaleMuscleSetsTest-\(UUID().uuidString)"
         let start = Date(timeIntervalSince1970: 2_100_000_000)
         let workout = ImportedWorkout(
@@ -2653,7 +2653,7 @@ final class EngineTests: XCTestCase {
     }
 
     func testHevyImportCountsOnlyWorkingSetsTowardExerciseVolumeAndAverageWeight() {
-        let store = ImportStore()
+        let store = ImportStore(persistToDisk: false)
         // A unique title per run — ImportStore persists to disk, and a
         // fixed title could otherwise collide with a leftover from an
         // earlier failed attempt (before this test's own cleanup ran).
@@ -2772,7 +2772,7 @@ final class EngineTests: XCTestCase {
     func testPhysiologicalAlertHardOverridesTheProposedSession() {
         // PR1.5: ImportStore(persistToDisk: false) starts genuinely empty
         // instead of loading this machine's real, disk-persisted Hevy
-        // history — the previous plain ImportStore() here made this test's
+        // history — the previous plain ImportStore(persistToDisk: false) here made this test's
         // outcome depend on whatever real history happened to be saved,
         // confirmed to fail identically on main before PR1 for exactly
         // that reason.
@@ -2996,7 +2996,7 @@ final class EngineTests: XCTestCase {
 
     func testWeekAheadReturnsSevenConsecutiveDaysStartingToday() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let week = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil, context: neutralContext, now: now)
 
@@ -3021,7 +3021,7 @@ final class EngineTests: XCTestCase {
     // What the week strip was missing: some sense of exigencia (ritmo/
     // duración/zona) per day, not just a bare kind + one-line rationale.
     func testWeekAheadDayForecastCarriesDurationAndIntensityPerKind() {
-        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil, context: neutralContext, now: Date())
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil, context: neutralContext, now: Date())
         for day in week {
             XCTAssertFalse(day.intensityLabel.isEmpty, "Every kind must carry a non-empty intensity label.")
             switch day.kind {
@@ -3051,7 +3051,7 @@ final class EngineTests: XCTestCase {
         // PR1.5: weekAhead never reads GoalStore.shared — profile is
         // constructed locally and passed directly below, so there's
         // nothing left for GoalStore.shared.save to exercise. Also uses
-        // ImportStore(persistToDisk: false) instead of a plain ImportStore()
+        // ImportStore(persistToDisk: false) instead of a plain ImportStore(persistToDisk: false)
         // — the previous version still read this machine's real,
         // disk-persisted Hevy history despite passing profile explicitly,
         // confirmed to fail identically on main before PR1 for that reason.
@@ -3612,7 +3612,7 @@ final class EngineTests: XCTestCase {
 
         let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
                                   calibration: neutralCalibration, personalAnchor: neutralAnchor)
-        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(), checkIn: nil, context: context, now: Date())
+        let week = TrainingPlanEngine.weekAhead(health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil, context: context, now: Date())
         XCTAssertEqual(week.count, 7)
         XCTAssertLessThan(week.filter { $0.kind == .swim }.count, 7,
                           "Closing a real weekly swim shortfall shouldn't require filling every single day of the week with swimming.")
@@ -3663,8 +3663,8 @@ final class EngineTests: XCTestCase {
         // that weekAhead's forward simulation reads real muscle
         // involvement from these exact names for a brand-new athlete with
         // no logged history yet.
-        let pushDay = WorkoutPlanner.gym(for: .push, imports: ImportStore(), light: false, muscles: [], goals: [])
-        let legDay = WorkoutPlanner.gym(for: .legs, imports: ImportStore(), light: false, muscles: [], goals: [])
+        let pushDay = WorkoutPlanner.gym(for: .push, imports: ImportStore(persistToDisk: false), light: false, muscles: [], goals: [])
+        let legDay = WorkoutPlanner.gym(for: .legs, imports: ImportStore(persistToDisk: false), light: false, muscles: [], goals: [])
         XCTAssertTrue(pushDay.exercises.contains { MuscleMap.groups(for: $0.name).contains("Pecho") },
                       "Expected at least one fallback push exercise to resolve to Pecho, got \(pushDay.exercises.map(\.name)).")
         XCTAssertTrue(legDay.exercises.contains { MuscleMap.groups(for: $0.name).contains("Cuádriceps") },
@@ -3693,8 +3693,8 @@ final class EngineTests: XCTestCase {
         let flat = health(withNightlyHours: Array(repeating: 7.0, count: 14))
         let declining = health(withNightlyHours: Array(repeating: 8.5, count: 7) + Array(repeating: 5.5, count: 7))
 
-        let flatIndex = LongevityEngine.calculate(health: flat, imports: ImportStore())
-        let decliningIndex = LongevityEngine.calculate(health: declining, imports: ImportStore())
+        let flatIndex = LongevityEngine.calculate(health: flat, imports: ImportStore(persistToDisk: false))
+        let decliningIndex = LongevityEngine.calculate(health: declining, imports: ImportStore(persistToDisk: false))
         guard let flatRecovery = flatIndex.dimensions.first(where: { $0.name == "Recuperación" }),
               let decliningRecovery = decliningIndex.dimensions.first(where: { $0.name == "Recuperación" }) else {
             XCTFail("Expected a Recuperación dimension for both cases.")
@@ -3765,8 +3765,8 @@ final class EngineTests: XCTestCase {
         let consistent = store(bedHours: Array(repeating: 23.0, count: 10))
         let erratic = store(bedHours: (0..<10).map { $0 % 2 == 0 ? 21.0 : 25.5 })
 
-        let consistentIndex = LongevityEngine.calculate(health: consistent, imports: ImportStore())
-        let erraticIndex = LongevityEngine.calculate(health: erratic, imports: ImportStore())
+        let consistentIndex = LongevityEngine.calculate(health: consistent, imports: ImportStore(persistToDisk: false))
+        let erraticIndex = LongevityEngine.calculate(health: erratic, imports: ImportStore(persistToDisk: false))
         guard let consistentRecovery = consistentIndex.dimensions.first(where: { $0.name == "Recuperación" }),
               let erraticRecovery = erraticIndex.dimensions.first(where: { $0.name == "Recuperación" }) else {
             XCTFail("Expected a Recuperación dimension for both cases.")
@@ -3790,7 +3790,7 @@ final class EngineTests: XCTestCase {
         // Only exactly the regularity minimum (5) of real nightly schedules.
         health.sleepScheduleHistory = (0..<5).map { nightlySchedule(daysFrom: start, day: $0, bedHour: 23.0) }
 
-        let index = LongevityEngine.calculate(health: health, imports: ImportStore())
+        let index = LongevityEngine.calculate(health: health, imports: ImportStore(persistToDisk: false))
         guard let recovery = index.dimensions.first(where: { $0.name == "Recuperación" }) else {
             XCTFail("Expected a Recuperación dimension.")
             return
@@ -3913,13 +3913,13 @@ final class EngineTests: XCTestCase {
         let start = Calendar.current.startOfDay(for: Date()).addingTimeInterval(-14 * 86_400)
         let health = HealthStore()
         health.sleepStagesHistory = (0..<14).map { nightlyStages(daysFrom: start, day: $0, deep: 1.3, rem: 1.6, core: 4.5, unspecified: 0.6) }
-        let index = LongevityEngine.calculate(health: health, imports: ImportStore())
+        let index = LongevityEngine.calculate(health: health, imports: ImportStore(persistToDisk: false))
         XCTAssertNotNil(index.dimensions.first(where: { $0.name == "Arquitectura del sueño" }))
     }
 
     func testLongevityOmitsSleepArchitectureDimensionWithoutEnoughStagedNights() {
         let health = HealthStore()
-        XCTAssertNil(LongevityEngine.calculate(health: health, imports: ImportStore())
+        XCTAssertNil(LongevityEngine.calculate(health: health, imports: ImportStore(persistToDisk: false))
             .dimensions.first(where: { $0.name == "Arquitectura del sueño" }),
             "No sleep-stage history at all must not produce a dimension out of thin air.")
     }
@@ -3931,7 +3931,7 @@ final class EngineTests: XCTestCase {
         let start = Calendar.current.startOfDay(for: Date()).addingTimeInterval(-14 * 86_400)
         let health = HealthStore()
         health.stepsHistory = (0..<14).map { TrendPoint(date: start.addingTimeInterval(Double($0) * 86_400), value: 10_000) }
-        let index = LongevityEngine.calculate(health: health, imports: ImportStore())
+        let index = LongevityEngine.calculate(health: health, imports: ImportStore(persistToDisk: false))
         guard let steps = index.dimensions.first(where: { $0.name == "Actividad diaria" }) else {
             XCTFail("Expected an Actividad diaria dimension once 14 days of step history exist.")
             return
@@ -3942,7 +3942,7 @@ final class EngineTests: XCTestCase {
     func testLongevityOmitsDailyStepsDimensionWithoutEnoughHistory() {
         let health = HealthStore()
         health.stepsHistory = (0..<3).map { TrendPoint(date: Date().addingTimeInterval(Double($0) * -86_400), value: 10_000) }
-        let index = LongevityEngine.calculate(health: health, imports: ImportStore())
+        let index = LongevityEngine.calculate(health: health, imports: ImportStore(persistToDisk: false))
         XCTAssertNil(index.dimensions.first(where: { $0.name == "Actividad diaria" }),
                      "3 days of step history isn't enough to say anything real about a daily pattern.")
     }
@@ -4164,7 +4164,7 @@ final class EngineTests: XCTestCase {
 
     func testLightSwimTodayDoesNotBlockTheRestOfTheDaysPlan() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         // 10×100 m technique swim, ~15 min including rest — real, but not
         // remotely the same as "already trained today" in any load sense.
@@ -4182,7 +4182,7 @@ final class EngineTests: XCTestCase {
         // the generic "ya has entrenado hoy" fallback below) read as an
         // ordinary, unaccounted-for rest day instead of showing as done.
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let hiit = healthWorkout(activity: "Intervalos de alta intensidad", kilometers: 0, minutes: 20, date: now.addingTimeInterval(-90 * 60))
         health.recentWorkouts = [hiit]
@@ -4201,7 +4201,7 @@ final class EngineTests: XCTestCase {
 
     func testSubstantialSwimTodayStillTriggersTheAlreadyTrainedGate() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let realSwim = healthWorkout(activity: "Natación", kilometers: 2.5, minutes: 45, date: now.addingTimeInterval(-60 * 60))
         health.recentWorkouts = [realSwim]
@@ -4362,7 +4362,7 @@ final class EngineTests: XCTestCase {
         //
         // PR1.5: profile is constructed locally and passed directly below,
         // so there's nothing left for GoalStore.shared.save to exercise.
-        // ImportStore(persistToDisk: false) instead of a plain ImportStore()
+        // ImportStore(persistToDisk: false) instead of a plain ImportStore(persistToDisk: false)
         // — the previous version still read this machine's real,
         // disk-persisted Hevy history despite passing profile explicitly,
         // confirmed to fail identically on main before PR1 for that reason.
@@ -4428,7 +4428,7 @@ final class EngineTests: XCTestCase {
         ]
         profile.trainingDaysPerWeek = 5
 
-        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 80, muscles: [],
+        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(persistToDisk: false), readiness: 80, muscles: [],
                                                checkIn: nil, context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
                                                                                   calibration: neutralCalibration, personalAnchor: neutralAnchor),
                                                physiologicalAlert: nil, now: Date())
@@ -4452,7 +4452,7 @@ final class EngineTests: XCTestCase {
         let focus = TrainingPlanEngine.goalFocus(for: profile, on: Date())
         XCTAssertGreaterThan(focus.strength, 0, "An active hypertrophy goal must contribute to strength focus the same way a tracked lift or HYROX's strength share does.")
 
-        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 80, muscles: [],
+        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(persistToDisk: false), readiness: 80, muscles: [],
                                                checkIn: nil, context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
                                                                                   calibration: neutralCalibration, personalAnchor: neutralAnchor),
                                                physiologicalAlert: nil, now: Date())
@@ -4465,7 +4465,7 @@ final class EngineTests: XCTestCase {
         // decent-volume push day logged ONLY in Hevy used to be completely
         // invisible to that check, letting the plan propose a fresh hard
         // session (e.g. a long run) as if today were still untouched.
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let pushToday = ImportedWorkout(title: "Push", start: now.addingTimeInterval(-3 * 3_600), end: now.addingTimeInterval(-3 * 3_600 + 45 * 60),
                                         exercises: [ImportedExercise(name: "Bench Press (Barbell)", sets: 4, volume: 4_000,
@@ -4474,7 +4474,7 @@ final class EngineTests: XCTestCase {
         imports.restore(workouts: [pushToday], labs: [])
         // ImportStore persists to disk — a "today"-dated entry (unlike the
         // fixed historical dates other tests use) would otherwise leak into
-        // every later test's own fresh ImportStore() this same run and get
+        // every later test's own fresh ImportStore(persistToDisk: false) this same run and get
         // misread as real "already trained today" history.
         defer { imports.deleteWorkout(id: pushToday.id) }
 
@@ -4486,7 +4486,7 @@ final class EngineTests: XCTestCase {
     }
 
     func testAlreadyCompletedLegDayTodayKeepsTheGenericRecoveryMessage() {
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let legsToday = ImportedWorkout(title: "Pierna", start: now.addingTimeInterval(-3 * 3_600), end: now.addingTimeInterval(-3 * 3_600 + 45 * 60),
                                         exercises: [ImportedExercise(name: "Squat (Barbell)", sets: 4, volume: 4_000,
@@ -4512,7 +4512,7 @@ final class EngineTests: XCTestCase {
         profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón", date: nil,
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
 
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         // 6h ago, well past the real >=3h spacing gate the run
         // alternative is now conditioned on (see hoursSincePush in
@@ -4540,7 +4540,7 @@ final class EngineTests: XCTestCase {
         profile.goals = [TrainingGoal(id: UUID(), kind: .benchPress, title: "Press banca", date: nil,
                                       targetValue: 100, unit: "kg", priority: .primary, isActive: true)]
 
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let pushToday = ImportedWorkout(title: "Push", start: now.addingTimeInterval(-6 * 3_600), end: now.addingTimeInterval(-6 * 3_600 + 45 * 60),
                                         exercises: [ImportedExercise(name: "Bench Press (Barbell)", sets: 4, volume: 4_000,
@@ -4565,7 +4565,7 @@ final class EngineTests: XCTestCase {
         profile.goals = [TrainingGoal(id: UUID(), kind: .halfMarathon, title: "Media maratón", date: nil,
                                       targetValue: nil, unit: "min", priority: .primary, isActive: true)]
 
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let pushToday = ImportedWorkout(title: "Push", start: now.addingTimeInterval(-1 * 3_600), end: now.addingTimeInterval(-1 * 3_600 + 45 * 60),
                                         exercises: [ImportedExercise(name: "Bench Press (Barbell)", sets: 4, volume: 4_000,
@@ -4642,7 +4642,7 @@ final class EngineTests: XCTestCase {
         ]
         profile.trainingDaysPerWeek = 4
 
-        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(), readiness: 80, muscles: [],
+        let status = TrainingPlanEngine.status(health: HealthStore(), imports: ImportStore(persistToDisk: false), readiness: 80, muscles: [],
                                                checkIn: nil, context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
                                                                                   calibration: neutralCalibration, personalAnchor: neutralAnchor),
                                                physiologicalAlert: nil, now: Date())
@@ -4658,7 +4658,7 @@ final class EngineTests: XCTestCase {
                                       targetValue: 100, unit: "kg", priority: .maintenance, isActive: true)]
         GoalStore.shared.save(profile)
 
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         // "Press militar" trained more recently than "Bench Press
         // (Barbell)" — with identical (unmeasured) muscle-group readiness,
@@ -4682,7 +4682,7 @@ final class EngineTests: XCTestCase {
     // pure functions tested in isolation above.
     func testAssessComputesPhysiologyReadoutAndPredictedTomorrow() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: nil, context: neutralContext, now: now)
 
@@ -4696,7 +4696,7 @@ final class EngineTests: XCTestCase {
 
     func testTwinEngineMuscleFatigueRespondsToWatchOnlyStrengthSession() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let baseline = TwinEngine.assess(health: health, imports: imports, checkIn: nil, context: neutralContext, now: now)
         XCTAssertEqual(baseline.muscles.first { $0.name == "Espalda" }?.readiness, 100,
@@ -4724,7 +4724,7 @@ final class EngineTests: XCTestCase {
         // both must produce identical readiness; reading the stored field
         // directly (the bug) would make them diverge.
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let start = now.addingTimeInterval(-18 * 3_600)
         let exercises = [ImportedExercise(name: "Seated Cable Row - Bar Grip", sets: 6, volume: 600, totalReps: 60, averageWeight: 10,
@@ -4912,7 +4912,7 @@ final class EngineTests: XCTestCase {
 
     func testRecentWeeklyMinutesBaselineAveragesThePriorThreeWeeks() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         health.recentWorkouts = (1...3).map { week in
             healthWorkout(activity: "Natación", kilometers: 1, minutes: 30, date: now.addingTimeInterval(Double(-week) * 7 * 86_400 - 3600))
@@ -4973,7 +4973,7 @@ final class EngineTests: XCTestCase {
         profile.goals = [raceGoal]
 
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let status = TrainingPlanEngine.status(health: health, imports: imports, readiness: 80, muscles: [],
                                                checkIn: nil, context: TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
                                                                                   calibration: neutralCalibration, personalAnchor: neutralAnchor),
@@ -5000,7 +5000,7 @@ final class EngineTests: XCTestCase {
 
         let context = TwinContext(profile: profile, events: [], reviews: [], activeInjuries: [],
                                   calibration: neutralCalibration, personalAnchor: neutralAnchor)
-        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: ImportStore(), checkIn: nil, context: context, now: now)
+        let workout = WorkoutPlanner.propose(health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil, context: context, now: now)
         // If readiness computed from an empty HealthStore ever drops below
         // the recovery threshold, this would legitimately show recovery
         // instead — only assert the race-day shape once it actually got there.
@@ -5153,7 +5153,7 @@ final class EngineTests: XCTestCase {
 
     func testWeekAheadOverrideReplacesTodaysSessionAndDrivesTomorrow() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let override = TrainingPlanEngine.DecisionOverride(
             kind: .strength, load: 30, tomorrowReadiness: 40, todayRationale: "Simulación de prueba"
@@ -5170,7 +5170,7 @@ final class EngineTests: XCTestCase {
 
     func testWeekAheadLifestyleOverrideKeepsTodaysSessionButShiftsReadiness() {
         let health = HealthStore()
-        let imports = ImportStore()
+        let imports = ImportStore(persistToDisk: false)
         let now = Date()
         let real = TrainingPlanEngine.weekAhead(health: health, imports: imports, checkIn: nil, context: neutralContext, now: now)
         // A lifestyle-only override (nil kind) must leave today's own
@@ -5187,7 +5187,7 @@ final class EngineTests: XCTestCase {
 
     func testLifestyleDecisionsDegradeSafelyWithoutHistory() {
         for decision: SimulatedDecision in [.alcohol, .fastingTonight, .poorHydration, .sauna] {
-            let simulation = DecisionSimulatorEngine.simulate(decision, health: HealthStore(), imports: ImportStore(), checkIn: nil,
+            let simulation = DecisionSimulatorEngine.simulate(decision, health: HealthStore(), imports: ImportStore(persistToDisk: false), checkIn: nil,
                                                               profile: neutralProfile, events: [], reviews: [], activeInjuries: [],
                                                               calibration: neutralCalibration, personalAnchor: neutralAnchor,
                                                               travel: nil, travelHistory: [])

@@ -136,7 +136,7 @@ enum DecisionSimulatorEngine {
             let matched = qualifyingRuns(health.recentWorkouts, matching: SessionClassification.qualityRunPredicate(
                 reviews: context.reviews,
                 thresholdPace: SessionClassification.thresholdPaceSecondsPerKm(fiveK: running.fiveK, tenK: running.tenK),
-                thresholdHeartRate: health.currentHeartRateZoneBoundaries().map { Double($0.z3z4) }
+                thresholdHeartRate: health.currentHeartRateZoneBoundaries(profile: context.profile).map { Double($0.z3z4) }
             ), now: now)
             let load = historicalLoad(matched, cardioFactor: PerformanceEngine.cardioFactor("Carrera"), fallback: 78)
             basis = load; added = load.load

@@ -1056,10 +1056,15 @@ final class HealthStore: ObservableObject {
     // "Z1-Z2" label with no way to check it against a live pulse. Returns nil
     // only when there's no way at all to estimate a maximum (no configured
     // value and no birth date) — never a guessed number.
-    func currentHeartRateZoneBoundaries() -> HeartRateZoneBoundaries? {
-        if let manual = GoalStore.shared.profile.manualHeartRateZones { return manual }
-        let configuredMaximum = GoalStore.shared.profile.maximumHeartRate.map(Double.init)
-        let ageBasedMaximum = GoalStore.shared.profile.birthDate.map { birthDate -> Double in
+    /// `profile` inyectado y no `GoalStore.shared`: esta función la llaman
+    /// TrainingPlanEngine y DecisionSimulatorEngine, y con el singleton dentro
+    /// cualquier test que creara un `HealthStore()` arrastraba el perfil
+    /// persistido de la máquina — objetivos reales incluidos. Era la vía por
+    /// la que el estado del contenedor se colaba en el motor.
+    func currentHeartRateZoneBoundaries(profile: AthletePlanProfile) -> HeartRateZoneBoundaries? {
+        if let manual = profile.manualHeartRateZones { return manual }
+        let configuredMaximum = profile.maximumHeartRate.map(Double.init)
+        let ageBasedMaximum = profile.birthDate.map { birthDate -> Double in
             let age = Calendar.current.dateComponents([.year], from: birthDate, to: Date()).year ?? 40
             return 208.0 - 0.7 * Double(age)
         }
