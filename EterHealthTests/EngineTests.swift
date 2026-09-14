@@ -2653,7 +2653,11 @@ final class EngineTests: XCTestCase {
     }
 
     func testHevyImportCountsOnlyWorkingSetsTowardExerciseVolumeAndAverageWeight() {
-        let store = ImportStore(persistToDisk: false)
+        // Store REAL a propósito: este test ejercita la importación de
+        // verdad, que es el camino que prueba. Se aísla por otra vía —título
+        // único por ejecución y borrado en defer— y no por desactivar el
+        // disco, que es justamente lo que rompe el camino bajo prueba.
+        let store = ImportStore()
         // A unique title per run — ImportStore persists to disk, and a
         // fixed title could otherwise collide with a leftover from an
         // earlier failed attempt (before this test's own cleanup ran).
@@ -4246,7 +4250,7 @@ final class EngineTests: XCTestCase {
         let decision = TrainingPlanEngine.balancedDecision(
             runs: 4, targetRuns: 4, strength: 2, targetStrength: 2, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
-            lateWeek: false, readiness: 88, muscles: muscles(legs: 88), goalFocus: focus
+            lateWeek: false, readiness: 88, muscles: trainedMuscles(legs: 88), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
         XCTAssertTrue(decision.rationale.localizedCaseInsensitiveContains("no hay nada obligatorio"))
@@ -4311,7 +4315,7 @@ final class EngineTests: XCTestCase {
             runs: 4, targetRuns: 4, strength: 1, targetStrength: 1, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
             trackedLiftDaysSince: 12,
-            lateWeek: false, readiness: 80, muscles: muscles(legs: 80), goalFocus: focus
+            lateWeek: false, readiness: 80, muscles: trainedMuscles(legs: 80), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
     }
@@ -4324,7 +4328,7 @@ final class EngineTests: XCTestCase {
             runs: 4, targetRuns: 4, strength: 1, targetStrength: 1, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
             trackedLiftDaysSince: nil,
-            lateWeek: false, readiness: 80, muscles: muscles(legs: 80), goalFocus: focus
+            lateWeek: false, readiness: 80, muscles: trainedMuscles(legs: 80), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
     }
@@ -4597,7 +4601,7 @@ final class EngineTests: XCTestCase {
             runs: 4, targetRuns: 4, strength: 2, targetStrength: 2, quality: 1, targetQuality: 1,
             daysSinceStrength: 2, hoursSinceLong: 168, hoursSinceQuality: 96,
             trackedLiftDaysSince: 8,
-            lateWeek: false, readiness: 88, muscles: muscles(legs: 88), goalFocus: focus
+            lateWeek: false, readiness: 88, muscles: trainedMuscles(legs: 88), goalFocus: focus
         )
         XCTAssertEqual(decision.kind, .easyRun)
     }
@@ -4651,12 +4655,13 @@ final class EngineTests: XCTestCase {
     }
 
     func testGymPinsTheTrackedLiftEvenWhenAFresherVariationWouldOtherwiseRankFirst() {
-        let originalProfile = GoalStore.shared.profile
-        defer { GoalStore.shared.save(originalProfile) }
-        var profile = originalProfile
-        profile.goals = [TrainingGoal(id: UUID(), kind: .benchPress, title: "Banca", date: nil,
-                                      targetValue: 100, unit: "kg", priority: .maintenance, isActive: true)]
-        GoalStore.shared.save(profile)
+        // El objetivo va por PARÁMETRO. Este test se quedó a medio migrar
+        // cuando `gym` dejó de leer GoalStore.shared: seguía montando el
+        // objetivo en el singleton —código muerto— y pasaba `goals: []`, así
+        // que no había lift trackeado que anclar y ganaba la variación más
+        // reciente. Y de paso deja de mutar estado compartido.
+        let benchPress = TrainingGoal(id: UUID(), kind: .benchPress, title: "Banca", date: nil,
+                                      targetValue: 100, unit: "kg", priority: .maintenance, isActive: true)
 
         let imports = ImportStore(persistToDisk: false)
         let now = Date()
@@ -4672,7 +4677,7 @@ final class EngineTests: XCTestCase {
                                     muscleSets: ["Pecho": 4])
         imports.restore(workouts: [recent, older], labs: [])
 
-        let workout = WorkoutPlanner.gym(for: .push, imports: imports, light: false, muscles: [], goals: [])
+        let workout = WorkoutPlanner.gym(for: .push, imports: imports, light: false, muscles: [], goals: [benchPress])
         XCTAssertEqual(workout.exercises.first?.name, "Bench Press (Barbell)",
                        "The tracked lift must be pinned first, not displaced by a more recently trained equivalent variation.")
     }
@@ -6258,6 +6263,25 @@ final class EngineTests: XCTestCase {
         // con el estado simulado) es un cambio propio, no de este PR.
     }
 
+    /// Músculos con el volumen semanal YA hecho: exactamente su MAV. Para los
+    /// tests que afirman "cupos cumplidos" — decir a la vez `strength: 2/2` y
+    /// `recentSets: 0` es contradictorio, y la rama de mantenimiento lee el
+    /// volumen real, ve todo por debajo del MEV y ofrece fuerza. El fixture
+    /// era el incoherente, no el motor.
+    ///
+    /// Las series se DERIVAN de la tabla de landmarks en vez de escribirse a
+    /// mano: la primera versión de este helper las fijó a los MAV de entonces
+    /// y quedó obsoleta en cuanto la tabla cambió (Cuádriceps pasó de 8 a 12),
+    /// volviendo a caer por debajo del MEV sin que nada avisara.
+    private func trainedMuscles(legs readiness: Int) -> [MuscleReadiness] {
+        func atMAV(_ name: String, _ readiness: Int) -> MuscleReadiness {
+            MuscleReadiness(name: name, readiness: readiness, lastTrained: nil,
+                            recentSets: Int(MuscleVolumeLandmarkTable.landmarks(for: name).mav))
+        }
+        return ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].map { atMAV($0, readiness) }
+            + [atMAV("Pecho", 90), atMAV("Espalda", 90)]
+    }
+
     private func muscles(legs readiness: Int) -> [MuscleReadiness] {
         ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].map {
             MuscleReadiness(name: $0, readiness: readiness, lastTrained: nil, recentSets: 0)
@@ -6523,11 +6547,21 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(strengthDays.allSatisfy { !$0.strengthExercises.isEmpty })
         XCTAssertTrue(strengthDays.flatMap(\.strengthExercises).allSatisfy { !$0.prescription.isEmpty && !$0.cue.isEmpty },
                       "Cada día de fuerza de la semana debe transportar ejercicios, series/repeticiones y una pauta ejecutable, no sólo la etiqueta Fuerza.")
+        // Se comprueba por los EJERCICIOS y además por el texto. El texto solo
+        // era una prueba frágil: la rotación llevaba tiempo funcionando bien y
+        // este test fallaba porque los días 2 y 3 decían "el patrón" en
+        // genérico en vez de nombrarlo — un fallo del copy, no del motor, que
+        // dejaba la tira semanal con tres "Fuerza" seguidos sin decir cuál.
+        let exercises = strengthDays.map { $0.strengthExercises.map(\.name).joined(separator: " ") }
+        XCTAssertTrue(exercises[0].localizedCaseInsensitiveContains("squat"), exercises[0])
+        XCTAssertTrue(exercises[1].localizedCaseInsensitiveContains("bench") || exercises[1].localizedCaseInsensitiveContains("press"), exercises[1])
+        XCTAssertTrue(exercises[2].localizedCaseInsensitiveContains("row") || exercises[2].localizedCaseInsensitiveContains("pull"), exercises[2])
+
         let patterns = strengthDays.map(\.rationale)
-        XCTAssertTrue(patterns[0].localizedCaseInsensitiveContains("pierna"))
-        XCTAssertTrue(patterns[1].localizedCaseInsensitiveContains("empuje"))
+        XCTAssertTrue(patterns[0].localizedCaseInsensitiveContains("pierna"), patterns[0])
+        XCTAssertTrue(patterns[1].localizedCaseInsensitiveContains("empuje"), patterns[1])
         XCTAssertTrue(patterns[2].localizedCaseInsensitiveContains("tirón"),
-                      "Three consecutive simulated strength days must rotate through different patterns as each one's own weekly volume gets used up — not repeat the same tie-broken pattern every day.")
+                      "Cada día de fuerza tiene que DECIR su patrón: tres 'Fuerza' seguidos sin nombrar pierna/empuje/tirón no dejan planificar la semana. \(patterns[2])")
     }
 
 }
