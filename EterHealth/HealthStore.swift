@@ -59,9 +59,17 @@ final class HealthStore: ObservableObject {
     private let store = HKHealthStore()
     private var observerQueries: [HKObserverQuery] = []
     private var scheduledRefresh: Task<Void, Never>?
+    /// Perfil proporcionado por la raíz de la app. HealthStore no conoce ni
+    /// consulta GoalStore: las zonas usan la misma instancia de perfil que el
+    /// gemelo y siguen siendo testeables sin estado global.
+    private var athleteProfile: AthletePlanProfile?
     /// Punto de salida independiente de la UI para consumidores que deben
     /// actualizarse cuando HealthKit despierta la app en segundo plano.
     var didRefresh: (@MainActor () -> Void)?
+
+    func configure(profile: AthletePlanProfile) {
+        athleteProfile = profile
+    }
 
     private var shareTypes: Set<HKSampleType> {
         var types: Set<HKSampleType> = [HKObjectType.workoutType()]
@@ -250,8 +258,9 @@ final class HealthStore: ObservableObject {
     /// bloquea al gemelo. Antes esta función se dejaba fuera la mayor parte de
     /// estos históricos, así que esas pestañas quedaban vacías y el gemelo se
     /// congelaba con líneas base vacías.
-    func loadExtendedHistory() async {
+    func loadExtendedHistory(profile: AthletePlanProfile? = nil) async {
         guard !hasLoadedHistory, !isHistoryLoading else { return }
+        if let profile { athleteProfile = profile }
         isHistoryLoading = true
         defer { isHistoryLoading = false }
 
@@ -287,8 +296,8 @@ final class HealthStore: ObservableObject {
             }
         }
         workoutHistory = archive
-        heartRateZones = await loadHeartRateZones(workouts: recentWorkouts, days: 10)
-        runningHeartRateZones = await loadHeartRateZones(workouts: recentWorkouts.filter { $0.activity == "Carrera" }, days: 10)
+        heartRateZones = await loadHeartRateZones(workouts: recentWorkouts, days: 10, profile: athleteProfile)
+        runningHeartRateZones = await loadHeartRateZones(workouts: recentWorkouts.filter { $0.activity == "Carrera" }, days: 10, profile: athleteProfile)
         heartRateRecoveryHistory = await loadHeartRateRecovery(workouts: recentWorkouts)
 
         // El gemelo puede recalcularse ya contra líneas base reales. Este es el
@@ -1076,14 +1085,15 @@ final class HealthStore: ObservableObject {
         return HeartRateZoneBoundaries(z1z2: bound(0.60), z2z3: bound(0.70), z3z4: bound(0.80), z4z5: bound(0.90))
     }
 
-    private func loadHeartRateZones(workouts: [HealthWorkout], days: Int) async -> [HeartRateZone] {
+    private func loadHeartRateZones(workouts: [HealthWorkout], days: Int,
+                                    profile: AthletePlanProfile?) async -> [HeartRateZone] {
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
         let relevant = workouts.filter { $0.date >= cutoff }
         guard !relevant.isEmpty else { return [] }
         let windows = relevant.map { workout in
             DateInterval(start: workout.date, duration: workout.durationMinutes * 60)
         }
-        return await classifyHeartRateZones(windows: windows)
+        return await classifyHeartRateZones(windows: windows, profile: profile)
     }
 
     // Same classification (Karvonen %HRR against manual/configured/age-based
@@ -1092,11 +1102,14 @@ final class HealthStore: ObservableObject {
     // N-day period pooled together — what a workout detail screen actually
     // needs: "how did THIS session distribute across zones," not a blended
     // average across the last several sessions.
-    func heartRateZones(for workout: HealthWorkout) async -> [HeartRateZone] {
-        await classifyHeartRateZones(windows: [DateInterval(start: workout.date, duration: workout.durationMinutes * 60)])
+    func heartRateZones(for workout: HealthWorkout, profile: AthletePlanProfile? = nil) async -> [HeartRateZone] {
+        await classifyHeartRateZones(
+            windows: [DateInterval(start: workout.date, duration: workout.durationMinutes * 60)],
+            profile: profile ?? athleteProfile
+        )
     }
 
-    private func classifyHeartRateZones(windows: [DateInterval]) async -> [HeartRateZone] {
+    private func classifyHeartRateZones(windows: [DateInterval], profile: AthletePlanProfile?) async -> [HeartRateZone] {
         guard let type = HKQuantityType.quantityType(forIdentifier: .heartRate) else { return [] }
         let samples = await quantitySamples(type: type, windows: windows)
         let unit = HKUnit.count().unitDivided(by: .minute())
@@ -1109,10 +1122,10 @@ final class HealthStore: ObservableObject {
         // themselves now live in HeartRateZoneClassifier — shared with
         // TrainingPlanEngine's real-intensity muscle-load scaling, so both
         // read this person's effort against the exact same thresholds.
-        let manualBoundaries = GoalStore.shared.profile.manualHeartRateZones
+        let manualBoundaries = profile?.manualHeartRateZones
         let effectiveMax = HeartRateZoneClassifier.effectiveMaximum(
-            configured: GoalStore.shared.profile.maximumHeartRate.map(Double.init),
-            birthDate: GoalStore.shared.profile.birthDate, observedPeak: observedPeak
+            configured: profile?.maximumHeartRate.map(Double.init),
+            birthDate: profile?.birthDate, observedPeak: observedPeak
         )
         // Plain %HRmax ignores resting heart rate entirely, which systematically
         // shrinks the "easy" zone for anyone with a low resting HR (typical of a

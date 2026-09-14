@@ -747,20 +747,30 @@ struct TravelEpisode: Codable, Equatable, Identifiable {
     /// "quedan 2 días" en vez de sólo nombrar la fase. nil cuando no se puede
     /// saber (una estancia sin vuelta ni fecha esperada, o ya recuperado).
     func currentPhaseEnd(at date: Date, rates: ReentrainmentRates = .prior) -> Date? {
+        let activeStop = currentStopIndex(at: date).flatMap { stops.indices.contains($0) ? stops[$0] : nil }
         switch phase(at: date, rates: rates) {
         case .preDeparture: return outboundDeparture
-        case .outboundTransit: return destinationArrival
+        case .outboundTransit, .returnTransit: return activeStop?.arrival
         // La duración ESTIMADA, no el margen de gracia: lo que la tarjeta
         // muestra como "hasta" es la predicción, que es lo que el atleta puede
         // usar para planificar. El margen de gracia es un detalle interno del
         // aprendizaje, no una promesa sobre cuándo estará recuperado.
-        case .destinationAdaptation:
-            return destinationArrival?.addingTimeInterval(destinationAdaptationDays(rates: rates) * 86_400)
+        case .destinationAdaptation, .homeReadaptation:
+            guard let index = currentStopIndex(at: date) else { return nil }
+            return adaptationEnd(forStopAt: index, rates: rates)?.date
         case .destinationStable: return stayEnd
-        case .returnTransit: return homeArrival
-        case .homeReadaptation:
-            return homeArrival?.addingTimeInterval(homeReadaptationDays(rates: rates) * 86_400)
         case .recovered, .cancelled: return nil
+        }
+    }
+
+    /// Mantiene el campo legado alineado con la primera parada real. El campo
+    /// sigue almacenado para leer copias antiguas y para un borrador sin vuelos,
+    /// pero una vez existe itinerario deja de ser una segunda fuente de verdad.
+    mutating func synchronizeCanonicalDestination() {
+        if let firstDestination = stops.compactMap(\.destinationTimeZoneID).first(where: {
+            !$0.isEmpty && $0 != homeTimeZoneID
+        }) {
+            destinationTimeZoneID = firstDestination
         }
     }
 

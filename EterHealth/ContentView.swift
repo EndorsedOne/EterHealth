@@ -258,7 +258,8 @@ struct ContentView: View {
         .onReceive(workoutReviews.objectWillChange) { _ in
             scheduleDashboardRefresh(includeBackup: true)
         }
-        .onReceive(goals.objectWillChange) { _ in
+        .onReceive(goals.$profile) { profile in
+            health.configure(profile: profile)
             scheduleDashboardRefresh(includeBackup: true)
         }
         .onReceive(imports.objectWillChange) { _ in
@@ -380,16 +381,6 @@ struct ContentView: View {
                                description: Text("Se cargará al abrir esta pestaña."))
     }
 
-    private var currentAssessment: TwinAssessment {
-        // Todas las vistas que lo consumen tienen un estado de carga previo.
-        // No volvemos a ejecutar el gemelo desde el path de renderizado.
-        dashboard.assessment!
-    }
-
-    private var currentPlan: WeeklyPlanStatus {
-        dashboard.plan!
-    }
-
     @ViewBuilder private var todayPage: some View {
         if !health.authorizationRequested {
             permissionCard
@@ -503,7 +494,7 @@ struct ContentView: View {
         // independently-computed one — the card and the actual plan can no
         // longer show a "prioriza recuperación" alert next to a proposal
         // that ignores it.
-        if let alert = currentAssessment.physiologicalAlert {
+        if let alert = dashboard.assessment?.physiologicalAlert {
             PhysiologicalAlertCard(alert: alert, trust: physiologicalAlertTrust(alert))
         }
     }
@@ -1006,9 +997,10 @@ struct ContentView: View {
     private func loadColor(_ ratio: Double) -> Color { ratio == 0 ? .gray : ratio < 0.65 ? .blue : ratio < 1.30 ? EterTheme.positive : ratio < 1.55 ? EterTheme.negative : EterTheme.danger }
 
 
-    private var twinCard: some View {
-        let assessment = currentAssessment
-        return ReadinessCard(assessment: assessment, trust: readinessTrust(assessment.baselineConfidence))
+    @ViewBuilder private var twinCard: some View {
+        if let assessment = dashboard.assessment {
+            ReadinessCard(assessment: assessment, trust: readinessTrust(assessment.baselineConfidence))
+        }
     }
 
 
@@ -1110,9 +1102,9 @@ struct ContentView: View {
     }
 
 
-    private var currentPlanCard: some View {
-        let plan = currentPlan
-        return VStack(alignment: .leading, spacing: 14) {
+    @ViewBuilder private var currentPlanCard: some View {
+        if let plan = dashboard.plan, let assessment = dashboard.assessment {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     EterSectionHeader(plan.block.name, eyebrow: "Plan actual", subtitle: plan.block.objective)
@@ -1123,7 +1115,7 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
-                DataTrustBadge(trust: DataTrust(nature: .inferred, source: "Objetivos + carga + disponibilidad", measuredAt: health.lastUpdated, samples: health.recentWorkouts.count + imports.workoutCount, level: ConfidenceEngine.readiness(baselineConfidence: currentAssessment.baselineConfidence, signalCount: currentAssessment.signals.count, hasCheckIn: checkIns.entry() != nil, updatedAt: health.lastUpdated).level, explanation: "La recomendación cruza el bloque de planificación activo con lo ya entrenado y tu disponibilidad actual.", limitations: "Es una propuesta adaptable. Dolor, enfermedad, agenda o una prueba reciente pueden justificar cambiarla."))
+                DataTrustBadge(trust: DataTrust(nature: .inferred, source: "Objetivos + carga + disponibilidad", measuredAt: health.lastUpdated, samples: health.recentWorkouts.count + imports.workoutCount, level: ConfidenceEngine.readiness(baselineConfidence: assessment.baselineConfidence, signalCount: assessment.signals.count, hasCheckIn: checkIns.entry() != nil, updatedAt: health.lastUpdated).level, explanation: "La recomendación cruza el bloque de planificación activo con lo ya entrenado y tu disponibilidad actual.", limitations: "Es una propuesta adaptable. Dolor, enfermedad, agenda o una prueba reciente pueden justificar cambiarla."))
                 if let days = plan.daysToEvent, let event = plan.eventName {
                     VStack(spacing: 1) { Text("\(days)").font(.title2.monospacedDigit().bold()); Text("días · \(event)").font(.caption2).foregroundStyle(.secondary) }
                 }
@@ -1151,6 +1143,7 @@ struct ContentView: View {
             // cobertura de la semana). La siguiente sesión no se repite aquí: vive
             // en "Tu semana de entrenamiento" (abajo) y en la pestaña Entrenamiento.
         }.cardStyle()
+        }
     }
 
     private func captureCurrentPlanIfNeeded() {
@@ -1479,7 +1472,7 @@ struct ContentView: View {
             source: "Apple Salud + Hevy/importaciones + check-in",
             measuredAt: health.lastUpdated,
             samples: health.hrvHistory.count + health.restingHeartRateHistory.count + health.sleepHistory.count + imports.workoutCount,
-            level: ConfidenceEngine.readiness(baselineConfidence: baselineConfidence, signalCount: currentAssessment.signals.count, hasCheckIn: checkIns.entry() != nil, updatedAt: health.lastUpdated).level,
+            level: ConfidenceEngine.readiness(baselineConfidence: baselineConfidence, signalCount: dashboard.assessment?.signals.count ?? 0, hasCheckIn: checkIns.entry() != nil, updatedAt: health.lastUpdated).level,
             explanation: "El porcentaje se infiere comparando HRV, pulso y sueño con tu línea base personal, y ajustándolo por carga, recuperación muscular y sensaciones.",
             limitations: "No mide directamente recuperación ni daño muscular. Una fuente ausente o un entrenamiento no registrado puede cambiar la recomendación."
         )

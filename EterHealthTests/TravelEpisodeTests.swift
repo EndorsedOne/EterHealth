@@ -350,6 +350,19 @@ final class TravelEpisodeTests: XCTestCase {
         XCTAssertEqual(episode.stops[0].shiftHours, 5, accuracy: 0.001)
     }
 
+    func testCanonicalDestinationFollowsTheFirstRealStopWhenSaving() {
+        let toBangkok = segment("Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+                                "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9))
+        var episode = TravelEpisode(title: "Asia", homeTimeZoneID: "Europe/Madrid",
+                                    destinationTimeZoneID: "Asia/Seoul",
+                                    stops: [TravelStop(flights: [toBangkok])])
+
+        episode.synchronizeCanonicalDestination()
+
+        XCTAssertEqual(episode.destinationTimeZoneID, "Asia/Bangkok",
+                       "El campo compatible no puede discrepar del primer destino real del itinerario.")
+    }
+
     func testOffsetShiftIsSignedSoEastIsPositiveAndWestNegative() {
         // Madrid → Tokio: hacia el este, hay que ADELANTAR el reloj.
         let east = segment("Europe/Madrid", local("Europe/Madrid", 2026, 7, 10, 12),

@@ -395,6 +395,7 @@ private struct ErgometerEnrichmentEditor: View {
 // to one session instead of blending several together.
 private struct HeartRateZonesCard: View {
     @EnvironmentObject private var health: HealthStore
+    @EnvironmentObject private var goals: GoalStore
     let workout: HealthWorkout
     @State private var zones: [HeartRateZone]?
 
@@ -422,7 +423,7 @@ private struct HeartRateZonesCard: View {
         .cardStyle()
         .task {
             guard zones == nil else { return }
-            zones = await health.heartRateZones(for: workout)
+            zones = await health.heartRateZones(for: workout, profile: goals.profile)
         }
     }
 

@@ -555,4 +555,40 @@ final class TravelImpactTests: XCTestCase {
         XCTAssertEqual(TravelImpactEngine.impact(episode: tokyoEpisode(),
                                                  at: local("Europe/Madrid", 2027, 1, 1, 12)), .none)
     }
+
+    func testMultidestinationImpactUsesTheActiveStopInsteadOfTheFirstDestination() {
+        let madridBangkok = segment(
+            "Europe/Madrid", local("Europe/Madrid", 2026, 9, 11, 12),
+            "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 12, 9, 30)
+        )
+        let bangkokSeoul = segment(
+            "Asia/Bangkok", local("Asia/Bangkok", 2026, 9, 16, 10),
+            "Asia/Seoul", local("Asia/Seoul", 2026, 9, 16, 18)
+        )
+        let seoulMadrid = segment(
+            "Asia/Seoul", local("Asia/Seoul", 2026, 9, 20, 11),
+            "Europe/Madrid", local("Europe/Madrid", 2026, 9, 20, 20)
+        )
+        let episode = TravelEpisode(
+            title: "Asia", homeTimeZoneID: "Europe/Madrid", destinationTimeZoneID: "Asia/Bangkok",
+            stops: [TravelStop(flights: [madridBangkok]), TravelStop(flights: [bangkokSeoul]),
+                    TravelStop(flights: [seoulMadrid])]
+        )
+
+        let inSeoul = TravelImpactEngine.impact(
+            episode: episode, at: local("Asia/Seoul", 2026, 9, 16, 18, 30)
+        )
+        XCTAssertEqual(inSeoul.circadianOffsetHours, 2, accuracy: 0.05,
+                       "Seúl debe partir del salto Bangkok→Seúl (+2 h), no reutilizar Madrid→Bangkok (+5 h).")
+        XCTAssertTrue(inSeoul.factors.contains {
+            if case .doorToDoor(let hours) = $0 { return abs(hours - 6) < 0.1 }
+            return false
+        }, "La fatiga debe describir el tramo activo Bangkok→Seúl (6 h reales), no la ida inicial.")
+
+        let backInMadrid = TravelImpactEngine.impact(
+            episode: episode, at: local("Europe/Madrid", 2026, 9, 20, 20, 30)
+        )
+        XCTAssertEqual(backInMadrid.circadianOffsetHours, -7, accuracy: 0.05,
+                       "La readaptación debe usar el salto activo Seúl→Madrid.")
+    }
 }

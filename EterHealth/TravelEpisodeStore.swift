@@ -46,6 +46,7 @@ final class TravelEpisodeStore: ObservableObject {
     /// por construcción: para borrar una medición hay que borrar el episodio.
     func save(_ episode: TravelEpisode) {
         var incoming = episode
+        incoming.synchronizeCanonicalDestination()
         if incoming.measuredOutcome == nil,
            let existing = episodes.first(where: { $0.id == episode.id })?.measuredOutcome {
             incoming.measuredOutcome = existing

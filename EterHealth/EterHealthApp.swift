@@ -43,6 +43,7 @@ struct EterHealthApp: App {
                 .environmentObject(workoutEnrichments)
                 .environmentObject(inBody)
                 .task {
+                    health.configure(profile: goals.profile)
                     // HealthKit puede despertar el proceso sin que el usuario
                     // abra la ventana. El widget se reescribe desde el store,
                     // no desde onAppear/onChange de ContentView.
@@ -76,7 +77,7 @@ struct EterHealthApp: App {
                     await health.prepare()
                     try? await Task.sleep(for: .seconds(1.2))
                     guard !Task.isCancelled else { return }
-                    await health.loadExtendedHistory()
+                    await health.loadExtendedHistory(profile: goals.profile)
                 }
         }
     }

@@ -260,7 +260,7 @@ enum TravelImpactEngine {
 
         var factors: [TravelFactor] = []
         // Estructurales: los del tránsito que está pesando ahora.
-        let leg = relevantLeg(episode: episode, phase: phase)
+        let leg = relevantLeg(episode: episode, at: date)
         if let doorToDoor = leg.transitDuration, doorToDoor > 0, fatigue > 0 {
             factors.append(.doorToDoor(hours: doorToDoor / 3_600))
         }
@@ -305,22 +305,20 @@ enum TravelImpactEngine {
         // modelo no representa.
         guard episode.resolvedStayPolicy == .adaptToDestination else { return 0 }
 
-        switch episode.phase(at: date, rates: rates) {
+        let phase = episode.phase(at: date, rates: rates)
+        guard let stopIndex = episode.currentStopIndex(at: date),
+              episode.stops.indices.contains(stopIndex) else { return 0 }
+        let stop = episode.stops[stopIndex]
+
+        switch phase {
         case .preDeparture, .recovered, .cancelled:
             return 0
-        case .outboundTransit:
-            return episode.outboundShiftHours * transitProgress(episode.outboundFlights, at: date)
-        case .destinationAdaptation, .destinationStable:
-            guard let arrival = episode.destinationArrival else { return 0 }
+        case .outboundTransit, .returnTransit:
+            return stop.shiftHours * transitProgress(stop.flights, at: date)
+        case .destinationAdaptation, .destinationStable, .homeReadaptation:
+            guard let arrival = stop.arrival else { return 0 }
             if let stabilizedAt, date >= stabilizedAt { return 0 }
-            return remaining(shift: episode.outboundShiftHours, since: arrival, at: date, rates: rates)
-        case .returnTransit:
-            let shift = episode.returnShiftHours
-            return shift * transitProgress(episode.returnFlights, at: date)
-        case .homeReadaptation:
-            guard let homeArrival = episode.homeArrival else { return 0 }
-            if let stabilizedAt, date >= stabilizedAt { return 0 }
-            return remaining(shift: episode.returnShiftHours, since: homeArrival, at: date, rates: rates)
+            return remaining(shift: stop.shiftHours, since: arrival, at: date, rates: rates)
         }
     }
 
@@ -356,7 +354,7 @@ enum TravelImpactEngine {
                                            rates: ReentrainmentRates = .prior) -> Double {
         let phase = episode.phase(at: date, rates: rates)
         guard phase.isActive, phase != .preDeparture else { return 0 }
-        let leg = relevantLeg(episode: episode, phase: phase)
+        let leg = relevantLeg(episode: episode, at: date)
         let peak = peakFatigue(flights: leg.flights, transitDuration: leg.transitDuration)
         guard peak > 0 else { return 0 }
         guard let arrival = leg.flights.map(\.arrival).max() else { return 0 }
@@ -382,14 +380,17 @@ enum TravelImpactEngine {
     /// Qué tramo pesa en esta fase. La vuelta no reutiliza el resultado de la
     /// ida: a partir del tránsito de vuelta, la fatiga y el desajuste son los
     /// de la vuelta.
-    private nonisolated static func relevantLeg(episode: TravelEpisode, phase: TravelPhase)
+    private nonisolated static func relevantLeg(episode: TravelEpisode, at date: Date)
         -> (flights: [FlightSegment], transitDuration: TimeInterval?, layovers: Int) {
-        switch phase {
-        case .returnTransit, .homeReadaptation:
-            return (episode.returnFlights, episode.returnTransitDuration, episode.returnLayovers)
-        default:
-            return (episode.outboundFlights, episode.outboundTransitDuration, episode.outboundLayovers)
+        guard let index = episode.currentStopIndex(at: date), episode.stops.indices.contains(index) else {
+            return ([], nil, 0)
         }
+        let stop = episode.stops[index]
+        let duration: TimeInterval? = {
+            guard let departure = stop.departure, let arrival = stop.arrival else { return nil }
+            return arrival.timeIntervalSince(departure)
+        }()
+        return (stop.flights, duration, max(0, stop.flights.count - 1))
     }
 
     // MARK: Estabilidad
@@ -429,21 +430,22 @@ enum TravelImpactEngine {
         let restingCeiling = baseline.restingHeartRate.upperNormal
         let phase = episode.phase(at: date, rates: rates)
         let start: Date?
+        let localZone: TimeZone?
         if let measuringLeg {
             start = measuringLeg == .homeReturn ? episode.homeArrival : episode.destinationArrival
+            localZone = measuringLeg == .homeReturn
+                ? TimeZone(identifier: episode.homeTimeZoneID)
+                : TimeZone(identifier: episode.destinationTimeZoneID)
         } else {
             switch phase {
-            case .destinationAdaptation, .destinationStable: start = episode.destinationArrival
-            case .homeReadaptation: start = episode.homeArrival
+            case .destinationAdaptation, .destinationStable, .homeReadaptation:
+                guard let index = episode.currentStopIndex(at: date), episode.stops.indices.contains(index) else { return nil }
+                start = episode.stops[index].arrival
+                localZone = episode.stops[index].destinationTimeZoneID.flatMap(TimeZone.init(identifier:))
             default: return nil
             }
         }
         guard let start else { return nil }
-
-        let leg = measuringLeg ?? (phase == .homeReadaptation ? .homeReturn : .outbound)
-        let localZone = leg == .homeReturn
-            ? TimeZone(identifier: episode.homeTimeZoneID)
-            : TimeZone(identifier: episode.destinationTimeZoneID)
         var calendar = Calendar(identifier: .gregorian)
         // Las noches se agrupan en el día civil donde se estaba, no en el huso
         // que tenga el teléfono meses después al reconstruir el viaje.
