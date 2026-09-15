@@ -2964,6 +2964,11 @@ final class EngineTests: XCTestCase {
         let byReadiness = TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.1, pace: .aggressive, kind: .qualityRun, readiness: 52)
         XCTAssertNotNil(byReadiness, "Proponer con 52 cuando Óptimo pararía en 58 tiene que decirse.")
         XCTAssertTrue(byReadiness?.contains("52") == true)
+        let future = TrainingPlanEngine.aggressiveRiskDisclosure(
+            ratio: 1.1, pace: .aggressive, kind: .qualityRun,
+            readiness: 52, isForecast: true
+        )
+        XCTAssertTrue(future?.contains("disponibilidad prevista para ese día 52") == true, "\(future ?? "nil")")
         // Las dos a la vez lo dice una sola vez, no dos avisos apilados.
         let both = TrainingPlanEngine.aggressiveRiskDisclosure(ratio: 1.7, pace: .aggressive, kind: .qualityRun, readiness: 52)
         XCTAssertNotNil(both)

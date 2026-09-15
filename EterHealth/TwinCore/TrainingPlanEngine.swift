@@ -1930,6 +1930,11 @@ enum TrainingPlanEngine {
             // state the prescription was decided from and the "completed"
             // side of completed + planned; reading simulatedMuscles() again
             // after applyMuscleLoad would count the proposal twice.
+            // Keep the readiness snapshot too. `state.apply` below advances
+            // the model to the END of the proposed session; that post-session
+            // value belongs to tomorrow's forecast, never to the explanation
+            // or prescription of the session we just chose.
+            let readinessAtSessionStart = state.readiness
             let forecastMuscles = simulatedMuscles()
             let forecastPattern = kind == .strength
                 ? bestStrengthPattern(forecastMuscles, avoidLegs: avoidLegsThisDay, landmarkContext: landmarkContext)
@@ -1951,10 +1956,10 @@ enum TrainingPlanEngine {
                 let named = forecastPattern.map { "de \($0.inline)" } ?? "de fuerza"
                 rationale = "Próxima sesión \(named) prevista para esta fecha: para entonces el patrón vuelve a estar recuperado y con el volumen por debajo de tu objetivo semanal. Es una sesión completa planificada, no un extra opcional de hoy."
             }
-            let forecastStrengthIsLight = state.readiness < 62
+            let forecastStrengthIsLight = readinessAtSessionStart < 62
             let strengthWorkout = kind == .strength ? WorkoutPlanner.session(
                 for: .strength, pattern: forecastPattern, upperBodyOnlyToday: false,
-                block: block, isDeload: false, readiness: state.readiness, rationale: rationale,
+                block: block, isDeload: false, readiness: readinessAtSessionStart, rationale: rationale,
                 muscles: forecastMuscles, health: health, imports: imports, context: context, now: date) : nil
             // A return from a low recent month is a progression across the
             // week, not a one-day UI badge. Keep every projected strength
@@ -1975,7 +1980,10 @@ enum TrainingPlanEngine {
             // Agresivo's extra margin (over 1.55) is what actually let
             // through.
             let finalRationale: String
-            if let riskDisclosure = aggressiveRiskDisclosure(ratio: ratio, pace: pace, kind: kind, readiness: state.readiness) {
+            if let riskDisclosure = aggressiveRiskDisclosure(
+                ratio: ratio, pace: pace, kind: kind,
+                readiness: readinessAtSessionStart, isForecast: true
+            ) {
                 finalRationale = "\(riskDisclosure) \(rationale)"
             } else {
                 finalRationale = rationale
@@ -1984,7 +1992,7 @@ enum TrainingPlanEngine {
             results.append(DayForecast(date: date, kind: kind, isDeload: false, rationale: finalRationale,
                                        targetMinutes: simulatedMinutesEstimate > 0 ? simulatedMinutesEstimate : nil,
                                        intensityLabel: intensityLabel(for: kind),
-                                       prescription: prescription(for: kind, block: block, readiness: state.readiness,
+                                       prescription: prescription(for: kind, block: block, readiness: readinessAtSessionStart,
                                                                   muscles: forecastMuscles,
                                                                   volumeFactor: forecastStrengthFactor,
                                                                   avoidLegsTomorrow: avoidLegsThisDay,
@@ -2365,7 +2373,8 @@ enum TrainingPlanEngine {
     // there. Internal (not private) so EngineTests can verify this
     // directly.
     nonisolated static func aggressiveRiskDisclosure(ratio: Double, pace: ProgressionPace,
-                                                     kind: PlannedSessionKind, readiness: Int) -> String? {
+                                                     kind: PlannedSessionKind, readiness: Int,
+                                                     isForecast: Bool = false) -> String? {
         guard pace == .aggressive, kind != .recovery else { return nil }
         // Dos formas de estar operando al límite, y cada una se dice cuando
         // ocurre de verdad — no un aviso genérico permanente por tener el
@@ -2373,13 +2382,14 @@ enum TrainingPlanEngine {
         let overRatio = ratio >= ProgressionPace.elevatedRiskRatio
         let underReadiness = readiness < ProgressionPace.disclosureReadinessFloor
         guard overRatio || underReadiness else { return nil }
+        let readinessLabel = isForecast ? "disponibilidad prevista para ese día" : "disponibilidad"
         if overRatio && underReadiness {
-            return "⚠️ Al límite por dos vías: carga \(ratio.formatted(.number.precision(.fractionLength(2))))× (por encima de 1.55 — Gabbett et al.) y disponibilidad \(readiness), por debajo del \(ProgressionPace.disclosureReadinessFloor) donde Óptimo pararía. Tu ritmo Agresivo lo permite; el riesgo de lesión es real."
+            return "⚠️ Al límite por dos vías: carga \(ratio.formatted(.number.precision(.fractionLength(2))))× (por encima de 1.55 — Gabbett et al.) y \(readinessLabel) \(readiness), por debajo del \(ProgressionPace.disclosureReadinessFloor) donde Óptimo pararía. Tu ritmo Agresivo lo permite; el riesgo de lesión es real."
         }
         if overRatio {
             return "⚠️ Zona de riesgo elevado de lesión (carga \(ratio.formatted(.number.precision(.fractionLength(2))))×, por encima de 1.55 — Gabbett et al.). Tu ritmo Agresivo lo permite hasta 1.80, pero no es la operación habitual."
         }
-        return "⚠️ Propuesto con disponibilidad \(readiness), por debajo del \(ProgressionPace.disclosureReadinessFloor) donde Óptimo te mandaría descansar. Es lo que pediste con Agresivo: entrenar al límite asumiendo más riesgo de lesión."
+        return "⚠️ Propuesto con \(readinessLabel) \(readiness), por debajo del \(ProgressionPace.disclosureReadinessFloor) donde Óptimo te mandaría descansar. Es lo que pediste con Agresivo: entrenar al límite asumiendo más riesgo de lesión."
     }
 
     // Devuelve StrengthPattern, no el string "pierna"/"empuje"/"tirón" que
