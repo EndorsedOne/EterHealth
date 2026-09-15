@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct EterHealthApp: App {
+    @UIApplicationDelegateAdaptor(EterNotificationDelegate.self) private var notificationDelegate
     @StateObject private var health = HealthStore()
     @StateObject private var imports = ImportStore()
     @StateObject private var strengthRoutines = StrengthRoutineStore()

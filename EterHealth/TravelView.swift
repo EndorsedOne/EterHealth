@@ -124,6 +124,7 @@ struct TravelView: View {
             .sheet(item: $editor) { editor in
                 TravelEpisodeEditorView(episode: editor.episode).environmentObject(travel)
             }
+            .task { await TravelAdaptationNotifier.requestAuthorizationIfNeeded() }
             .onAppear { now = Date() }
             .alert("Eliminar viaje", isPresented: Binding(
                 get: { episodePendingDeletion != nil },
@@ -164,10 +165,22 @@ private struct CurrentTravelCard: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(phase.rawValue).font(.subheadline.bold())
+                    Text(statusTitle).font(.subheadline.bold())
+                        .foregroundStyle(isMeasuredAdaptation ? EterTheme.positive : .primary)
                     if let remaining = remainingDescription {
                         Text(remaining).font(.caption2).foregroundStyle(.secondary)
                     }
+                }
+            }
+            if let adaptationMessage {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(adaptationMessage.title).font(.caption.bold())
+                        Text(adaptationMessage.detail).font(.caption2).foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: adaptationMessage.icon)
+                        .foregroundStyle(adaptationMessage.measured ? EterTheme.positive : .secondary)
                 }
             }
             Divider()
@@ -245,6 +258,27 @@ private struct CurrentTravelCard: View {
     private var activeStop: TravelStop? {
         guard let index = episode.currentStopIndex(at: now), episode.stops.indices.contains(index) else { return nil }
         return episode.stops[index]
+    }
+
+    private var isMeasuredAdaptation: Bool {
+        phase == .destinationStable && episode.phaseBasis(at: now, rates: rates) == .measuredStability
+    }
+
+    private var statusTitle: String {
+        isMeasuredAdaptation ? "Adaptación confirmada ✓" : phase.rawValue
+    }
+
+    private var adaptationMessage: (title: String, detail: String, icon: String, measured: Bool)? {
+        guard phase == .destinationStable else { return nil }
+        let destination = activeStop?.destinationTimeZoneID.map(TravelFormat.zoneName) ?? episode.title
+        if isMeasuredAdaptation {
+            return ("Tus señales ya son estables en \(destination).",
+                    "Confirmada con sueño, horario local, HRV y pulso en reposo.",
+                    "checkmark.seal.fill", true)
+        }
+        return ("Adaptación estimada",
+                "Ha terminado el periodo previsto, pero aún no hay suficientes señales para confirmarla.",
+                "clock.badge.questionmark", false)
     }
 
     /// El tránsito de la parada activa, no la ida/vuelta global del formato

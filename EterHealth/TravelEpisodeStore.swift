@@ -195,6 +195,8 @@ final class TravelEpisodeStore: ObservableObject {
         outcome.lastMeasuredAt = date
         episode.measuredOutcome = outcome
         save(episode)
+        let confirmedStop = episode.stops[stopIndex]
+        Task { await TravelAdaptationNotifier.notifyConfirmed(episode: episode, stop: confirmedStop) }
     }
 
     /// Infiere retroactivamente la estabilidad de los tramos de un viaje cuya

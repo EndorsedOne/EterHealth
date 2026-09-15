@@ -269,6 +269,10 @@ struct ContentView: View {
         .onChange(of: selectedTab) { _, tab in
             if tab == 1 || tab == 2 { loadPerformanceIfNeeded() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openTravelFromNotification)) { _ in
+            _ = TravelNotificationRouting.consumePending()
+            activeSheet = .travel
+        }
         // Backfill de estabilidad de viajes pasados. En una vista aparte (no un
         // .onChange más en esta cadena) porque el type-checker de SwiftUI no
         // aguanta un modificador más sobre este TabView ya enorme.
@@ -302,6 +306,7 @@ struct ContentView: View {
             // frame: eso era trabajo caro invisible antes de poder hacer
             // siquiera scroll.
             if health.lastUpdated != nil { scheduleDashboardRefresh() }
+            if TravelNotificationRouting.consumePending() { activeSheet = .travel }
         }
     }
 
