@@ -99,6 +99,27 @@ final class EngineTests: XCTestCase {
                              "A real rest day must predict a HIGHER readiness tomorrow than staying just as fatigued would.")
     }
 
+    func testProjectionKeepsTodaysObservedScoreAsItsStartingPoint() {
+        let today = Date(timeIntervalSince1970: 1_700_000_000)
+        let current = TwinPhysiology(
+            fitnessAerobic: 200, fatigueAerobic: 180,
+            fitnessStrength: 150, fatigueStrength: 130,
+            muscleFatigue: ["Cuádriceps": 70], sleepDebtHours: 3,
+            illness: false, asOf: today
+        )
+        let tomorrow = step(current, session: .none, recoverySignals: .none, dtDays: 1)
+        let currentModel = TwinReadout.derive(from: current, anchor: neutralAnchor, calibration: neutralCalibration).score
+        let tomorrowModel = TwinReadout.derive(from: tomorrow, anchor: neutralAnchor, calibration: neutralCalibration).score
+        let projected = TwinReadout.project(
+            currentScore: 74, from: current, to: tomorrow,
+            anchor: neutralAnchor, calibration: neutralCalibration
+        )
+
+        XCTAssertEqual(projected.score, min(100, max(0, 74 + tomorrowModel - currentModel)))
+        XCTAssertGreaterThanOrEqual(projected.score, 74,
+                                    "Sin sesión y con fatiga decayendo, la proyección no puede desplomarse por cambiar de escala.")
+    }
+
     // El vector ignoraba el HRV por completo: dos atletas con la misma carga
     // y un HRV muy distinto predecían EL MISMO mañana. Ahora la desviación
     // medida hoy entra en el estado.

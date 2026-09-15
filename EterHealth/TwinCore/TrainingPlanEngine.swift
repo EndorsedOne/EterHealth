@@ -1458,10 +1458,14 @@ enum TrainingPlanEngine {
                              strength: PerformanceEngine.stepWeeklyEquivalent(acute.strength, dayLoad: load.strength, timeConstant: 7))
             chronic = DualLoad(aerobic: PerformanceEngine.stepWeeklyEquivalent(chronic.aerobic, dayLoad: load.aerobic, timeConstant: 28),
                                strength: PerformanceEngine.stepWeeklyEquivalent(chronic.strength, dayLoad: load.strength, timeConstant: 28))
-            var stepped = step(physiology, session: DualLoad.forecast(kind), recoverySignals: .none, dtDays: 1)
+            let previousPhysiology = physiology
+            var stepped = step(previousPhysiology, session: DualLoad.forecast(kind), recoverySignals: .none, dtDays: 1)
             stepped.muscleFatigue = muscleFatigue
             physiology = stepped
-            readiness = TwinReadout.derive(from: physiology, anchor: anchor, calibration: calibration).score
+            readiness = TwinReadout.project(
+                currentScore: readiness, from: previousPhysiology, to: physiology,
+                anchor: anchor, calibration: calibration
+            ).score
 
             switch kind {
             case .easyRun: runs += 1

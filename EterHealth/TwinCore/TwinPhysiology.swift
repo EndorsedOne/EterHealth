@@ -384,4 +384,18 @@ extension TwinReadout {
         let finalScore = min(100, max(0, Int(score.rounded())))
         return TwinReadout(score: finalScore, state: label(for: finalScore), confidence: anchor.confidence)
     }
+
+    /// Projects the physiological *change* onto today's measured score.
+    /// `derive` is an internal load/fatigue scale; using its absolute value
+    /// for tomorrow discards today's real HRV, sleep and check-in score and
+    /// can create a discontinuity merely because the two scales have
+    /// different penalty caps. The delta is meaningful, so preserve it while
+    /// keeping the observed score as the forecast's starting point.
+    static func project(currentScore: Int, from current: TwinPhysiology, to projected: TwinPhysiology,
+                        anchor: PersonalReadinessAnchor, calibration: TwinCalibration) -> TwinReadout {
+        let currentModel = derive(from: current, anchor: anchor, calibration: calibration).score
+        let projectedModel = derive(from: projected, anchor: anchor, calibration: calibration).score
+        let score = min(100, max(0, currentScore + projectedModel - currentModel))
+        return TwinReadout(score: score, state: label(for: score), confidence: anchor.confidence)
+    }
 }

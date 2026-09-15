@@ -461,7 +461,10 @@ enum TwinEngine {
         // carga y un HRV muy distinto predecían el mismo mañana.
         let tomorrowPhysiology = step(physiology, session: SessionLoad.forecast(plan.nextSession),
                                       recoverySignals: .none, dtDays: 1, rates: travelRates)
-        let predictedTomorrow = TwinReadout.derive(from: tomorrowPhysiology, anchor: anchor, calibration: calibration)
+        let predictedTomorrow = TwinReadout.project(
+            currentScore: score, from: physiology, to: tomorrowPhysiology,
+            anchor: anchor, calibration: calibration
+        )
 
         return TwinAssessment(score: score, state: state, recommendation: recommendation, explanation: explanation, signals: signals, muscles: muscleReadiness, baselineConfidence: personal.confidence, physiologicalAlert: physiologicalAlert, physiology: physiology, readout: readout, travel: travelImpact, travelRates: travelRates, predictedTomorrow: predictedTomorrow)
     }
