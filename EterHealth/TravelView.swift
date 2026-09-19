@@ -162,6 +162,11 @@ private struct CurrentTravelCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(episode.title).font(.title3).fontDesign(.serif)
                     Text(routeDescription).font(.caption).foregroundStyle(.secondary)
+                    if let activeRouteDescription {
+                        Text("Tramo actual · \(activeRouteDescription)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(Color.accentColor)
+                    }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
@@ -221,10 +226,19 @@ private struct CurrentTravelCard: View {
     }
 
     private var routeDescription: String {
-        let stop = activeStop
-        return [TravelFormat.zoneName(stop?.originTimeZoneID ?? episode.homeTimeZoneID),
-                TravelFormat.zoneName(stop?.destinationTimeZoneID ?? episode.destinationTimeZoneID)]
+        ([episode.homeTimeZoneID] + episode.stops.compactMap(\.destinationTimeZoneID))
+            .map(TravelFormat.zoneName)
             .joined(separator: " → ")
+    }
+
+    /// El itinerario no cambia cuando avanzas de parada. El tramo activo se
+    /// muestra aparte para que Bangkok→Seúl no parezca haber sustituido a la
+    /// ida original Madrid→Bangkok.
+    private var activeRouteDescription: String? {
+        guard episode.stops.count > 1, let stop = activeStop,
+              let origin = stop.originTimeZoneID,
+              let destination = stop.destinationTimeZoneID else { return nil }
+        return "\(TravelFormat.zoneName(origin)) → \(TravelFormat.zoneName(destination))"
     }
 
     private var shiftDescription: String {
@@ -562,6 +576,11 @@ struct TravelEpisodeEditorView: View {
     @State private var declaresStayEnd: Bool
     @State private var stayEndDate: Date
     @State private var automaticPolicy: Bool
+    /// Identidad estable de la vuelta mientras se edita. No se deduce de su
+    /// destino porque, durante los segundos en los que el usuario la está
+    /// rellenando, todavía puede estar vacío. Si se deduce en cada render, la
+    /// sección salta a "Destino 1" antes de poder elegir Madrid.
+    @State private var returnStopID: UUID?
 
     private let isNew: Bool
 
@@ -575,6 +594,7 @@ struct TravelEpisodeEditorView: View {
         _declaresStayEnd = State(initialValue: resolved.expectedStayEndDate != nil)
         _stayEndDate = State(initialValue: resolved.expectedStayEndDate ?? Date())
         _automaticPolicy = State(initialValue: resolved.declaredStayPolicy == nil)
+        _returnStopID = State(initialValue: resolved.returnsHome ? resolved.stops.last?.id : nil)
         isNew = episode == nil
     }
 
@@ -608,7 +628,7 @@ struct TravelEpisodeEditorView: View {
                 // vuelta— y el enlace escribía en la parada equivocada: la
                 // ciudad que elegías para la vuelta acababa en un destino
                 // nuevo. Además `stops[index - 1]` sin comprobar reventaba.
-                ForEach(draft.intermediateStops) { stop in
+                ForEach(editorIntermediateStops) { stop in
                     let stopID = stop.id
                     FlightListSection(
                         title: "Destino \(destinationNumber(stopID))",
@@ -628,7 +648,7 @@ struct TravelEpisodeEditorView: View {
                     Button {
                         // Se inserta ANTES de la vuelta si ya la hay: un destino
                         // nuevo va en el camino, no después de volver a casa.
-                        let insertAt = draft.returnsHome ? draft.stops.count - 1 : draft.stops.count
+                        let insertAt = returnStopIndex ?? draft.stops.count
                         let previous = draft.stops.indices.contains(insertAt - 1)
                             ? draft.stops[insertAt - 1].destinationTimeZoneID : nil
                         let departure = (draft.stops.indices.contains(insertAt - 1)
@@ -649,10 +669,10 @@ struct TravelEpisodeEditorView: View {
                 // secas, un viaje cuyo destino declarado no coincide con los
                 // vuelos (el aviso rojo de la pantalla de viajes) proponía
                 // Madrid→Madrid en la vuelta.
-                FlightListSection(title: "Vuelta", flights: $draft.returnFlights,
+                FlightListSection(title: "Vuelta", flights: returnFlightsBinding,
                                   defaultOrigin: returnOrigin, defaultDestination: draft.homeTimeZoneID)
 
-                if draft.returnFlights.isEmpty {
+                if returnFlightsBinding.wrappedValue.isEmpty {
                     Section {
                         Toggle("Sé cuándo termina la estancia", isOn: $declaresStayEnd)
                         if declaresStayEnd {
@@ -708,7 +728,42 @@ struct TravelEpisodeEditorView: View {
     /// posición cambia cuando se añade o quita otro, y renumerar a mano era
     /// justo la fuente del enlace equivocado.
     private func destinationNumber(_ id: UUID) -> Int {
-        (draft.intermediateStops.firstIndex { $0.id == id } ?? 0) + 1
+        (editorIntermediateStops.firstIndex { $0.id == id } ?? 0) + 1
+    }
+
+    private var returnStopIndex: Int? {
+        guard let returnStopID else { return nil }
+        return draft.stops.firstIndex { $0.id == returnStopID }
+    }
+
+    private var editorIntermediateStops: [TravelStop] {
+        Array(draft.stops.dropFirst()).filter { $0.id != returnStopID }
+    }
+
+    /// La sección de vuelta escribe siempre en la misma parada. Su identidad
+    /// nace al pulsar "Añadir vuelo" y no cambia mientras se escoge origen,
+    /// destino o fechas.
+    private var returnFlightsBinding: Binding<[FlightSegment]> {
+        Binding(
+            get: {
+                guard let index = returnStopIndex else { return [] }
+                return draft.stops[index].flights
+            },
+            set: { value in
+                if let index = returnStopIndex {
+                    if value.isEmpty {
+                        draft.stops.remove(at: index)
+                        returnStopID = nil
+                    } else {
+                        draft.stops[index].flights = value
+                    }
+                } else if !value.isEmpty {
+                    let stop = TravelStop(flights: value)
+                    draft.stops.append(stop)
+                    returnStopID = stop.id
+                }
+            }
+        )
     }
 
     /// De dónde sales hacia esta parada: el destino de la parada anterior.
@@ -724,7 +779,7 @@ struct TravelEpisodeEditorView: View {
     /// Antes salía de `outboundFlights.last`, que con varias paradas es el
     /// destino de la IDA (Bangkok) y no donde de verdad estás (Seúl).
     private var returnOrigin: String {
-        let onTheWay = draft.returnsHome ? Array(draft.stops.dropLast()) : draft.stops
+        let onTheWay = draft.stops.filter { $0.id != returnStopID }
         return onTheWay.last?.destinationTimeZoneID ?? draft.destinationTimeZoneID
     }
 
@@ -737,14 +792,15 @@ struct TravelEpisodeEditorView: View {
         // que se convertía en "el viaje actual" de forma indefinida.
         !draft.title.trimmingCharacters(in: .whitespaces).isEmpty
             && !draft.outboundFlights.isEmpty
-            && draft.outboundFlights.allSatisfy(\.isValid)
-            && draft.returnFlights.allSatisfy(\.isValid)
+            && draft.stops.allSatisfy(\.isValid)
+            && (returnFlightsBinding.wrappedValue.isEmpty
+                || returnFlightsBinding.wrappedValue.last?.destinationTimeZoneID == draft.homeTimeZoneID)
     }
 
     private func save() {
         var episode = draft
         episode.title = episode.title.trimmingCharacters(in: .whitespaces)
-        episode.expectedStayEndDate = (declaresStayEnd && draft.returnFlights.isEmpty) ? stayEndDate : nil
+        episode.expectedStayEndDate = (declaresStayEnd && returnFlightsBinding.wrappedValue.isEmpty) ? stayEndDate : nil
         if automaticPolicy { episode.declaredStayPolicy = nil }
         // Reconstruido por el init para que los tramos queden ordenados: la
         // UI permite darlos de alta en cualquier orden.
