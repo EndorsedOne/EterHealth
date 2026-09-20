@@ -47,24 +47,18 @@ private struct WatchTwinPayload: Sendable {
 
 private struct WatchActivePayload: Sendable {
     let routine: String?
-    let exercise: String?
-    let setNumber: Int?
-    let totalSets: Int?
-    let weight: Double?
-    let reps: Int?
     let completedSets: Int?
     let restEndsAt: Date?
     let workoutID: String?
     let workoutDate: Date?
     let totalVolume: Double?
 
+    // Solo lo que el reloj muestra: descanso, resumen (series completadas y
+    // volumen) e identidad de la sesión. El detalle serie a serie
+    // (ejercicio/peso/repeticiones) ya no viaja; si un iPhone antiguo aún lo
+    // envía, esas claves se ignoran sin más.
     nonisolated init(_ message: [String: Any]) {
         routine = message["routineName"] as? String
-        exercise = message["exerciseName"] as? String
-        setNumber = message["setNumber"] as? Int
-        totalSets = message["totalSets"] as? Int
-        weight = message["setWeight"] as? Double
-        reps = message["setReps"] as? Int
         completedSets = message["completedSets"] as? Int
         restEndsAt = (message["restEndsAt"] as? Double).map(Date.init(timeIntervalSince1970:))
         workoutID = message["workoutID"] as? String
@@ -109,17 +103,6 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
     @Published var restingHeartRate: Int?
     @Published var sleepHours: Double?
     @Published var routineName = "Entrenamiento"
-    // LEGADO (desde 56e8f15): el iPhone sigue enviando estos campos en el
-    // payload `workoutContext`, pero el reloj ya no pinta el recorrido serie a
-    // serie, así que nada los lee. Se conservan para no romper el contrato de
-    // WCSession de golpe: retirarlos toca emisor y receptor y merece su propio
-    // cambio con tests de sync. No reintroducir el registro de series aquí sin
-    // esa decisión explícita.
-    @Published var exerciseName: String?
-    @Published var setNumber = 0
-    @Published var totalSets = 0
-    @Published var setWeight: Double?
-    @Published var setReps: Int?
     @Published var completedSets = 0
     @Published var restEndsAt: Date?
     // When the CURRENT rest window actually started — distinct from
@@ -450,11 +433,6 @@ extension WatchWorkoutManager: WCSessionDelegate {
 
     private func apply(_ payload: WatchActivePayload) {
         routineName = payload.routine ?? routineName
-        exerciseName = payload.exercise
-        setNumber = payload.setNumber ?? setNumber
-        totalSets = payload.totalSets ?? totalSets
-        setWeight = payload.weight
-        setReps = payload.reps
         completedSets = payload.completedSets ?? completedSets
         let now = Date()
         let wasResting = restEndsAt.map { $0 > now } ?? false
@@ -470,15 +448,6 @@ extension WatchWorkoutManager: WCSessionDelegate {
         workoutID = payload.workoutID ?? workoutID
         workoutDate = payload.workoutDate ?? workoutDate
         totalVolume = payload.totalVolume ?? totalVolume
-    }
-
-    // LEGADO (desde 56e8f15): sin llamante. Completar una serie desde la
-    // muñeca se retiró junto con el recorrido serie a serie; el iPhone aún
-    // atiende el comando "completeSet", pero nada lo emite. Se deja marcado
-    // en lugar de borrarlo para retirar el contrato completo en un cambio
-    // propio con tests de sync.
-    func completeSetOnPhone() {
-        sendPhoneCommand("completeSet")
     }
 
     func startRest(seconds: Int = 120) {

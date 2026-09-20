@@ -168,25 +168,23 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         send(completedPayload)
     }
 
+    /// El reloj solo consume del contexto el descanso, el resumen (series
+    /// completadas y volumen) y la identidad de la sesión. El recorrido serie
+    /// a serie —ejercicio, peso, repeticiones— se retiró del reloj (56e8f15) y
+    /// vive únicamente en el iPhone, así que el payload ya no lo transporta. Se
+    /// construye con una función pura y probada para que ese contrato no vuelva
+    /// a arrastrar campos sin consumidor.
     func updateWorkoutContext(routine: String, workoutID: String, workoutDate: Date,
-                              exercise: String?, setNumber: Int, totalSets: Int,
-                              weight: Double?, reps: Int?, completedSets: Int,
-                              totalVolume: Double, restEndsAt: Date?) {
-        var payload: [String: Any] = [
-            "payloadType": "workoutContext", "routineName": routine,
-            "workoutID": workoutID, "workoutDate": workoutDate.timeIntervalSince1970,
-            "setNumber": setNumber, "totalSets": totalSets, "completedSets": completedSets,
-            "totalVolume": totalVolume
-        ]
-        if let exercise { payload["exerciseName"] = exercise }
-        if let weight { payload["setWeight"] = weight }
-        if let reps { payload["setReps"] = reps }
-        if let restEndsAt { payload["restEndsAt"] = restEndsAt.timeIntervalSince1970 }
-        // Segunda red de seguridad contra el envío por pulsación: si el
-        // contenido es idéntico al último enviado, no se manda. La primera es
-        // que la firma que dispara esto ya sólo depende de lo que el reloj
-        // muestra (ver LiveStrengthWorkoutView.workoutContextSignature); esto
-        // cubre a cualquier otro llamante presente o futuro.
+                              completedSets: Int, totalVolume: Double, restEndsAt: Date?) {
+        let payload = Self.workoutContextPayload(
+            routine: routine, workoutID: workoutID, workoutDate: workoutDate,
+            completedSets: completedSets, totalVolume: totalVolume, restEndsAt: restEndsAt
+        )
+        // Red de seguridad contra el envío por pulsación: si el contenido es
+        // idéntico al último enviado, no se manda. La firma que dispara esto ya
+        // sólo depende de lo que el reloj muestra (ver
+        // LiveStrengthWorkoutView.workoutContextSignature); esto cubre a
+        // cualquier otro llamante presente o futuro.
         //
         // Importa sobre todo con el reloj NO alcanzable: ahí cada envío es un
         // `transferUserInfo`, que se encola en disco y se entrega más tarde.
@@ -198,6 +196,22 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         let session = WCSession.default
         if session.isReachable { session.sendMessage(payload, replyHandler: nil) }
         else { session.transferUserInfo(payload) }
+    }
+
+    /// Contrato del payload `workoutContext` (iPhone → reloj). Función pura para
+    /// poder fijarlo en un test: solo descanso, resumen e identidad de sesión;
+    /// nunca detalle de serie (ejercicio/peso/repeticiones), que el reloj ya no
+    /// pinta.
+    nonisolated static func workoutContextPayload(routine: String, workoutID: String, workoutDate: Date,
+                                                  completedSets: Int, totalVolume: Double,
+                                                  restEndsAt: Date?) -> [String: Any] {
+        var payload: [String: Any] = [
+            "payloadType": "workoutContext", "routineName": routine,
+            "workoutID": workoutID, "workoutDate": workoutDate.timeIntervalSince1970,
+            "completedSets": completedSets, "totalVolume": totalVolume
+        ]
+        if let restEndsAt { payload["restEndsAt"] = restEndsAt.timeIntervalSince1970 }
+        return payload
     }
 
     private var lastWorkoutContextSignature: String?

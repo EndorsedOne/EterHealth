@@ -1553,8 +1553,7 @@ struct LiveStrengthWorkoutView: View {
                         else if action == "discard" { discardSession(notifyWatch: false) }
                     },
                     onCommand: { command in
-                        if command == "completeSet" { completeNextSet() }
-                        else if command == "skipRest" { restEndsAt = nil; syncWorkoutContext() }
+                        if command == "skipRest" { restEndsAt = nil; syncWorkoutContext() }
                         else if command.hasPrefix("restStart:"), let seconds = Int(command.dropFirst("restStart:".count)) {
                             restEndsAt = Date().addingTimeInterval(TimeInterval(max(15, seconds)))
                             syncWorkoutContext()
@@ -1945,31 +1944,21 @@ struct LiveStrengthWorkoutView: View {
     /// EN CADA TECLA. Con el reloj no alcanzable, `transferUserInfo` además
     /// encola cada envío en disco. Eso es el "va como congelada la pantalla".
     ///
-    /// Ahora depende de la serie siguiente, el recuento y el descanso, que es
-    /// exactamente lo que la pantalla del reloj pinta: editar el peso de una
-    /// serie ya hecha, o de una que no es la siguiente, no le dice nada nuevo
-    /// al reloj y por tanto no manda nada.
+    /// Depende sólo de lo que el reloj consume del contexto: cuántas series van
+    /// completadas (resumen) y el descanso (temporizador). El recorrido serie a
+    /// serie se retiró del reloj (56e8f15), así que editar el peso o la serie
+    /// siguiente ya no le dice nada nuevo y no dispara envío.
     private var workoutContextSignature: String {
-        let flattened = exercises.flatMap { exercise in exercise.sets.map { (exercise.name, $0) } }
-        let completed = flattened.filter { $0.1.completed }.count
-        let next = flattened.first { !$0.1.completed }
-        return [next?.0 ?? "", "\(next?.1.weight ?? 0)", "\(next?.1.reps ?? 0)",
-                "\(completed)", "\(flattened.count)",
-                "\(restEndsAt?.timeIntervalSince1970 ?? 0)"].joined(separator: "|")
+        let completed = exercises.flatMap(\.sets).filter(\.completed).count
+        return ["\(completed)", "\(restEndsAt?.timeIntervalSince1970 ?? 0)"].joined(separator: "|")
     }
 
     private func syncWorkoutContext() {
-        let flattened = exercises.flatMap { exercise in exercise.sets.map { (exercise.name, $0) } }
-        let completed = flattened.filter { $0.1.completed }.count
-        let next = flattened.first { !$0.1.completed }
-        let nextIndex = next.flatMap { target in flattened.firstIndex { $0.1.id == target.1.id } } ?? flattened.count
-        let volume = flattened.filter { $0.1.completed }.reduce(0) { $0 + $1.1.weight * Double($1.1.reps) }
+        let completed = exercises.flatMap(\.sets).filter(\.completed)
+        let volume = completed.reduce(0) { $0 + $1.weight * Double($1.reps) }
         WatchMetricsStore.shared.updateWorkoutContext(routine: routine.name,
                                           workoutID: "\(routine.name)|\(startedAt.timeIntervalSince1970)", workoutDate: startedAt,
-                                          exercise: next?.0,
-                                          setNumber: min(flattened.count, nextIndex + 1), totalSets: flattened.count,
-                                          weight: next?.1.weight, reps: next?.1.reps,
-                                          completedSets: completed, totalVolume: volume, restEndsAt: restEndsAt)
+                                          completedSets: completed.count, totalVolume: volume, restEndsAt: restEndsAt)
     }
 
     // Mirrors Hevy's ±15s rest-adjust buttons, drivable from either the
@@ -1982,17 +1971,6 @@ struct LiveStrengthWorkoutView: View {
         let adjusted = restEndsAt.addingTimeInterval(TimeInterval(seconds))
         self.restEndsAt = adjusted <= Date() ? nil : adjusted
         syncWorkoutContext()
-    }
-
-    private func completeNextSet() {
-        for exerciseIndex in exercises.indices {
-            if let setIndex = exercises[exerciseIndex].sets.firstIndex(where: { !$0.completed }) {
-                exercises[exerciseIndex].sets[setIndex].completed = true
-                restEndsAt = Date().addingTimeInterval(TimeInterval(exercises[exerciseIndex].restSeconds))
-                syncWorkoutContext()
-                return
-            }
-        }
     }
 
     private func completeSession(notifyWatch: Bool) {
