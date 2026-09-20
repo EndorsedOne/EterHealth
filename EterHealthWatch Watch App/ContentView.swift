@@ -199,7 +199,7 @@ struct ContentView: View {
     private var activeWorkout: some View {
         TabView {
             liveMetricsPage
-            currentSetPage
+            restPage
             VStack(spacing: 14) {
                 Button { workout.togglePause() } label: { Label(workout.isPaused ? "Continuar" : "Pausar", systemImage: workout.isPaused ? "play.fill" : "pause.fill") }.tint(.orange)
                 Button { Task { await workout.finish() } } label: { Label("Finalizar y guardar", systemImage: "checkmark") }.tint(.green)
@@ -215,7 +215,7 @@ struct ContentView: View {
     private var liveMetricsPage: some View {
         VStack(spacing: 8) {
             HStack {
-                Text(workout.isPaused ? "PAUSA" : workout.routineName.uppercased())
+                Text(workout.isPaused ? "PAUSA" : "ENTRENAMIENTO")
                     .font(.system(size: 9, weight: .bold)).foregroundStyle(workout.isPaused ? .orange : .secondary).lineLimit(1)
                 Spacer()
                 Text(duration(workout.elapsed)).font(.caption.monospacedDigit().bold())
@@ -238,52 +238,30 @@ struct ContentView: View {
         .accessibilityElement(children: .combine)
     }
 
-    @ViewBuilder private var currentSetPage: some View {
-        if workout.totalSets > 0 && workout.completedSets >= workout.totalSets {
-            VStack(spacing: 10) {
-                Image(systemName: "checkmark.circle.fill").font(.largeTitle).foregroundStyle(.green)
-                Text("Rutina completada").font(.headline)
-                Text("\(workout.completedSets) series realizadas").font(.caption).foregroundStyle(.secondary)
-                Button { Task { await workout.finish() } } label: { Label("Finalizar y guardar", systemImage: "checkmark") }
-                    .buttonStyle(.borderedProminent).tint(.green)
-            }
-        } else if let exercise = workout.exerciseName, workout.totalSets > 0, let restEndsAt = workout.restEndsAt, restEndsAt > Date() {
-            restTimerPage(exercise: exercise, restEndsAt: restEndsAt)
-        } else if let exercise = workout.exerciseName, workout.totalSets > 0 {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(workout.routineName.uppercased()).font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).lineLimit(1)
-                Text(exercise).font(.headline).lineLimit(2).minimumScaleFactor(0.75)
-                HStack(spacing: 7) {
-                    setValue("SERIE", "\(workout.setNumber)/\(workout.totalSets)")
-                    setValue("KG", workout.setWeight.map { $0.formatted(.number.precision(.fractionLength(0...1))) } ?? "—")
-                    setValue("REPS", workout.setReps.map(String.init) ?? "—")
-                }
-                Button { workout.completeSetOnPhone() } label: {
-                    Label(workout.phoneReachable ? "Completar serie" : "Abre el iPhone", systemImage: workout.phoneReachable ? "checkmark.circle.fill" : "iphone")
-                        .frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).tint(.green).disabled(!workout.phoneReachable)
-            }.padding(.horizontal, 4)
+    /// Deliberately independent of routine delivery. The routine remains on
+    /// the iPhone; the Watch keeps the two things it does reliably and better:
+    /// live biometrics and a glanceable rest timer.
+    @ViewBuilder private var restPage: some View {
+        if let restEndsAt = workout.restEndsAt, restEndsAt > Date() {
+            activeRestTimer(restEndsAt: restEndsAt)
         } else {
-            VStack(spacing: 10) {
-                Image(systemName: inProgressIcon)
-                    .font(.title2).foregroundStyle(.blue)
-                Text(inProgressTitle)
-                    .font(.headline).multilineTextAlignment(.center)
-                Text(inProgressSubtitle)
-                    .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }
+            VStack(spacing: 12) {
+                Image(systemName: "timer").font(.title).foregroundStyle(.blue)
+                Text("Descanso").font(.headline)
+                Text("02:00").font(.system(size: 38, weight: .bold, design: .rounded)).monospacedDigit()
+                Button { workout.startRest(seconds: 120) } label: {
+                    Label("Iniciar", systemImage: "play.fill").frame(maxWidth: .infinity)
+                }.buttonStyle(.borderedProminent).tint(.blue)
+                Text("Puedes iniciarlo aquí o al completar una serie en el iPhone.")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }.padding(.horizontal, 5)
         }
     }
 
-    // Matches the shape of Hevy's own Watch rest screen — the reference
-    // the size/usability comparison was made against: a big, glanceable
-    // countdown and progress bar you can read from across the gym, "Next
-    // set" info so you know what's coming without unlocking the phone,
-    // and Skip/±15s controls for the two things you actually do mid-rest.
-    private func restTimerPage(exercise: String, restEndsAt: Date) -> some View {
+    private func activeRestTimer(restEndsAt: Date) -> some View {
         VStack(spacing: 10) {
             HStack {
-                Button("Skip") { workout.skipRestOnPhone() }
+                Button("Omitir") { workout.skipRest() }
                     .font(.caption.bold()).buttonStyle(.bordered).tint(.secondary)
                 Spacer()
                 Label("\(Int(workout.activeEnergy.rounded()))", systemImage: "flame.fill")
@@ -302,18 +280,6 @@ struct ContentView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("SIGUIENTE SERIE").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
-                Text(exercise).font(.caption.bold()).lineLimit(1).minimumScaleFactor(0.7)
-                HStack(spacing: 3) {
-                    Text("Serie \(workout.setNumber)/\(workout.totalSets)")
-                    if let weight = workout.setWeight {
-                        Text("· \(weight.formatted(.number.precision(.fractionLength(0...1)))) kg")
-                    }
-                    if let reps = workout.setReps { Text("× \(reps)") }
-                }.font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-
             HStack(spacing: 8) {
                 restAdjustButton("-15s", seconds: -15)
                 restAdjustButton("+15s", seconds: 15)
@@ -323,7 +289,7 @@ struct ContentView: View {
     }
 
     private func restAdjustButton(_ label: String, seconds: Int) -> some View {
-        Button(label) { workout.adjustRestOnPhone(seconds: seconds) }
+        Button(label) { workout.adjustRest(seconds: seconds) }
             .font(.caption.bold()).buttonStyle(.bordered).tint(.blue).frame(maxWidth: .infinity)
     }
 

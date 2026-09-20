@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import AudioToolbox
 
 struct StrengthRoutine: Identifiable, Codable {
     var id: String { name }
@@ -1554,6 +1555,10 @@ struct LiveStrengthWorkoutView: View {
                     onCommand: { command in
                         if command == "completeSet" { completeNextSet() }
                         else if command == "skipRest" { restEndsAt = nil; syncWorkoutContext() }
+                        else if command.hasPrefix("restStart:"), let seconds = Int(command.dropFirst("restStart:".count)) {
+                            restEndsAt = Date().addingTimeInterval(TimeInterval(max(15, seconds)))
+                            syncWorkoutContext()
+                        }
                         else if command.hasPrefix("restAdjust:"), let seconds = Int(command.dropFirst("restAdjust:".count)) {
                             adjustRest(bySeconds: seconds)
                         }
@@ -1561,6 +1566,20 @@ struct LiveStrengthWorkoutView: View {
                 )
             )
             .onChange(of: workoutContextSignature) { _, _ in syncWorkoutContext() }
+            .task(id: restEndsAt) {
+                guard let expectedEnd = restEndsAt else { return }
+                let delay = expectedEnd.timeIntervalSinceNow
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+                guard !Task.isCancelled, restEndsAt == expectedEnd, expectedEnd <= Date() else { return }
+                // Short foreground alert that respects the user's device
+                // volume. The Watch emits its own notification haptic/sound.
+                AudioServicesPlaySystemSound(1057)
+                AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
+                restEndsAt = nil
+                syncWorkoutContext()
+            }
         }
     }
 

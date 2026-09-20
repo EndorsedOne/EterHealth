@@ -3,6 +3,7 @@ import Combine
 import HealthKit
 import WatchConnectivity
 import WidgetKit
+import WatchKit
 
 private struct WatchTwinPayload: Sendable {
     let readiness: Int?
@@ -124,6 +125,7 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
     @Published private(set) var restStartedAt: Date?
     @Published var totalVolume = 0.0
     @Published var completedSummary: WatchWorkoutSummary?
+    private var alertedRestEnd: Date?
 
     private let healthStore = HKHealthStore()
     private var session: HKWorkoutSession?
@@ -290,6 +292,15 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
     @objc private func updateElapsedTime() {
         guard let startedAt, isRunning else { return }
         elapsed = Date().timeIntervalSince(startedAt)
+        if let end = restEndsAt, end <= Date(), alertedRestEnd != end {
+            alertedRestEnd = end
+            restEndsAt = nil
+            restStartedAt = nil
+            // watchOS couples this notification haptic with the user's sound
+            // settings, so it is noticeable without forcing a custom audio
+            // file or ignoring silent-mode preferences.
+            WKInterfaceDevice.current().play(.notification)
+        }
         if !isPaused && heartRate > 0 {
             heartRateSum += heartRate
             heartRateSamples += 1
@@ -442,7 +453,12 @@ extension WatchWorkoutManager: WCSessionDelegate {
         let now = Date()
         let wasResting = restEndsAt.map { $0 > now } ?? false
         let willRest = payload.restEndsAt.map { $0 > now } ?? false
-        if willRest && !wasResting { restStartedAt = now }
+        if payload.restEndsAt == nil, let previousEnd = restEndsAt,
+           previousEnd <= now, alertedRestEnd != previousEnd {
+            alertedRestEnd = previousEnd
+            WKInterfaceDevice.current().play(.notification)
+        }
+        if willRest && !wasResting { restStartedAt = now; alertedRestEnd = nil }
         else if !willRest { restStartedAt = nil }
         restEndsAt = payload.restEndsAt
         workoutID = payload.workoutID ?? workoutID
@@ -454,7 +470,17 @@ extension WatchWorkoutManager: WCSessionDelegate {
         sendPhoneCommand("completeSet")
     }
 
-    func skipRestOnPhone() {
+    func startRest(seconds: Int = 120) {
+        let now = Date()
+        restStartedAt = now
+        restEndsAt = now.addingTimeInterval(TimeInterval(seconds))
+        alertedRestEnd = nil
+        sendPhoneCommand("restStart:\(seconds)", requiresPhone: false)
+    }
+
+    func skipRest() {
+        restEndsAt = nil
+        restStartedAt = nil
         sendPhoneCommand("skipRest")
     }
 
@@ -462,15 +488,23 @@ extension WatchWorkoutManager: WCSessionDelegate {
     // -15s/+15s rest-adjust buttons. Sent to the phone (the source of
     // truth for restEndsAt) rather than applied locally, so both devices
     // keep showing the same countdown instead of quietly drifting apart.
-    func adjustRestOnPhone(seconds: Int) {
-        sendPhoneCommand("restAdjust:\(seconds)")
+    func adjustRest(seconds: Int) {
+        guard let end = restEndsAt else { return }
+        let adjusted = end.addingTimeInterval(TimeInterval(seconds))
+        if adjusted <= Date() {
+            skipRest()
+        } else {
+            restEndsAt = adjusted
+            alertedRestEnd = nil
+            sendPhoneCommand("restAdjust:\(seconds)", requiresPhone: false)
+        }
     }
 
-    private func sendPhoneCommand(_ command: String) {
+    private func sendPhoneCommand(_ command: String, requiresPhone: Bool = true) {
         let payload: [String: Any] = ["workoutCommand": command, "commandID": UUID().uuidString]
         let connection = WCSession.default
         guard connection.isReachable else {
-            errorMessage = "Abre Éter en el iPhone para completar la serie desde el reloj."
+            if requiresPhone { errorMessage = "Abre Éter en el iPhone para realizar esta acción desde el reloj." }
             return
         }
         connection.sendMessage(payload, replyHandler: nil)
