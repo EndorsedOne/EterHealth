@@ -167,30 +167,6 @@ struct ContentView: View {
     private var activityIcon: String { workout.recommendedActivity == "recovery" ? "figure.cooldown" : "dumbbell.fill" }
     private var startLabel: String { "Empezar fuerza" }
 
-    // "Already tracking, not a strength set" state — reached while a
-    // session is active but not walking through exercises/sets. "cardio"
-    // gets its own generic copy instead of literally "Carrera en curso",
-    // since it may well be a bike ride or a HYROX simulation.
-    private var inProgressIcon: String {
-        switch workout.recommendedActivity {
-        case "running": return "figure.run"
-        case "cardio": return "figure.outdoor.cycle"
-        default: return "iphone.and.arrow.forward"
-        }
-    }
-    private var inProgressTitle: String {
-        switch workout.recommendedActivity {
-        case "running": return "Carrera en curso"
-        case "cardio": return "Sesión en curso"
-        default: return "Abre la rutina en el iPhone"
-        }
-    }
-    private var inProgressSubtitle: String {
-        switch workout.recommendedActivity {
-        case "running", "cardio": return "El detalle de ritmo llegará en la siguiente mejora."
-        default: return "Cuando el iPhone abra el entrenamiento aparecerán aquí ejercicio, peso y repeticiones."
-        }
-    }
     private var syncText: String {
         guard let date = workout.summaryUpdatedAt else { return workout.connectionState }
         return "\(workout.connectionState) · \(date.formatted(date: .omitted, time: .shortened))"
@@ -298,13 +274,6 @@ struct ContentView: View {
         let total = restEndsAt.timeIntervalSince(startedAt)
         guard total > 0 else { return 0 }
         return min(1, max(0, 1 - remaining / total))
-    }
-
-    private func setValue(_ title: String, _ value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(title).font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
-            Text(value).font(.headline).monospacedDigit().minimumScaleFactor(0.7)
-        }.frame(maxWidth: .infinity)
     }
 
     private var heartZone: Int {

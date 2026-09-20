@@ -109,6 +109,12 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
     @Published var restingHeartRate: Int?
     @Published var sleepHours: Double?
     @Published var routineName = "Entrenamiento"
+    // LEGADO (desde 56e8f15): el iPhone sigue enviando estos campos en el
+    // payload `workoutContext`, pero el reloj ya no pinta el recorrido serie a
+    // serie, así que nada los lee. Se conservan para no romper el contrato de
+    // WCSession de golpe: retirarlos toca emisor y receptor y merece su propio
+    // cambio con tests de sync. No reintroducir el registro de series aquí sin
+    // esa decisión explícita.
     @Published var exerciseName: String?
     @Published var setNumber = 0
     @Published var totalSets = 0
@@ -466,6 +472,11 @@ extension WatchWorkoutManager: WCSessionDelegate {
         totalVolume = payload.totalVolume ?? totalVolume
     }
 
+    // LEGADO (desde 56e8f15): sin llamante. Completar una serie desde la
+    // muñeca se retiró junto con el recorrido serie a serie; el iPhone aún
+    // atiende el comando "completeSet", pero nada lo emite. Se deja marcado
+    // en lugar de borrarlo para retirar el contrato completo en un cambio
+    // propio con tests de sync.
     func completeSetOnPhone() {
         sendPhoneCommand("completeSet")
     }

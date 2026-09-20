@@ -22,7 +22,7 @@ rellena el hueco con un número inventado que parezca personal.
 EterHealth/                     app iOS (SwiftUI) — vistas, stores, motores de dominio
 EterHealth/TwinCore/            el motor del gemelo (ver abajo)
 EterHealthTests/                XCTest — EngineTests.swift (unitarios) + LabImportRealPDFTests
-EterHealthWatch Watch App/      app de reloj (registro de series y métricas en vivo)
+EterHealthWatch Watch App/      app de reloj (sesión en vivo + descanso + RPE; sin recorrido de series)
 EterHealthWidgets/              widgets de pantalla de inicio
 EterHealthWatchWidgets/         complicaciones/widgets de Apple Watch
 ```
@@ -150,6 +150,20 @@ reloj vuelve a `WorkoutReviewStore`. En el siguiente refresco, esa valoración
 forma parte del mismo `TwinContext` que usa el iPhone y, además, invalida el
 sello de Rendimiento.
 
+**Qué hace el reloj hoy y qué no (decisión de producto, sep. 2026).** En la
+muñeca la sesión activa abre y guarda su propia `HKWorkoutSession` y muestra
+biometría en vivo (pulso, zonas, energía), un temporizador de descanso
+sincronizado con el iPhone y la valoración de esfuerzo al terminar. Lo que se
+quitó a propósito (commit `56e8f15`) es el recorrido serie a serie —ejercicio, peso,
+repeticiones—: la prescripción y el gemelo viven **solo** en el iPhone. Se gana
+menos superficie de sincronización y menos estados que puedan divergir; se
+pierde poder registrar series desde la muñeca. Reintroducir ese registro es una
+decisión explícita, no un añadido incremental: exige tests de sync y una única
+escritura de sesión hacia HealthKit/`ImportStore`. El iPhone todavía envía en
+`workoutContext` los campos de serie (`exerciseName`, `setNumber`, `setWeight`,
+`setReps`), que el reloj ya no pinta: es contrato heredado, marcado en
+`WatchWorkoutManager`, pendiente de recortar en su propio cambio con tests.
+
 Los datos de `WorkoutEnrichmentStore` no son otro entrenamiento ni otro estado
 fisiológico. Se enlazan por UUID al `HKWorkout` original y sólo completan la
 evidencia que Apple Salud no contiene. El gemelo sigue tomando HealthKit e
@@ -214,7 +228,11 @@ fase (`longRunBand`, `easyRunBand`, `swimBand`, `bikeBand`...).
 aeróbico** y **canal de fuerza** en el origen (Hevy es fuerza por
 definición: series × 3; HealthKit se valora por minutos × `cardioFactor`, y
 una sesión de fuerza registrada en HealthKit cae en el canal de fuerza).
-`dualSummary` calcula por canal:
+Sobre ese producto de HealthKit se aplica además `workoutEffortMultiplier`
+(ver 4, esfuerzo iOS 18+): un factor acotado a **0,80–1,25**, neutro (× 1) en
+esfuerzo 5 y también sin dato, de modo que el comportamiento histórico no
+cambia cuando el campo no existe. Es enriquecimiento, no sustituto de duración
+ni deporte. `dualSummary` calcula por canal:
 
 - **agudo** τ = 7 días, **habitual** τ = 28 días (EWMA semanal-equivalente)
 - `governingRatio` = `max(ratioAeróbico, ratioFuerza)` — manda el canal que
@@ -448,6 +466,7 @@ una fecha de evento, así que un plan sin eventos no puede afinar. Y
 | Dinámica de carrera | `runningPower`, `runningGroundContactTime`, `runningVerticalOscillation`, `runningStrideLength` | sin métricas de eficiencia |
 | Ciclismo | `cyclingPower`, `cyclingCadence` | sin potencia/cadencia reales |
 | Estilo de vida | `numberOfAlcoholicBeverages`, `stepCount` | señal de alcohol y de actividad diaria ausentes |
+| Esfuerzo (iOS 18+) | `workoutEffortScore` (marcado por el usuario, preferido), `estimatedWorkoutEffortScore` (estimación de Apple, respaldo) | la carga dual de cada workout de HealthKit se queda en duración × deporte, sin el ajuste fino ±20-25 % por esfuerzo (`DualLoad.workoutEffortMultiplier`) |
 
 ### HealthKit — escritura
 
