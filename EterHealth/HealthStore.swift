@@ -38,6 +38,18 @@ final class HealthStore: ObservableObject {
     @Published var wristTemperatureHistory: [TrendPoint] = []
     @Published var walkingHeartRateHistory: [TrendPoint] = []
     @Published var stepsHistory: [TrendPoint] = []
+    // Mobility/function signals already recorded by Apple Health. They are
+    // deliberately combined into one longevity dimension rather than seven
+    // new cards: each individual metric is noisy and device-dependent, while
+    // their agreement is useful evidence of functional reserve.
+    @Published var walkingSteadinessHistory: [TrendPoint] = []
+    @Published var walkingSpeedHistory: [TrendPoint] = []
+    @Published var walkingStepLengthHistory: [TrendPoint] = []
+    @Published var walkingAsymmetryHistory: [TrendPoint] = []
+    @Published var walkingDoubleSupportHistory: [TrendPoint] = []
+    @Published var stairAscentSpeedHistory: [TrendPoint] = []
+    @Published var stairDescentSpeedHistory: [TrendPoint] = []
+    @Published var sixMinuteWalkDistanceHistory: [TrendPoint] = []
     @Published var ecgHistory: [ECGReading] = []
     // Muestras REALES de HRV de HOY (cada una con su hora), para la gráfica de
     // tendencias del día. HealthKit escribe la HRV de forma esporádica —
@@ -114,6 +126,16 @@ final class HealthStore: ObservableObject {
             HKQuantityType.quantityType(forIdentifier: .oxygenSaturation),
             HKQuantityType.quantityType(forIdentifier: .appleSleepingWristTemperature),
             HKQuantityType.quantityType(forIdentifier: .walkingHeartRateAverage),
+            HKQuantityType.quantityType(forIdentifier: .appleWalkingSteadiness),
+            HKQuantityType.quantityType(forIdentifier: .walkingSpeed),
+            HKQuantityType.quantityType(forIdentifier: .walkingStepLength),
+            HKQuantityType.quantityType(forIdentifier: .walkingAsymmetryPercentage),
+            HKQuantityType.quantityType(forIdentifier: .walkingDoubleSupportPercentage),
+            HKQuantityType.quantityType(forIdentifier: .stairAscentSpeed),
+            HKQuantityType.quantityType(forIdentifier: .stairDescentSpeed),
+            HKQuantityType.quantityType(forIdentifier: .sixMinuteWalkTestDistance),
+            HKQuantityType.quantityType(forIdentifier: .estimatedWorkoutEffortScore),
+            HKQuantityType.quantityType(forIdentifier: .workoutEffortScore),
             HKQuantityType.quantityType(forIdentifier: .heartRateRecoveryOneMinute),
             HKQuantityType.quantityType(forIdentifier: .runningPower),
             HKQuantityType.quantityType(forIdentifier: .runningGroundContactTime),
@@ -343,6 +365,14 @@ final class HealthStore: ObservableObject {
         async let diastolic = dailyAverage(.bloodPressureDiastolic, unit: .millimeterOfMercury(), days: 365)
         async let oxygen = dailyAverage(.oxygenSaturation, unit: .percent(), days: 90)
         async let walkingHeart = dailyAverage(.walkingHeartRateAverage, unit: HKUnit.count().unitDivided(by: .minute()), days: 180)
+        async let walkingSteadiness = dailyAverage(.appleWalkingSteadiness, unit: .percent(), days: 180)
+        async let walkingSpeed = dailyAverage(.walkingSpeed, unit: .meter().unitDivided(by: .second()), days: 180)
+        async let stepLength = dailyAverage(.walkingStepLength, unit: .meter(), days: 180)
+        async let asymmetry = dailyAverage(.walkingAsymmetryPercentage, unit: .percent(), days: 180)
+        async let doubleSupport = dailyAverage(.walkingDoubleSupportPercentage, unit: .percent(), days: 180)
+        async let stairAscent = dailyAverage(.stairAscentSpeed, unit: .meter().unitDivided(by: .second()), days: 180)
+        async let stairDescent = dailyAverage(.stairDescentSpeed, unit: .meter().unitDivided(by: .second()), days: 180)
+        async let sixMinuteWalk = dailyAverage(.sixMinuteWalkTestDistance, unit: .meter(), days: 365)
         async let ecg = loadECGHistory(days: 365)
 
         vo2MaxHistory = await vo2
@@ -358,6 +388,14 @@ final class HealthStore: ObservableObject {
         diastolicBloodPressureHistory = await diastolic
         oxygenSaturationHistory = await oxygen.map { TrendPoint(date: $0.date, value: $0.value * 100) }
         walkingHeartRateHistory = await walkingHeart
+        walkingSteadinessHistory = await walkingSteadiness.map { TrendPoint(date: $0.date, value: $0.value * 100) }
+        walkingSpeedHistory = await walkingSpeed
+        walkingStepLengthHistory = await stepLength
+        walkingAsymmetryHistory = await asymmetry.map { TrendPoint(date: $0.date, value: $0.value * 100) }
+        walkingDoubleSupportHistory = await doubleSupport.map { TrendPoint(date: $0.date, value: $0.value * 100) }
+        stairAscentSpeedHistory = await stairAscent
+        stairDescentSpeedHistory = await stairDescent
+        sixMinuteWalkDistanceHistory = await sixMinuteWalk
         ecgHistory = await ecg
         hasLoadedHistory = true
     }
@@ -912,10 +950,15 @@ final class HealthStore: ObservableObject {
         let start = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
         let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
-        return await withCheckedContinuation { continuation in
+        let rawWorkouts: [HKWorkout] = await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: .workoutType(), predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, _ in
-                let heartUnit = HKUnit.count().unitDivided(by: .minute())
-                let workouts = (samples as? [HKWorkout] ?? []).map { workout in
+                continuation.resume(returning: samples as? [HKWorkout] ?? [])
+            }
+            store.execute(query)
+        }
+        let effortByWorkout = await loadWorkoutEffortScores(predicate: predicate)
+        let heartUnit = HKUnit.count().unitDivided(by: .minute())
+        return rawWorkouts.map { workout in
                     let energyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!
                     let heartType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
                     let elevation = (workout.metadata?[HKMetadataKeyElevationAscended] as? HKQuantity)?.doubleValue(for: .meter())
@@ -941,6 +984,12 @@ final class HealthStore: ObservableObject {
                         .flatMap { type -> SwimLocation? in
                             switch type { case .pool: return .pool; case .openWater: return .openWater; default: return nil }
                         }
+                    let nativeZones: [HeartRateZone]?
+                    if #available(iOS 27.0, *), let group = workout.zoneGroup(for: heartType) {
+                        nativeZones = Self.heartRateZones(from: group)
+                    } else {
+                        nativeZones = nil
+                    }
                     return HealthWorkout(
                         id: workout.uuid,
                         date: workout.startDate,
@@ -960,12 +1009,62 @@ final class HealthStore: ObservableObject {
                         averageCyclingPowerWatts: averageStat(.cyclingPower, .watt()),
                         averageCyclingCadenceRpm: averageStat(.cyclingCadence, .count().unitDivided(by: .minute())),
                         isIndoor: isIndoor,
-                        swimLocation: swimLocation
+                        swimLocation: swimLocation,
+                        effortScore: effortByWorkout[workout.uuid]?.score,
+                        effortSource: effortByWorkout[workout.uuid]?.source,
+                        nativeHeartRateZones: nativeZones
                     )
-                }
-                continuation.resume(returning: workouts)
+        }
+    }
+
+    /// Reads Apple's workout-effort relationship, preferring a user's own
+    /// 1–10 rating over the system estimate when both exist. Absence stays
+    /// nil: older devices and third-party writers keep the existing load path.
+    private func loadWorkoutEffortScores(predicate: NSPredicate) async -> [UUID: (score: Double, source: WorkoutEffortSource)] {
+        guard #available(iOS 18.0, *) else { return [:] }
+        let relationships: [HKWorkoutEffortRelationship] = await withCheckedContinuation { continuation in
+            var delivered = false
+            let query = HKWorkoutEffortRelationshipQuery(
+                predicate: predicate, anchor: nil, options: .mostRelevant
+            ) { query, relationships, _, _ in
+                guard !delivered else { return }
+                delivered = true
+                self.store.stop(query)
+                continuation.resume(returning: relationships ?? [])
             }
             store.execute(query)
+        }
+        let unit = HKUnit.appleEffortScore()
+        var mapped: [UUID: (score: Double, source: WorkoutEffortSource)] = [:]
+        for relationship in relationships {
+                let samples = relationship.samples as? [HKQuantitySample] ?? []
+                let userType = HKQuantityType.quantityType(forIdentifier: .workoutEffortScore)
+                let estimatedType = HKQuantityType.quantityType(forIdentifier: .estimatedWorkoutEffortScore)
+                let user = samples.first { $0.quantityType == userType }
+                let estimated = samples.first { $0.quantityType == estimatedType }
+                if let sample = user ?? estimated {
+                    mapped[relationship.workout.uuid] = (
+                        sample.quantity.doubleValue(for: unit),
+                        user == nil ? .appleEstimated : .user
+                    )
+                }
+        }
+        return mapped
+    }
+
+    @available(iOS 27.0, *)
+    private nonisolated static func heartRateZones(from group: HKWorkoutZoneGroup) -> [HeartRateZone] {
+        var minutes = Array(repeating: 0.0, count: 5)
+        for item in group.zoneDurations {
+            // HealthKit's public zone index is one-based (Z1...Z5).
+            let index = item.zone.index - 1
+            guard minutes.indices.contains(index) else { continue }
+            minutes[index] += item.duration / 60
+        }
+        let total = minutes.reduce(0, +)
+        guard total > 0 else { return [] }
+        return minutes.enumerated().map {
+            HeartRateZone(zone: $0.offset + 1, percentage: $0.element / total * 100, minutes: $0.element)
         }
     }
 
@@ -1111,10 +1210,13 @@ final class HealthStore: ObservableObject {
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
         let relevant = workouts.filter { $0.date >= cutoff }
         guard !relevant.isEmpty else { return [] }
-        let windows = relevant.map { workout in
+        let native = relevant.compactMap(\.nativeHeartRateZones)
+        let inferredWorkouts = relevant.filter { $0.nativeHeartRateZones?.isEmpty != false }
+        let windows = inferredWorkouts.map { workout in
             DateInterval(start: workout.date, duration: workout.durationMinutes * 60)
         }
-        return await classifyHeartRateZones(windows: windows, profile: profile)
+        let inferred = windows.isEmpty ? [] : await classifyHeartRateZones(windows: windows, profile: profile)
+        return Self.combineZoneDistributions(native + (inferred.isEmpty ? [] : [inferred]))
     }
 
     // Same classification (Karvonen %HRR against manual/configured/age-based
@@ -1124,10 +1226,26 @@ final class HealthStore: ObservableObject {
     // needs: "how did THIS session distribute across zones," not a blended
     // average across the last several sessions.
     func heartRateZones(for workout: HealthWorkout, profile: AthletePlanProfile? = nil) async -> [HeartRateZone] {
-        await classifyHeartRateZones(
+        if let native = workout.nativeHeartRateZones, !native.isEmpty { return native }
+        return await classifyHeartRateZones(
             windows: [DateInterval(start: workout.date, duration: workout.durationMinutes * 60)],
             profile: profile ?? athleteProfile
         )
+    }
+
+    private nonisolated static func combineZoneDistributions(_ distributions: [[HeartRateZone]]) -> [HeartRateZone] {
+        guard !distributions.isEmpty else { return [] }
+        var minutes = Array(repeating: 0.0, count: 5)
+        for distribution in distributions {
+            for zone in distribution where (1...5).contains(zone.zone) {
+                minutes[zone.zone - 1] += zone.minutes
+            }
+        }
+        let total = minutes.reduce(0, +)
+        guard total > 0 else { return [] }
+        return minutes.enumerated().map {
+            HeartRateZone(zone: $0.offset + 1, percentage: $0.element / total * 100, minutes: $0.element)
+        }
     }
 
     private func classifyHeartRateZones(windows: [DateInterval], profile: AthletePlanProfile?) async -> [HeartRateZone] {
@@ -1428,6 +1546,18 @@ struct HealthWorkout: Identifiable {
     // for a number nothing outside today's muscle-load scaling uses yet.
     // nil means "not fetched" here, not "no descent" — never guessed.
     var elevationDescendedMeters: Double? = nil
+    /// Apple's 1–10 workout effort relationship. It enriches load when present
+    /// but is never required, preserving Garmin/Suunto/older-iOS behavior.
+    var effortScore: Double? = nil
+    var effortSource: WorkoutEffortSource? = nil
+    /// Real time in Apple's workout zones on iOS 27. nil means the recording
+    /// source did not provide it and Éter must use its existing classifier.
+    var nativeHeartRateZones: [HeartRateZone]? = nil
+}
+
+enum WorkoutEffortSource: String, Codable {
+    case user = "Declarado"
+    case appleEstimated = "Estimado por Apple"
 }
 
 enum SwimLocation: String, Codable {

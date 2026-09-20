@@ -27,6 +27,16 @@ struct HealthExportSnapshot: Codable {
     let oxygenSaturationPercent: [HealthTrendExport]
     let wristTemperatureCelsius: [HealthTrendExport]
     let walkingHeartRate: [HealthTrendExport]
+    // Optional for backward compatibility with backups created before iOS 27
+    // mobility support. New captures always populate these arrays.
+    let walkingSteadinessPercent: [HealthTrendExport]?
+    let walkingSpeedMetersPerSecond: [HealthTrendExport]?
+    let walkingStepLengthMeters: [HealthTrendExport]?
+    let walkingAsymmetryPercent: [HealthTrendExport]?
+    let walkingDoubleSupportPercent: [HealthTrendExport]?
+    let stairAscentSpeedMetersPerSecond: [HealthTrendExport]?
+    let stairDescentSpeedMetersPerSecond: [HealthTrendExport]?
+    let sixMinuteWalkDistanceMeters: [HealthTrendExport]?
     let heartRateRecovery: [HealthTrendExport]
     let workouts: [HealthWorkoutExport]
     // Classification and date only — see HealthStore.loadECGHistory.
@@ -50,6 +60,14 @@ struct HealthExportSnapshot: Codable {
             oxygenSaturationPercent: health.oxygenSaturationHistory.map(HealthTrendExport.init),
             wristTemperatureCelsius: health.wristTemperatureHistory.map(HealthTrendExport.init),
             walkingHeartRate: health.walkingHeartRateHistory.map(HealthTrendExport.init),
+            walkingSteadinessPercent: health.walkingSteadinessHistory.map(HealthTrendExport.init),
+            walkingSpeedMetersPerSecond: health.walkingSpeedHistory.map(HealthTrendExport.init),
+            walkingStepLengthMeters: health.walkingStepLengthHistory.map(HealthTrendExport.init),
+            walkingAsymmetryPercent: health.walkingAsymmetryHistory.map(HealthTrendExport.init),
+            walkingDoubleSupportPercent: health.walkingDoubleSupportHistory.map(HealthTrendExport.init),
+            stairAscentSpeedMetersPerSecond: health.stairAscentSpeedHistory.map(HealthTrendExport.init),
+            stairDescentSpeedMetersPerSecond: health.stairDescentSpeedHistory.map(HealthTrendExport.init),
+            sixMinuteWalkDistanceMeters: health.sixMinuteWalkDistanceHistory.map(HealthTrendExport.init),
             heartRateRecovery: health.heartRateRecoveryHistory.map(HealthTrendExport.init),
             workouts: health.workoutHistory.map(HealthWorkoutExport.init),
             ecg: health.ecgHistory.map(ECGReadingExport.init)
@@ -98,6 +116,8 @@ struct HealthWorkoutExport: Codable {
     let averageGroundContactMs: Double?
     let averageVerticalOscillationCm: Double?
     let averageStrideLengthM: Double?
+    let effortScore: Double?
+    let effortSource: String?
 
     init(_ workout: HealthWorkout) {
         reviewID = "health-\(workout.id.uuidString)"
@@ -107,5 +127,6 @@ struct HealthWorkoutExport: Codable {
         muscleGroups = workout.muscleGroups; source = workout.source
         averagePowerWatts = workout.averagePowerWatts; averageGroundContactMs = workout.averageGroundContactMs
         averageVerticalOscillationCm = workout.averageVerticalOscillationCm; averageStrideLengthM = workout.averageStrideLengthM
+        effortScore = workout.effortScore; effortSource = workout.effortSource?.rawValue
     }
 }

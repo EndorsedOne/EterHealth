@@ -65,6 +65,19 @@ enum LongevityEngine {
             ))
         } else { missing.append("VO₂ máx.") }
 
+        // One functional-reserve signal, not a wall of seven mini-charts.
+        // Each component is averaged over recent real measurements and the
+        // dimension appears only when at least two independent signals agree.
+        // Bands are deliberately broad and descriptive, never diagnostic.
+        let mobility = mobilityEvidence(health: health)
+        if mobility.scores.count >= 2 {
+            dimensions.append(dimension(
+                "Movilidad y función", .functional, mobility.scores, weight: 0.12,
+                samples: mobility.samples,
+                evidence: mobility.labels.joined(separator: " + ")
+            ))
+        } else { missing.append("métricas de movilidad y marcha") }
+
         // "hemoglobina glicosilada" never matched anything: the parser stores this
         // lab as "Hemoglobina glicada A1c" (glicada, not glicosilada) — HbA1c was
         // silently excluded from this domain until now.
@@ -352,6 +365,7 @@ enum LongevityEngine {
         case "Resiliencia fisiológica": return "La principal oportunidad está en mejorar la respuesta entre carga y recuperación."
         case "Continuidad de actividad": return "La principal oportunidad es aumentar la regularidad semanal sin saltos bruscos de carga."
         case "Actividad diaria": return "La principal palanca es aumentar el movimiento cotidiano — no solo el entrenamiento estructurado — con paseos o más pasos repartidos en el día."
+        case "Movilidad y función": return "La principal oportunidad está en conservar velocidad, estabilidad y simetría de marcha con trabajo funcional progresivo."
         default: return "Prioriza la dimensión peor puntuada con datos suficientes."
         }
     }
@@ -370,6 +384,42 @@ enum LongevityEngine {
 
     private nonisolated static func descendingScore(_ value: Double, ideal: Double, poor: Double) -> Double {
         min(100, max(25, 90 - (value - ideal) / max(1, poor - ideal) * 65))
+    }
+
+    private static func mobilityEvidence(health: HealthStore) -> (scores: [Double], labels: [String], samples: Int) {
+        var scores: [Double] = []
+        var labels: [String] = []
+        var samples = 0
+        func recent(_ history: [TrendPoint], count: Int = 14) -> Double? {
+            let values = history.suffix(count).map(\.value)
+            samples += values.count
+            return values.isEmpty ? nil : average(values)
+        }
+        if let value = recent(health.walkingSteadinessHistory) {
+            scores.append(ascendingScore(value, poor: 45, ideal: 90)); labels.append("estabilidad")
+        }
+        if let value = recent(health.walkingSpeedHistory) {
+            scores.append(ascendingScore(value, poor: 0.8, ideal: 1.4)); labels.append("velocidad de marcha")
+        }
+        if let value = recent(health.walkingStepLengthHistory) {
+            scores.append(ascendingScore(value, poor: 0.45, ideal: 0.75)); labels.append("longitud de paso")
+        }
+        if let value = recent(health.walkingAsymmetryHistory) {
+            scores.append(descendingScore(value, ideal: 0, poor: 10)); labels.append("simetría")
+        }
+        if let value = recent(health.walkingDoubleSupportHistory) {
+            scores.append(descendingScore(value, ideal: 20, poor: 35)); labels.append("doble apoyo")
+        }
+        if let value = recent(health.stairAscentSpeedHistory) {
+            scores.append(ascendingScore(value, poor: 0.25, ideal: 0.65)); labels.append("subida de escaleras")
+        }
+        if let value = recent(health.stairDescentSpeedHistory) {
+            scores.append(ascendingScore(value, poor: 0.35, ideal: 0.75)); labels.append("bajada de escaleras")
+        }
+        if let value = recent(health.sixMinuteWalkDistanceHistory, count: 5) {
+            scores.append(ascendingScore(value, poor: 300, ideal: 600)); labels.append("marcha de 6 minutos")
+        }
+        return (scores, labels, samples)
     }
 
     private nonisolated static func average(_ values: [Double]) -> Double {

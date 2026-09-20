@@ -4036,6 +4036,36 @@ final class EngineTests: XCTestCase {
                      "3 days of step history isn't enough to say anything real about a daily pattern.")
     }
 
+    func testLongevityCombinesMobilitySignalsIntoOneDimension() {
+        let health = HealthStore()
+        let start = Date().addingTimeInterval(-14 * 86_400)
+        health.walkingSpeedHistory = (0..<14).map {
+            TrendPoint(date: start.addingTimeInterval(Double($0) * 86_400), value: 1.4)
+        }
+        health.walkingAsymmetryHistory = (0..<14).map {
+            TrendPoint(date: start.addingTimeInterval(Double($0) * 86_400), value: 1.0)
+        }
+        let index = LongevityEngine.calculate(health: health, imports: ImportStore(persistToDisk: false))
+        let mobility = index.dimensions.filter { $0.name == "Movilidad y función" }
+        XCTAssertEqual(mobility.count, 1, "Mobility belongs in one interpretable dimension, not one card per HealthKit metric.")
+        XCTAssertGreaterThan(mobility[0].score, 70)
+    }
+
+    func testLongevityDoesNotJudgeMobilityFromOneIsolatedSignal() {
+        let health = HealthStore()
+        health.walkingSpeedHistory = [TrendPoint(date: Date(), value: 1.2)]
+        let index = LongevityEngine.calculate(health: health, imports: ImportStore(persistToDisk: false))
+        XCTAssertNil(index.dimensions.first { $0.name == "Movilidad y función" })
+    }
+
+    func testAppleWorkoutEffortEnrichesLoadConservatively() {
+        XCTAssertEqual(PerformanceEngine.workoutEffortMultiplier(nil), 1)
+        XCTAssertEqual(PerformanceEngine.workoutEffortMultiplier(5), 1, accuracy: 0.0001)
+        XCTAssertEqual(PerformanceEngine.workoutEffortMultiplier(1), 0.80, accuracy: 0.0001)
+        XCTAssertEqual(PerformanceEngine.workoutEffortMultiplier(10), 1.25, accuracy: 0.0001)
+        XCTAssertEqual(PerformanceEngine.workoutEffortMultiplier(99), 1.25, accuracy: 0.0001)
+    }
+
     func testAnemiaRiskDimensionCatchesLowFerritinEvenWithANormalHemogram() {
         // Iron-deficiency without frank anemia — low ferritin, normal
         // hemogram — used to score a clean 100% on this dimension because

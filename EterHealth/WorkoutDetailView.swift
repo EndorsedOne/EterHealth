@@ -74,6 +74,9 @@ struct WorkoutDetailView: View {
                 if let maxHR = workout.maxHeartRate, maxHR > 0 {
                     tile("FC máxima", "\(Int(maxHR.rounded())) ppm")
                 }
+                if let effort = workout.effortScore {
+                    tile("Esfuerzo", "\(effort.formatted(.number.precision(.fractionLength(0...1))))/10")
+                }
                 if let elevation = workout.elevationMeters, elevation > 0 {
                     tile("Desnivel", "\(Int(elevation.rounded())) m")
                 }

@@ -303,7 +303,7 @@ extension PerformanceEngine {
             !workout.source.localizedCaseInsensitiveContains("hevy") && !imports.isHealthKitMirror(workout) {
             let day = calendar.startOfDay(for: workout.date)
             sessions[day, default: 0] += 1
-            let load = workout.durationMinutes * cardioFactor(workout.activity)
+            let load = workout.durationMinutes * cardioFactor(workout.activity) * workoutEffortMultiplier(workout.effortScore)
             // cardioFactor se queda tal cual y no se mezclan unidades entre
             // canales: una sesión de fuerza registrada en HealthKit (sin
             // series que contar) sigue valorándose por minutos, pero cae en
@@ -318,6 +318,15 @@ extension PerformanceEngine {
             return DailyDualTraining(date: date, sessions: sessions[date] ?? 0,
                                      aerobic: aerobic[date] ?? 0, strength: strength[date] ?? 0)
         }
+    }
+
+    /// Apple's effort score is an enrichment, not a replacement for duration
+    /// and sport. A neutral 5 keeps historical behavior exactly unchanged;
+    /// extremes only move load ±20–25%, avoiding a discontinuity when this new
+    /// HealthKit field first becomes available.
+    nonisolated static func workoutEffortMultiplier(_ effort: Double?) -> Double {
+        guard let effort, effort.isFinite else { return 1 }
+        return min(1.25, max(0.80, 0.75 + min(10, max(1, effort)) * 0.05))
     }
 
     @MainActor static func dualSummary(history: [DailyDualTraining]) -> DualLoadSummary {
