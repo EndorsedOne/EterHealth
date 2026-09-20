@@ -135,6 +135,14 @@ struct TodayTrendsCardView: View {
                     yStart: .value("min", 0), yEnd: .value("max", 100)
                 ).foregroundStyle(Color.indigo.opacity(0.10))
             }
+            ForEach(Array(result.restWindows.enumerated()), id: \.offset) { _, window in
+                RectangleMark(
+                    xStart: .value("Inicio descanso", window.startHour),
+                    xEnd: .value("Fin descanso", window.endHour),
+                    yStart: .value("min", 0), yEnd: .value("max", 100)
+                )
+                .foregroundStyle(Color.blue.opacity(0.055))
+            }
             ForEach(curvePoints) { point in
                 AreaMark(x: .value("Hora", point.hour), y: .value("Energía", point.value))
                     .foregroundStyle(LinearGradient(colors: [energyColor.opacity(0.28), .clear], startPoint: .top, endPoint: .bottom))
@@ -205,6 +213,7 @@ struct TodayTrendsCardView: View {
             Label("Energía", systemImage: "bolt.fill").foregroundStyle(energyColor)
             if !result.inputMarkers.isEmpty { Label("Contexto", systemImage: "circle.fill").foregroundStyle(.teal) }
             if !result.events.isEmpty { Label("Ejercicio", systemImage: "circle.fill").foregroundStyle(.orange) }
+            if !result.restWindows.isEmpty { Label("Descanso", systemImage: "pause.circle.fill").foregroundStyle(.blue) }
         }.font(.caption2).frame(maxWidth: .infinity)
     }
 

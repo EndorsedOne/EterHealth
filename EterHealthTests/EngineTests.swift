@@ -612,6 +612,53 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(markers.contains { $0.kind == "fastedTraining" && $0.label == "Entrenamiento en ayunas" })
     }
 
+    func testEnergyRestRequiresLowPulseAndInactivityAndUsesHRVOnlyAsSupport() {
+        let day = Calendar.current.startOfDay(for: Date())
+        func point(_ hour: Double, _ value: Double) -> TrendPoint {
+            TrendPoint(date: day.addingTimeInterval(hour * 3_600), value: value)
+        }
+        let pulse = [point(8.05, 49), point(8.20, 50), point(8.55, 51), point(8.80, 50)]
+        let windows = EnergyTimelineEngine.restorativeWindows(
+            heartRate: pulse, hrv: [point(8.10, 62)], steps: [point(8.15, 4)],
+            workouts: [], restingBaseline: 47, hrvBaseline: 60,
+            day: day, fromHour: 8, toHour: 9
+        )
+
+        XCTAssertEqual(windows.count, 1, "Las medias horas contiguas se muestran como una sola pausa.")
+        let withoutHRV = EnergyTimelineEngine.restorativeWindows(
+            heartRate: pulse, hrv: [], steps: [point(8.15, 4)], workouts: [],
+            restingBaseline: 47, hrvBaseline: 60,
+            day: day, fromHour: 8, toHour: 9
+        )
+        XCTAssertGreaterThan(windows[0].credit, withoutHRV[0].credit,
+                             "La HRV coincidente puede reforzar una pausa ya demostrada por pulso y movimiento.")
+
+        let isolatedHRV = EnergyTimelineEngine.restorativeWindows(
+            heartRate: [], hrv: [point(8.10, 90)], steps: [], workouts: [],
+            restingBaseline: 47, hrvBaseline: 60,
+            day: day, fromHour: 8, toHour: 9
+        )
+        XCTAssertTrue(isolatedHRV.isEmpty,
+                      "Un punto aislado de HRV nunca debe inventar una recarga diurna.")
+    }
+
+    func testEnergyRestRejectsMovementOrElevatedPulse() {
+        let day = Calendar.current.startOfDay(for: Date())
+        func point(_ hour: Double, _ value: Double) -> TrendPoint {
+            TrendPoint(date: day.addingTimeInterval(hour * 3_600), value: value)
+        }
+        let highPulse = EnergyTimelineEngine.restorativeWindows(
+            heartRate: [point(10.1, 76), point(10.3, 79)], hrv: [], steps: [], workouts: [],
+            restingBaseline: 48, hrvBaseline: 60, day: day, fromHour: 10, toHour: 10.5
+        )
+        let moving = EnergyTimelineEngine.restorativeWindows(
+            heartRate: [point(10.1, 50), point(10.3, 51)], hrv: [], steps: [point(10.2, 180)], workouts: [],
+            restingBaseline: 48, hrvBaseline: 60, day: day, fromHour: 10, toHour: 10.5
+        )
+        XCTAssertTrue(highPulse.isEmpty)
+        XCTAssertTrue(moving.isEmpty)
+    }
+
     func testFastedTrainingLearnsSeparatelyFromGeneralFasting() {
         let calendar = Calendar(identifier: .gregorian)
         let start = calendar.startOfDay(for: Date()).addingTimeInterval(-40 * 86_400)

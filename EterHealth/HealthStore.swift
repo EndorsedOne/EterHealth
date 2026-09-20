@@ -46,6 +46,12 @@ final class HealthStore: ObservableObject {
     // Consulta de hoy y ligera: se resuelve en refresh(), no en el histórico
     // diferido, porque la pestaña Hoy la enseña pronto.
     @Published var todayHRVSamples: [TrendPoint] = []
+    /// Señales intradía ligeras para distinguir descanso despierto de simple
+    /// ausencia de un entrenamiento. No se guardan ni se cargan a un año:
+    /// sólo sirven para modelar la curva de energía de hoy.
+    @Published var todayHeartRateSamples: [TrendPoint] = []
+    @Published var todayStepSamples: [TrendPoint] = []
+    @Published var todayActiveEnergySamples: [TrendPoint] = []
     @Published private(set) var isHistoryLoading = false
     @Published private(set) var hasLoadedHistory = false
     // Fin de la FASE 1 de loadExtendedHistory: ya están las líneas base que el
@@ -133,6 +139,12 @@ final class HealthStore: ObservableObject {
     private var observedTypes: [HKSampleType] {
         [
             HKObjectType.workoutType(),
+            // La batería intradía cambia con movimiento y reposo aunque no
+            // haya un entrenamiento. Observar estas señales permite que el
+            // snapshot del widget se refresque sin exigir abrir la app.
+            HKQuantityType.quantityType(forIdentifier: .heartRate),
+            HKQuantityType.quantityType(forIdentifier: .stepCount),
+            HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned),
             HKQuantityType.quantityType(forIdentifier: .restingHeartRate),
             HKQuantityType.quantityType(forIdentifier: .heartRateVariabilitySDNN),
             HKQuantityType.quantityType(forIdentifier: .vo2Max),
@@ -201,6 +213,9 @@ final class HealthStore: ObservableObject {
         async let sleep = sleepBreakdown()
         async let initialWorkouts = loadRecentWorkouts(days: 30)
         async let todayHRV = intradaySamples(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
+        async let todayHeartRate = intradaySamples(.heartRate, unit: HKUnit.count().unitDivided(by: .minute()))
+        async let todaySteps = intradaySamples(.stepCount, unit: .count())
+        async let todayActiveEnergy = intradaySamples(.activeEnergyBurned, unit: .kilocalorie())
 
         let resolvedSleep = await sleep
         snapshot = await HealthSnapshot(
@@ -214,6 +229,9 @@ final class HealthStore: ObservableObject {
         )
         sleepStages = resolvedSleep
         todayHRVSamples = await todayHRV
+        todayHeartRateSamples = await todayHeartRate
+        todayStepSamples = await todaySteps
+        todayActiveEnergySamples = await todayActiveEnergy
         recentWorkouts = await initialWorkouts
         // Sólo se siembra el archivo con los 30 días recientes mientras el
         // histórico completo aún no ha llegado (primer arranque). Una vez
@@ -1285,8 +1303,19 @@ final class HealthStore: ObservableObject {
     }
 
     private func enableBackgroundDelivery() {
+        let highFrequencyIdentifiers: Set<String> = [
+            HKQuantityTypeIdentifier.heartRate.rawValue,
+            HKQuantityTypeIdentifier.stepCount.rawValue,
+            HKQuantityTypeIdentifier.activeEnergyBurned.rawValue
+        ]
         for sampleType in observedTypes {
-            store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { _, _ in }
+            // Pulso, pasos y energía pueden producir muchas muestras. Una
+            // entrega inmediata por cada cambio acabaría lanzando refreshes
+            // completos continuamente; una cadencia horaria mantiene la
+            // curva/widget razonablemente frescos sin penalizar batería ni UI.
+            let frequency: HKUpdateFrequency = highFrequencyIdentifiers.contains(sampleType.identifier)
+                ? .hourly : .immediate
+            store.enableBackgroundDelivery(for: sampleType, frequency: frequency) { _, _ in }
         }
     }
 

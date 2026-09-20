@@ -20,6 +20,7 @@ enum EnergyTimelineEngine {
         let hrv: DailyMetricContext
         let restingHeartRate: DailyMetricContext
         let caffeine: CaffeineTimelineResult
+        let restWindows: [RestorativeWindow]
     }
 
     struct DailyMetricContext {
@@ -59,7 +60,7 @@ enum EnergyTimelineEngine {
             hrv: DailyMetricContext(value: baseline.hrv.current, expected: baseline.hrv.expected),
             restingHeartRate: DailyMetricContext(
                 value: baseline.restingHeartRate.current, expected: baseline.restingHeartRate.expected
-            ), caffeine: caffeine
+            ), caffeine: caffeine, restWindows: model.restWindows
         )
     }
 
@@ -128,6 +129,16 @@ enum EnergyTimelineEngine {
         let energy: Int
         let curve: [Double]
         let basis: String
+        let restWindows: [RestorativeWindow]
+    }
+
+    struct RestorativeWindow: Equatable {
+        let startHour: Double
+        let endHour: Double
+        /// Puntos que compensan el consumo basal de esta ventana. Una pausa
+        /// normal aplana la curva; sólo una calma fisiológica bien observada
+        /// permite una subida pequeña.
+        let credit: Double
     }
 
     @MainActor
@@ -138,7 +149,7 @@ enum EnergyTimelineEngine {
         events: [EterWidgetEnergyEvent]
     ) -> EnergyModelResult {
         let sleepNeed = max(6, baseline.sleep.expected ?? 7.5)
-        let durationFactor = clamp(health.snapshot.sleepHours / sleepNeed, 0.45, 1.15)
+        let durationFactor = clamp(health.snapshot.sleepHours / sleepNeed, 0.20, 1.08)
         let restorative = health.sleepStages.deepHours + health.sleepStages.remHours
         let restorativeShare = restorative / max(health.snapshot.sleepHours, 0.1)
         let stageFactor = health.snapshot.sleepHours > 0 && restorative > 0
@@ -152,35 +163,48 @@ enum EnergyTimelineEngine {
         let illnessPenalty = checkIn?.illness == true ? 10.0 : 0
         // El coste del viaje entra por assessment.score (vía TravelImpact), no
         // con una penalización propia aquí — ver PR15 en el historial.
-        let recharge = clamp(
-            48 * durationFactor * stageFactor + hrvAdjustment + restingAdjustment +
-            subjectiveSleep - overnightAlcohol - illnessPenalty,
-            12, 72
+        let sleepQuality = clamp(durationFactor * stageFactor, 0.16, 1.08)
+        // La mañana es una RESERVA absoluta, no "lo que quedaba ayer + unos
+        // puntos". El sueño domina; la disponibilidad integra el resto de la
+        // fisiología sin reemplazarlo. Así una noche normal puede reconstruir
+        // una reserva útil y una mala noche no queda maquillada por el score.
+        let wakeEnergy = clamp(
+            18 + 48 * sleepQuality + 0.32 * Double(assessment.score) +
+            hrvAdjustment + restingAdjustment + subjectiveSleep -
+            overnightAlcohol - illnessPenalty,
+            20, 98
         )
-        // Readiness acts as a bounded physiological anchor; the recharge calculation
-        // determines how the night reached that morning reserve rather than replacing it.
-        let wakeEnergy = clamp(0.58 * (20 + recharge) + 0.42 * Double(assessment.score), 22, 98)
-        let midnightEnergy = max(5, wakeEnergy - recharge)
+        // El inicio visible de la noche se infiere porque no almacenamos una
+        // batería interdiaria. Se usa sólo para dibujar la recarga; el valor
+        // fisiológicamente relevante es la reserva al despertar de arriba.
+        let rechargePotential = clamp(18 + 42 * sleepQuality, 18, 64)
+        let midnightEnergy = clamp(wakeEnergy - rechargePotential, 5, 65)
+        let recharge = wakeEnergy - midnightEnergy
 
         let endOfSleep = min(currentHour, max(0.5, sleepEndHour ?? min(8, currentHour)))
         let startOfSleep = min(endOfSleep, max(0, sleepStartHour ?? 0))
         let awakeHours = max(0, currentHour - endOfSleep)
-        let workoutCalories = health.recentWorkouts.filter {
-            Calendar.current.isDate($0.date, inSameDayAs: now)
-        }.compactMap(\.calories).reduce(0, +)
-        let nonWorkoutEnergy = max(0, Double(health.snapshot.activeEnergy) - workoutCalories)
-        var backgroundDrain = awakeHours * 0.72 + nonWorkoutEnergy / 42 + Double(health.snapshot.steps) / 3_500
+        let restWindows = restorativeWindows(
+            heartRate: health.todayHeartRateSamples,
+            hrv: health.todayHRVSamples,
+            steps: health.todayStepSamples,
+            workouts: health.recentWorkouts,
+            restingBaseline: baseline.restingHeartRate.expected,
+            hrvBaseline: baseline.hrv.expected,
+            day: now, fromHour: endOfSleep, toHour: currentHour
+        )
+        var contextualPenalty = 0.0
         if let checkIn {
-            backgroundDrain += Double(max(0, checkIn.stress - 3)) * 2.2
-            backgroundDrain += Double(max(0, checkIn.fatigue - 3)) * 2.4
-            backgroundDrain += Double(max(0, 3 - checkIn.energy)) * 2.0
+            contextualPenalty += Double(max(0, checkIn.stress - 3)) * 2.0
+            contextualPenalty += Double(max(0, checkIn.fatigue - 3)) * 2.2
+            contextualPenalty += Double(max(0, 3 - checkIn.energy)) * 1.8
         }
         for event in lifestyle where Calendar.current.isDate(event.date, inSameDayAs: now) {
-            if event.hydration == .low { backgroundDrain += 4 }
-            if event.saunaMinutes > 0 { backgroundDrain += min(4, Double(event.saunaMinutes) / 10) }
-            if event.digestiveSymptoms.count > 0 { backgroundDrain += 2 }
+            if event.hydration == .low { contextualPenalty += 4 }
+            if event.saunaMinutes > 0 { contextualPenalty += min(4, Double(event.saunaMinutes) / 10) }
+            if event.digestiveSymptoms.count > 0 { contextualPenalty += 2 }
         }
-        backgroundDrain = clamp(backgroundDrain, 0, 42)
+        contextualPenalty = clamp(contextualPenalty, 0, 18)
 
         let pointCount = max(2, Int((currentHour * 2).rounded(.up)) + 1)
         let curve = (0..<pointCount).map { index -> Double in
@@ -190,21 +214,124 @@ enum EnergyTimelineEngine {
                 let progress = (representedHour - startOfSleep) / max(0.25, endOfSleep - startOfSleep)
                 return min(100, midnightEnergy + recharge * progress)
             }
-            let awakeProgress = (representedHour - endOfSleep) / max(0.5, currentHour - endOfSleep)
+            let awakeProgress = (representedHour - endOfSleep) / max(0.5, awakeHours)
+            let basalDrain = max(0, representedHour - endOfSleep) * 0.58
+            let activeEnergy = cumulativeValue(
+                health.todayActiveEnergySamples, through: representedHour, on: now,
+                fallbackTotal: Double(health.snapshot.activeEnergy), currentHour: currentHour
+            )
+            let completedWorkoutCalories = health.recentWorkouts.filter { workout in
+                Calendar.current.isDate(workout.date, inSameDayAs: now) &&
+                    hour(of: workout.date, on: now) <= representedHour
+            }.reduce(0.0) { total, workout in
+                let start = hour(of: workout.date, on: now)
+                let duration = max(0.05, workout.durationMinutes / 60)
+                let completion = clamp((representedHour - start) / duration, 0, 1)
+                return total + (workout.calories ?? 0) * completion
+            }
+            // Active Energy ya incluye pasos: sumarlos otra vez era doble
+            // contabilización y explicaba buena parte del vaciado excesivo.
+            let nonWorkoutDrain = max(0, activeEnergy - completedWorkoutCalories) / 60
+            let restCredit = restWindows.reduce(0.0) { total, window in
+                let duration = max(0.01, window.endHour - window.startHour)
+                let completion = clamp((representedHour - window.startHour) / duration, 0, 1)
+                return total + window.credit * completion
+            }
             let exerciseDrain = events.reduce(0.0) { total, event in
                 let duration = max(0.05, event.endHour - event.startHour)
                 let completed = clamp((representedHour - event.startHour) / duration, 0, 1)
                 return total + event.drain * completed
             }
-            return max(5, wakeEnergy - backgroundDrain * awakeProgress - exerciseDrain)
+            return max(5, wakeEnergy - basalDrain - nonWorkoutDrain -
+                       contextualPenalty * awakeProgress - exerciseDrain + restCredit)
         }
         let exerciseDrain = events.reduce(0) { $0 + $1.drain }
-        let basis = "Noche +\(Int(recharge.rounded())) · día −\(Int(backgroundDrain.rounded())) · ejercicio −\(Int(exerciseDrain.rounded()))"
+        let restCredit = restWindows.reduce(0) { $0 + $1.credit }
+        let grossDayDrain = max(0, wakeEnergy - (curve.last ?? wakeEnergy) - Double(exerciseDrain) + restCredit)
+        var basis = "Noche +\(Int(recharge.rounded())) · día −\(Int(grossDayDrain.rounded())) · ejercicio −\(Int(exerciseDrain.rounded()))"
+        if restCredit >= 0.5 { basis += " · descanso +\(Int(restCredit.rounded()))" }
         return EnergyModelResult(
             energy: Int((curve.last ?? wakeEnergy).rounded()),
             curve: curve,
-            basis: basis
+            basis: basis,
+            restWindows: restWindows
         )
+    }
+
+    /// Ventanas de 30 min con movimiento casi nulo y pulso bajo respecto a la
+    /// persona. HRV sólo refuerza una ventana cuando coincide temporalmente;
+    /// nunca crea descanso por sí sola porque Apple Watch la mide de forma
+    /// esporádica y un punto aislado no describe media hora.
+    static func restorativeWindows(
+        heartRate: [TrendPoint], hrv: [TrendPoint], steps: [TrendPoint],
+        workouts: [HealthWorkout], restingBaseline: Double?, hrvBaseline: Double?,
+        day: Date, fromHour: Double, toHour: Double
+    ) -> [RestorativeWindow] {
+        guard let restingBaseline, restingBaseline > 0, toHour - fromHour >= 0.5 else { return [] }
+        var result: [RestorativeWindow] = []
+        var start = (fromHour * 2).rounded(.up) / 2
+        while start + 0.5 <= toHour + 0.001 {
+            let end = start + 0.5
+            let pulse = heartRate.filter {
+                let sampleHour = hour(of: $0.date, on: day)
+                return sampleHour >= start && sampleHour < end
+            }.map(\.value).sorted()
+            let stepCount = steps.filter {
+                let sampleHour = hour(of: $0.date, on: day)
+                return sampleHour >= start && sampleHour < end
+            }.reduce(0.0) { $0 + $1.value }
+            let overlapsWorkout = workouts.contains { workout in
+                guard Calendar.current.isDate(workout.date, inSameDayAs: day) else { return false }
+                let workoutStart = hour(of: workout.date, on: day)
+                let workoutEnd = workoutStart + workout.durationMinutes / 60
+                return workoutStart < end && workoutEnd > start
+            }
+            if !overlapsWorkout, stepCount <= 25, pulse.count >= 2 {
+                let medianPulse = pulse[pulse.count / 2]
+                let calm = medianPulse <= restingBaseline + max(7, restingBaseline * 0.14)
+                if calm {
+                    let matchingHRV = hrv.filter {
+                        let sampleHour = hour(of: $0.date, on: day)
+                        return sampleHour >= start && sampleHour < end
+                    }.map(\.value)
+                    let hrvSupports = hrvBaseline.map { baseline in
+                        matchingHRV.contains { $0 >= baseline * 0.90 }
+                    } ?? false
+                    let deepCalm = medianPulse <= restingBaseline + 4 && (hrvSupports || pulse.count >= 4)
+                    result.append(RestorativeWindow(
+                        startHour: start, endHour: end,
+                        credit: deepCalm ? 0.50 : 0.30
+                    ))
+                }
+            }
+            start = end
+        }
+        // Una hora tranquila es una sola pausa, no dos eventos de 30 min.
+        // Se conservan bins cortos para el cálculo y se fusionan sólo al
+        // exponerlos a la gráfica.
+        var merged: [RestorativeWindow] = []
+        for window in result {
+            if let last = merged.last, abs(last.endHour - window.startHour) < 0.001 {
+                merged[merged.count - 1] = RestorativeWindow(
+                    startHour: last.startHour, endHour: window.endHour,
+                    credit: last.credit + window.credit
+                )
+            } else {
+                merged.append(window)
+            }
+        }
+        return merged
+    }
+
+    private static func cumulativeValue(_ samples: [TrendPoint], through representedHour: Double,
+                                        on day: Date, fallbackTotal: Double,
+                                        currentHour: Double) -> Double {
+        guard !samples.isEmpty else {
+            return fallbackTotal * clamp(representedHour / max(0.5, currentHour), 0, 1)
+        }
+        return samples.reduce(0.0) { total, point in
+            hour(of: point.date, on: day) <= representedHour ? total + point.value : total
+        }
     }
 
     @MainActor
