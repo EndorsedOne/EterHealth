@@ -287,7 +287,7 @@ private struct CurrentTravelCard: View {
         let destination = activeStop?.destinationTimeZoneID.map(TravelFormat.zoneName) ?? episode.title
         if isMeasuredAdaptation {
             return ("Tus señales ya son estables en \(destination).",
-                    "Confirmada con sueño, horario local, HRV y pulso en reposo.",
+                    "Adaptación confirmada para esta parada con sueño, horario local, HRV y pulso en reposo.",
                     "checkmark.seal.fill", true)
         }
         return ("Adaptación estimada",

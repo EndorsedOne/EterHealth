@@ -50,6 +50,14 @@ final class EterNotificationDelegate: NSObject, UIApplicationDelegate, @preconcu
 enum TravelAdaptationNotifier {
     private static let notifiedPrefix = "eter.notifications.adaptationConfirmed."
 
+    /// La estabilidad pertenece a una parada, no al viaje completo. Una
+    /// parada posterior (o la vuelta a casa) puede volver a introducir
+    /// desajuste circadiano o fatiga de tránsito, así que este texto nunca
+    /// debe afirmar que ha desaparecido el techo global de intensidad.
+    nonisolated static func confirmedBody(destination: String) -> String {
+        "Tus señales ya son estables en \(destination). Éter actualizará el entrenamiento según la parada actual del itinerario."
+    }
+
     /// Se solicita al entrar en Viajes: nunca durante el arranque general ni
     /// como efecto secundario de una lectura de HealthKit.
     static func requestAuthorizationIfNeeded() async {
@@ -75,7 +83,7 @@ enum TravelAdaptationNotifier {
         let destination = stop.destinationTimeZoneID.map(TravelFormat.zoneName) ?? episode.title
         let content = UNMutableNotificationContent()
         content.title = "Éter · Adaptación confirmada"
-        content.body = "Tus señales ya son estables en \(destination). El viaje deja de limitar la intensidad del entrenamiento."
+        content.body = confirmedBody(destination: destination)
         content.sound = .default
         content.userInfo = ["route": "travel", "episodeID": episode.id.uuidString, "stopID": stop.id.uuidString]
 

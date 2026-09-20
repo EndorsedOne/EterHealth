@@ -9,6 +9,14 @@ import XCTest
 @MainActor
 final class TravelEpisodeTests: XCTestCase {
 
+    func testAdaptationNotificationIsLocalToTheConfirmedStop() {
+        let body = TravelAdaptationNotifier.confirmedBody(destination: "Seúl")
+        XCTAssertTrue(body.contains("Seúl"))
+        XCTAssertTrue(body.contains("parada actual"))
+        XCTAssertFalse(body.localizedCaseInsensitiveContains("el viaje deja de limitar"),
+                       "Confirmar una parada no permite afirmar que todo el itinerario ha dejado de limitar la intensidad.")
+    }
+
     // MARK: - Utilidades de fecha
 
     /// Un instante en hora LOCAL de un huso concreto. Todos los tests se
