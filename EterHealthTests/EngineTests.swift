@@ -780,6 +780,18 @@ final class EngineTests: XCTestCase {
         ), 3, "La mitigación combinada debe quedar limitada")
     }
 
+    func testElectrolytesAreVisibleInLifestyleSummary() {
+        let event = LifestyleEvent(
+            id: UUID(), date: Date(), alcoholDrinks: 0, saunaMinutes: 0, saunaTemperatureC: 80,
+            coldMinutes: 0, coldTemperatureC: 12, timeZoneDifference: 0, travelDirection: .east,
+            caffeineMg: 0, caffeineDate: nil, foodQuality: .notRecorded, fastingHours: 0,
+            trainedFasted: false, lateDinner: false, heavyDinner: false,
+            hydration: .notRecorded, electrolytes: true, digestiveSymptoms: [], supplements: [], note: ""
+        )
+        XCTAssertEqual(event.summary, "electrolitos",
+                       "Un registro sólo de electrolitos no debe parecer una fila vacía en el historial.")
+    }
+
     func testWristTemperatureCannotTriggerAlertByItself() {
         let now = Date()
         let temperature = PhysiologicalAlertSignal(

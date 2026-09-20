@@ -87,10 +87,23 @@ enum TwinEngine {
             travelEpisodes: context.travelHistory, now: now
         ).map { ($0.kind, $0) })
         var appliedLearnedHabits: Set<HabitKind> = []
-        var appliedElectrolytes = false
         let prolongedExerciseMinutes = health.recentWorkouts
             .filter { $0.date <= now && now.timeIntervalSince($0.date) <= 24 * 3_600 }
             .map(\.durationMinutes).max() ?? 0
+        // Se resuelve UNA vez sobre todos los registros recientes. Antes, el
+        // primer evento con electrolitos (aunque no tuviera ningún estresor)
+        // bloqueaba otro registro compatible del mismo día por el booleano
+        // `appliedElectrolytes`, haciendo que parecieran no tener efecto.
+        let recentElectrolyteEvents = events.filter {
+            $0.electrolytes && $0.date <= now && now.timeIntervalSince($0.date) <= 24 * 3_600
+        }
+        let electrolyteMitigation = recentElectrolyteEvents.map {
+            HabitAssociationEngine.electrolyteMitigation(
+                hydrationLow: $0.hydration == .low,
+                saunaMinutes: $0.saunaMinutes,
+                prolongedExerciseMinutes: prolongedExerciseMinutes
+            )
+        }.max() ?? 0
 
         func learnedHabit(_ kind: HabitKind) -> (impact: Int, detail: String) {
             guard appliedLearnedHabits.insert(kind).inserted,
@@ -270,26 +283,16 @@ enum TwinEngine {
                     detail: "Registro declarado; por sí solo no se interpreta como bueno o malo para la disponibilidad." + learned.detail
                 ))
             }
-            if event.electrolytes && ageHours <= 24 && !appliedElectrolytes {
-                let mitigation = HabitAssociationEngine.electrolyteMitigation(
-                    hydrationLow: event.hydration == .low,
-                    saunaMinutes: event.saunaMinutes,
-                    prolongedExerciseMinutes: prolongedExerciseMinutes
-                )
-                appliedElectrolytes = true
-                if mitigation > 0 {
-                    score += mitigation
-                    signals.append(TwinSignal(
-                        name: "Electrolitos", value: "Registrados", impact: mitigation,
-                        detail: "Compensan parcialmente la cautela por hidratación, calor o ejercicio prolongado; no se interpretan como recuperación adicional."
-                    ))
-                } else {
-                    signals.append(TwinSignal(
-                        name: "Electrolitos", value: "Registrados", impact: 0,
-                        detail: "Sin un estresor compatible registrado, se conservan como contexto y no modifican la puntuación."
-                    ))
-                }
-            }
+        }
+
+        if !recentElectrolyteEvents.isEmpty {
+            score += electrolyteMitigation
+            signals.append(TwinSignal(
+                name: "Electrolitos", value: "Registrados", impact: electrolyteMitigation,
+                detail: electrolyteMitigation > 0
+                    ? "Compensan parcialmente la cautela por hidratación, sauna o ejercicio prolongado; no se interpretan como recuperación adicional."
+                    : "Sin un estresor compatible registrado, se conservan como contexto y no modifican la puntuación."
+            ))
         }
 
         if let review = reviews.first(where: { $0.workoutDate <= now && now.timeIntervalSince($0.workoutDate) <= 36 * 3600 }) {

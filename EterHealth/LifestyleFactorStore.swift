@@ -187,6 +187,7 @@ struct LifestyleEvent: Codable, Identifiable {
         if fastingHours > 0 { parts.append("ayuno \(fastingHours) h") }
         if trainedFasted { parts.append("entrenamiento en ayunas") }
         if hydration != .notRecorded { parts.append("hidratación \(hydration.rawValue.lowercased())") }
+        if electrolytes { parts.append("electrolitos") }
         if !digestiveSymptoms.isEmpty { parts.append("digestión: \(digestiveSymptoms.joined(separator: ", ").lowercased())") }
         if !supplements.isEmpty { parts.append(supplements.map(\.rawValue).sorted().joined(separator: ", ").lowercased()) }
         return parts.joined(separator: " · ")

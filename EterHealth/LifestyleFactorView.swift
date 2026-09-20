@@ -154,6 +154,10 @@ struct LifestyleFactorView: View {
                         ForEach(HydrationLevel.allCases) { Text($0.rawValue).tag($0) }
                     }
                     Toggle("He tomado electrolitos", isOn: $event.electrolytes)
+                    if event.electrolytes {
+                        Text("Quedan registrados y solo mitigan parte del impacto cuando coinciden con hidratación baja, sauna o ejercicio prolongado. Por sí solos no suman disponibilidad.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
                 Section("Digestión") {
                     ForEach(digestiveOptions, id: \.self) { symptom in
