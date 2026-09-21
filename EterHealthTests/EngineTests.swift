@@ -2795,9 +2795,13 @@ final class EngineTests: XCTestCase {
             return
         }
         defer { store.deleteWorkout(id: workout.id) }
+        XCTAssertTrue(workout.muscleSets.isEmpty,
+                      "Hevy tampoco debe persistir una segunda fuente muscular obsoleta.")
         XCTAssertEqual(exercise.sets, 2, "The two ascending warm-up rows must not count toward the exercise's working set total.")
         XCTAssertEqual(exercise.averageWeight ?? 0, 100, accuracy: 0.01,
                        "averageWeight must reflect only the working sets, not be dragged down by the warm-up ramp.")
+        XCTAssertEqual(workout.effectiveMuscleSets["Pecho"] ?? 0, 2, accuracy: 0.01,
+                       "El estímulo canónico debe seguir derivándose de las series de trabajo importadas.")
     }
 
     func testHevyImportDiscardsWorkoutsLongerThanTwoHours() {

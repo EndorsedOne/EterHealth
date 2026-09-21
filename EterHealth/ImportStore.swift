@@ -365,11 +365,12 @@ final class ImportStore: ObservableObject {
                     setDetails: value.details
                 )
             }
-            var muscles: [String: Double] = [:]
-            for exercise in exercises {
-                for (muscle, weight) in MuscleMap.involvement(for: exercise.name) { muscles[muscle, default: 0] += Double(exercise.sets) * weight }
-            }
-            return ImportedWorkout(title: item.title, start: item.start, end: item.end, exercises: exercises, muscleSets: muscles)
+            // Igual que las sesiones creadas en Éter, Hevy no persiste una
+            // segunda fotografía muscular que pueda quedarse obsoleta. La
+            // fuente única es `effectiveMuscleSets`, derivada de estas series
+            // con el MuscleMap y el RPE/RIR vigentes en cada lectura.
+            return ImportedWorkout(title: item.title, start: item.start, end: item.end,
+                                   exercises: exercises, muscleSets: [:])
         }
         return HevyParseResult(workouts: imported, discardedWorkoutIDs: discardedWorkoutIDs)
     }
