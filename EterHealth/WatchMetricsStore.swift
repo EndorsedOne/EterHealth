@@ -8,6 +8,8 @@ private struct WatchMetricsPayload: Sendable {
     let isRunning: Bool?
     let isPaused: Bool?
     let terminalAction: String?
+    let terminalOutcome: String?
+    let terminalWorkoutID: String?
     let workoutCommand: String?
     let reviewEffort: Int?
     let reviewPain: Bool?
@@ -21,12 +23,21 @@ private struct WatchMetricsPayload: Sendable {
         isRunning = message["running"] as? Bool
         isPaused = message["paused"] as? Bool
         terminalAction = message["terminalAction"] as? String
+        terminalOutcome = message["terminalOutcome"] as? String
+        terminalWorkoutID = message["terminalWorkoutID"] as? String
         workoutCommand = message["workoutCommand"] as? String
         reviewEffort = message["reviewEffort"] as? Int
         reviewPain = message["reviewPain"] as? Bool
         reviewWorkoutID = message["reviewWorkoutID"] as? String
         reviewWorkoutDate = (message["reviewWorkoutDate"] as? Double).map(Date.init(timeIntervalSince1970:))
     }
+}
+
+enum WatchTerminalOutcome: String, Sendable {
+    case savedByWatch
+    case noActiveSession
+    case watchSaveFailed
+    case expiredAndDiscarded
 }
 
 @MainActor
@@ -55,6 +66,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     @Published var isPaused = false
     @Published var terminalAction: String?
     @Published var workoutCommand: String?
+    private(set) var terminalOutcome: WatchTerminalOutcome?
+    private(set) var terminalWorkoutID: String?
 
     override init() {
         super.init()
@@ -74,6 +87,10 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         if let running = payload.isRunning, running != isRunning { isRunning = running }
         if let paused = payload.isPaused, paused != isPaused { isPaused = paused }
         if let action = payload.terminalAction { terminalAction = action }
+        if let outcome = payload.terminalOutcome.flatMap(WatchTerminalOutcome.init(rawValue:)) {
+            terminalOutcome = outcome
+            terminalWorkoutID = payload.terminalWorkoutID
+        }
         if let command = payload.workoutCommand { workoutCommand = command }
         if let effort = payload.reviewEffort,
            let pain = payload.reviewPain,
@@ -94,7 +111,17 @@ final class WatchMetricsStore: NSObject, ObservableObject {
 
     func pause() { send(command: "pause") }
     func resume() { send(command: "resume") }
-    func finish(workoutID: String) { sendTerminal(command: "finish", workoutID: workoutID) }
+    func finishAndAwait(workoutID: String, timeout: TimeInterval = 5) async -> WatchTerminalOutcome? {
+        terminalOutcome = nil
+        terminalWorkoutID = nil
+        sendTerminal(command: "finish", workoutID: workoutID, fallbackAfter: 3)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if terminalWorkoutID == workoutID, let terminalOutcome { return terminalOutcome }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return nil
+    }
     func discard(workoutID: String) { sendTerminal(command: "discard", workoutID: workoutID) }
 
     // Último resumen enviado, para reenviarlo cuando el reloj aparezca.
@@ -230,13 +257,16 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     /// envía por el canal inmediato y también por la cola fiable. El reloj
     /// deduplica `commandID` y comprueba `workoutID`, por lo que una entrega
     /// tardía nunca puede cerrar el siguiente entrenamiento.
-    private func sendTerminal(command: String, workoutID: String) {
-        let payload: [String: Any] = [
+    private func sendTerminal(command: String, workoutID: String, fallbackAfter: TimeInterval? = nil) {
+        var payload: [String: Any] = [
             "command": command,
             "commandID": UUID().uuidString,
             "workoutID": workoutID,
             "issuedAt": Date().timeIntervalSince1970
         ]
+        if let fallbackAfter {
+            payload["fallbackDeadline"] = Date().addingTimeInterval(fallbackAfter).timeIntervalSince1970
+        }
         let session = WCSession.default
         session.transferUserInfo(payload)
         if session.isReachable {

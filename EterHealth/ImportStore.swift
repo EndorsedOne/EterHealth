@@ -178,11 +178,10 @@ final class ImportStore: ObservableObject {
     var labCount: Int { labs.count }
 
     func addStrengthWorkout(title: String, start: Date, end: Date, exercises: [ImportedExercise]) {
-        var muscles: [String: Double] = [:]
-        for exercise in exercises {
-            for (muscle, weight) in MuscleMap.involvement(for: exercise.name) { muscles[muscle, default: 0] += Double(exercise.sets) * weight }
-        }
-        let workout = ImportedWorkout(title: title, start: start, end: end, exercises: exercises, muscleSets: muscles)
+        // `muscleSets` sólo existe para decodificar copias antiguas. La única
+        // verdad muscular es `effectiveMuscleSets`, que se recalcula desde las
+        // series y sí incorpora calentamientos, implicación y RPE/RIR.
+        let workout = ImportedWorkout(title: title, start: start, end: end, exercises: exercises, muscleSets: [:])
         workouts.removeAll { $0.id == workout.id }
         workouts.append(workout)
         workouts.sort { $0.start > $1.start }

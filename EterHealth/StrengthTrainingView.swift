@@ -1492,6 +1492,7 @@ struct LiveStrengthWorkoutView: View {
     @State private var showExercisePicker = false
     @State private var exerciseSearch = ""
     @State private var showDiscardConfirmation = false
+    @State private var showNoCompletedSets = false
     @State private var completionSummary: StrengthSessionSummary?
     @State private var hasCompleted = false
     // Only one set can realistically be timed at once, so a single shared
@@ -1561,6 +1562,11 @@ struct LiveStrengthWorkoutView: View {
             .confirmationDialog("¿Cerrar el entrenamiento?", isPresented: $showDiscardConfirmation) {
                 Button("Descartar sesión", role: .destructive) { discard() }
                 Button("Continuar", role: .cancel) {}
+            }
+            .alert("No hay series completadas", isPresented: $showNoCompletedSets) {
+                Button("Seguir entrenando", role: .cancel) {}
+            } message: {
+                Text("Marca al menos una serie como completada antes de guardar. Éter no registrará como realizado el trabajo que solo estaba planificado.")
             }
             .sheet(isPresented: $showExercisePicker) { exercisePicker }
             .fullScreenCover(item: $completionSummary) { summary in
@@ -2058,10 +2064,12 @@ struct LiveStrengthWorkoutView: View {
 
     private func completeSession(notifyWatch: Bool) {
         guard !hasCompleted else { return }
-        hasCompleted = true
+        guard exercises.contains(where: { $0.sets.contains(where: \.completed) }) else {
+            showNoCompletedSets = true
+            return
+        }
         let saved = exercises.compactMap { exercise -> ImportedExercise? in
-            let selected = exercise.sets.filter(\.completed)
-            let source = selected.isEmpty ? exercise.sets : selected
+            let source = exercise.sets.filter(\.completed)
             guard !source.isEmpty else { return nil }
             // Éter ya cronometra las series isométricas/de acarreo
             // (timedSetField) y guardaba esos segundos SOLO en `reps`, donde
@@ -2095,6 +2103,11 @@ struct LiveStrengthWorkoutView: View {
             let volume = working.reduce(0) { $0 + $1.weight * Double($1.reps) }
             return ImportedExercise(name: exercise.name, sets: working.count, volume: volume, totalReps: reps, averageWeight: reps > 0 ? volume / Double(reps) : nil, setDetails: details)
         }
+        guard !saved.isEmpty else {
+            showNoCompletedSets = true
+            return
+        }
+        hasCompleted = true
         let endedAt = Date()
         let completedWorkout = ImportedWorkout(title: routine.name, start: startedAt, end: endedAt,
                                                exercises: saved, muscleSets: [:])
@@ -2105,13 +2118,19 @@ struct LiveStrengthWorkoutView: View {
             // el iPhone CREYERA que el reloj grababa (isRunning), y esa creencia
             // depende de que lleguen las métricas por segundo; si no llegaban,
             // "Guardar" en el iPhone dejaba el reloj grabando indefinidamente.
-            WatchMetricsStore.shared.finish(workoutID: "\(routine.name)|\(startedAt.timeIntervalSince1970)")
-            // El guardado propio en Apple Salud sólo si el reloj NO lleva la
-            // sesión: con el reloj activo, su builder ya escribe el HKWorkout y
-            // guardarlo aquí lo duplicaría. Si estaba grabando, al terminar el
-            // reloj envía su propio terminalAction y esta sesión ya se cerró.
-            if !WatchMetricsStore.shared.isRunning {
-                Task { await health.saveStrengthWorkout(start: startedAt, end: endedAt) }
+            let sessionStart = startedAt
+            let sessionEnd = endedAt
+            let workoutID = "\(routine.name)|\(sessionStart.timeIntervalSince1970)"
+            Task {
+                let outcome = await WatchMetricsStore.shared.finishAndAwait(workoutID: workoutID)
+                if outcome == .savedByWatch { return }
+                // `noActiveSession`, fallo o timeout: antes de usar el iPhone
+                // como respaldo se mira HealthKit directamente. Puede que la
+                // confirmación WCSession se haya perdido aunque el Watch sí
+                // terminara y escribiera la sesión.
+                if !(await health.containsEquivalentStrengthWorkout(start: sessionStart, end: sessionEnd)) {
+                    await health.saveStrengthWorkout(start: sessionStart, end: sessionEnd)
+                }
             }
         }
         completionSummary = StrengthSessionSummary.make(for: completedWorkout,

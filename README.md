@@ -150,6 +150,12 @@ reloj vuelve a `WorkoutReviewStore`. En el siguiente refresco, esa valoración
 forma parte del mismo `TwinContext` que usa el iPhone y, además, invalida el
 sello de Rendimiento.
 
+Al guardar desde el iPhone, el cierre del Watch es explícito: el reloj responde
+si escribió el `HKWorkout`, si no tenía sesión o si falló. Sólo en los dos últimos
+casos —o tras timeout y comprobar que HealthKit no contiene ya una sesión
+equivalente— escribe el iPhone. Una orden terminal entregada después del plazo
+descarta el builder del Watch para no crear un duplicado tardío.
+
 **Qué hace el reloj hoy y qué no (decisión de producto, sep. 2026).** En la
 muñeca la sesión activa abre y guarda su propia `HKWorkoutSession` y muestra
 biometría en vivo (pulso, zonas, energía), un temporizador de descanso
@@ -159,10 +165,10 @@ repeticiones—: la prescripción y el gemelo viven **solo** en el iPhone. Se ga
 menos superficie de sincronización y menos estados que puedan divergir; se
 pierde poder registrar series desde la muñeca. Reintroducir ese registro es una
 decisión explícita, no un añadido incremental: exige tests de sync y una única
-escritura de sesión hacia HealthKit/`ImportStore`. El iPhone todavía envía en
-`workoutContext` los campos de serie (`exerciseName`, `setNumber`, `setWeight`,
-`setReps`), que el reloj ya no pinta: es contrato heredado, marcado en
-`WatchWorkoutManager`, pendiente de recortar en su propio cambio con tests.
+escritura de sesión hacia HealthKit/`ImportStore`. El contrato `workoutContext`
+lleva únicamente identidad de sesión, resumen (`completedSets`, `totalVolume`)
+y `restEndsAt`. No transporta ejercicio, peso, repeticiones ni recorrido de
+series; `WatchMetricsStoreTests` fija esta frontera para impedir que reaparezcan.
 
 Los datos de `WorkoutEnrichmentStore` no son otro entrenamiento ni otro estado
 fisiológico. Se enlazan por UUID al `HKWorkout` original y sólo completan la

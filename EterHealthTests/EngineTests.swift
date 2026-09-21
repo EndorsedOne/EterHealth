@@ -2685,7 +2685,7 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(lowEffort.effectiveMuscleSets["Pecho"] ?? 0, 3 * 0.55, accuracy: 0.01)
     }
 
-    func testAddStrengthWorkoutAppliesTheSameSecondaryMoverDiscountToMuscleSets() {
+    func testAddStrengthWorkoutKeepsLegacyMuscleSetsEmptyAndDerivesEffectiveStimulus() {
         let store = ImportStore(persistToDisk: false)
         let title = "InvolvementTest-\(UUID().uuidString)"
         let exercises = [
@@ -2700,10 +2700,30 @@ final class EngineTests: XCTestCase {
             XCTFail("Expected the workout to be saved.")
             return
         }
-        // 6 row sets at half credit (3.0) + 5 direct curl sets at full
-        // credit (5.0) — not 11 full-credit "bíceps sets".
-        XCTAssertEqual(workout.muscleSets["Bíceps"] ?? 0, 8.0, accuracy: 0.01)
-        XCTAssertEqual(workout.muscleSets["Espalda"] ?? 0, 6.0, accuracy: 0.01)
+        XCTAssertTrue(workout.muscleSets.isEmpty,
+                      "El campo persistido es sólo compatibilidad; no debe competir con el cálculo canónico.")
+        // 6 remos a medio crédito (3.0) + 5 curls directos (5.0).
+        XCTAssertEqual(workout.effectiveMuscleSets["Bíceps"] ?? 0, 8.0, accuracy: 0.01)
+        XCTAssertEqual(workout.effectiveMuscleSets["Espalda"] ?? 0, 6.0, accuracy: 0.01)
+    }
+
+    func testAddStrengthWorkoutPersistsRIRInTheSameDirectionAsEffectiveStimulus() {
+        let store = ImportStore(persistToDisk: false)
+        let start = Date(timeIntervalSince1970: 2_000_100_000)
+        func exercise(rpe: Double) -> ImportedExercise {
+            let details = (0..<3).map { _ in ImportedSet(weight: 80, reps: 8, type: "normal", rpe: rpe) }
+            return ImportedExercise(name: "Bench Press (Barbell)", sets: 3, volume: 1_920,
+                                    totalReps: 24, averageWeight: 80, setDetails: details)
+        }
+        store.addStrengthWorkout(title: "RIR alto", start: start, end: start.addingTimeInterval(1_800),
+                                 exercises: [exercise(rpe: 5)])
+        store.addStrengthWorkout(title: "Cerca del fallo", start: start.addingTimeInterval(3_600),
+                                 end: start.addingTimeInterval(5_400), exercises: [exercise(rpe: 9)])
+        let easy = store.workouts.first { $0.title == "RIR alto" }!
+        let hard = store.workouts.first { $0.title == "Cerca del fallo" }!
+        XCTAssertTrue(easy.muscleSets.isEmpty && hard.muscleSets.isEmpty)
+        XCTAssertLessThan(easy.effectiveMuscleSets["Pecho"] ?? 0,
+                          hard.effectiveMuscleSets["Pecho"] ?? 0)
     }
 
     func testMuscleDistributionRecomputesFromExercisesInsteadOfTrustingStaleStoredMuscleSets() {

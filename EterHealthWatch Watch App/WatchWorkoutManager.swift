@@ -215,8 +215,12 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         if isPaused { session.resume() } else { session.pause() }
     }
 
-    func finish() async {
-        guard let session, let builder else { return }
+    func finish(requestedWorkoutID: String? = nil) async {
+        guard let session, let builder else {
+            sendMetrics(terminalAction: "finish", terminalOutcome: "noActiveSession",
+                        terminalWorkoutID: requestedWorkoutID ?? workoutID)
+            return
+        }
         let end = Date()
         let summary = WatchWorkoutSummary(
             workoutID: workoutID, workoutDate: workoutDate ?? startedAt ?? end,
@@ -226,17 +230,22 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
             completedSets: completedSets, totalVolume: totalVolume
         )
         session.end()
+        let saved: Bool
         do {
             try await builder.endCollection(at: end)
             _ = try await builder.finishWorkout()
+            saved = true
         } catch {
             errorMessage = error.localizedDescription
+            saved = false
         }
         timer?.invalidate()
         timer = nil
         isRunning = false
         isPaused = false
-        sendMetrics(terminalAction: "finish")
+        sendMetrics(terminalAction: "finish",
+                    terminalOutcome: saved ? "savedByWatch" : "watchSaveFailed",
+                    terminalWorkoutID: requestedWorkoutID ?? workoutID)
         completedSummary = summary
         self.session = nil
         self.builder = nil
@@ -271,6 +280,25 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         sendMetrics(terminalAction: "discard")
         self.session = nil
         self.builder = nil
+        startedAt = nil
+    }
+
+    /// La orden fiable llegó después del límite en el que el iPhone ya toma
+    /// la escritura de HealthKit. Se detiene y descarta el builder del Watch
+    /// para que una entrega tardía no cree un duplicado.
+    private func discardExpiredFinish(requestedWorkoutID: String?) {
+        if let session, let builder {
+            session.end()
+            builder.discardWorkout()
+        }
+        timer?.invalidate()
+        timer = nil
+        isRunning = false
+        isPaused = false
+        sendMetrics(terminalAction: "finish", terminalOutcome: "expiredAndDiscarded",
+                    terminalWorkoutID: requestedWorkoutID ?? workoutID)
+        session = nil
+        builder = nil
         startedAt = nil
     }
 
@@ -323,9 +351,12 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         // transmite al iPhone a ~1 Hz, que es de sobra para pulso y calorías.
     }
 
-    private func sendMetrics(terminalAction: String? = nil) {
+    private func sendMetrics(terminalAction: String? = nil, terminalOutcome: String? = nil,
+                             terminalWorkoutID: String? = nil) {
         var payload: [String: Any] = ["heartRate": heartRate, "activeEnergy": activeEnergy, "elapsed": elapsed, "running": isRunning, "paused": isPaused]
         if let terminalAction { payload["terminalAction"] = terminalAction }
+        if let terminalOutcome { payload["terminalOutcome"] = terminalOutcome }
+        if let terminalWorkoutID { payload["terminalWorkoutID"] = terminalWorkoutID }
         let connection = WCSession.default
         if connection.isReachable {
             connection.sendMessage(payload, replyHandler: nil)
@@ -501,7 +532,18 @@ extension WatchWorkoutManager: WCSessionDelegate {
                 // de la sesión. Exigir coincidencia evita que una copia
                 // diferida cierre un entrenamiento posterior.
                 if let targetWorkoutID = message["workoutID"] as? String {
-                    guard let workoutID, targetWorkoutID == workoutID else { return }
+                    if let workoutID {
+                        guard targetWorkoutID == workoutID else { return }
+                    } else if isRunning, let startedAt {
+                        // El contexto puede llegar unas décimas después del
+                        // arranque. El ID contiene el mismo `startedAt`, así
+                        // que aún podemos identificar la sesión sin aceptar
+                        // una orden destinada a otro entrenamiento.
+                        let targetStart = targetWorkoutID.split(separator: "|").last.flatMap { Double($0) }
+                        guard let targetStart,
+                              abs(startedAt.timeIntervalSince1970 - targetStart) < 2 else { return }
+                        self.workoutID = targetWorkoutID
+                    }
                 }
             }
             if let commandID = message["commandID"] as? String {
@@ -513,7 +555,14 @@ extension WatchWorkoutManager: WCSessionDelegate {
             switch command {
             case "pause" where !isPaused: togglePause()
             case "resume" where isPaused: togglePause()
-            case "finish": await finish()
+            case "finish":
+                let target = message["workoutID"] as? String
+                if let deadline = message["fallbackDeadline"] as? Double,
+                   Date().timeIntervalSince1970 > deadline {
+                    discardExpiredFinish(requestedWorkoutID: target)
+                } else {
+                    await finish(requestedWorkoutID: target)
+                }
             case "discard": discard()
             default: break
             }

@@ -1366,7 +1366,7 @@ struct ContentView: View {
                 sets: workout.exercises.reduce(0) { $0 + $1.sets },
                 volume: workout.exercises.reduce(0) { $0 + $1.volume },
                 distanceKilometers: nil, averageHeartRate: nil,
-                muscles: workout.muscleSets.sorted { $0.value > $1.value }.map(\.key),
+                muscles: workout.effectiveMuscleSets.sorted { $0.value > $1.value }.map(\.key),
                 healthWorkoutID: nil, importedWorkoutID: workout.id
             )
         }

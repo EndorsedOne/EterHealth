@@ -429,6 +429,28 @@ final class HealthStore: ObservableObject {
         }
     }
 
+    /// Evita que el fallback del iPhone duplique una sesión que el Watch ya
+    /// alcanzó a cerrar. Se consulta HealthKit —no el array publicado, que
+    /// puede seguir pendiente de refresh— usando el mismo intervalo real.
+    func containsEquivalentStrengthWorkout(start: Date, end: Date) async -> Bool {
+        let windowStart = start.addingTimeInterval(-120)
+        let windowEnd = end.addingTimeInterval(300)
+        let predicate = HKQuery.predicateForSamples(withStart: windowStart, end: windowEnd, options: [])
+        let samples: [HKWorkout] = await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(sampleType: .workoutType(), predicate: predicate,
+                                      limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
+                continuation.resume(returning: samples as? [HKWorkout] ?? [])
+            }
+            store.execute(query)
+        }
+        let expectedDuration = end.timeIntervalSince(start)
+        return samples.contains { workout in
+            workout.workoutActivityType == .traditionalStrengthTraining &&
+            abs(workout.startDate.timeIntervalSince(start)) <= 120 &&
+            abs(workout.duration - expectedDuration) <= 300
+        }
+    }
+
     func saveAlcohol(drinks: Int, date: Date) async {
         guard drinks > 0,
               let type = HKQuantityType.quantityType(forIdentifier: .numberOfAlcoholicBeverages) else { return }
