@@ -219,7 +219,9 @@ struct WorkoutDetailView: View {
                         Text("\(set.weight.formatted(.number.precision(.fractionLength(0...1)))) kg × \(set.reps)")
                             .font(.caption).monospacedDigit()
                         if let rpe = set.rpe {
-                            Text("RPE \(rpe.formatted(.number.precision(.fractionLength(0...1))))").font(.caption2).foregroundStyle(.secondary)
+                            let rir = max(0, 10 - rpe)
+                            Text("RIR \(rir.formatted(.number.precision(.fractionLength(0...1))))")
+                                .font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if isWarmup {

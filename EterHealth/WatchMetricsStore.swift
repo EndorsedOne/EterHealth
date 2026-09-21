@@ -94,8 +94,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
 
     func pause() { send(command: "pause") }
     func resume() { send(command: "resume") }
-    func finish() { send(command: "finish") }
-    func discard() { send(command: "discard") }
+    func finish(workoutID: String) { sendTerminal(command: "finish", workoutID: workoutID) }
+    func discard(workoutID: String) { sendTerminal(command: "discard", workoutID: workoutID) }
 
     // Último resumen enviado, para reenviarlo cuando el reloj aparezca.
     private var lastTwinPayload: [String: Any]?
@@ -222,6 +222,25 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             WCSession.default.sendMessage(payload, replyHandler: nil)
         } else {
             WCSession.default.transferUserInfo(payload)
+        }
+    }
+
+    /// Finalizar o descartar no puede depender sólo de `isReachable`: puede
+    /// cambiar justo cuando iOS presenta el resumen y desmonta la sesión. Se
+    /// envía por el canal inmediato y también por la cola fiable. El reloj
+    /// deduplica `commandID` y comprueba `workoutID`, por lo que una entrega
+    /// tardía nunca puede cerrar el siguiente entrenamiento.
+    private func sendTerminal(command: String, workoutID: String) {
+        let payload: [String: Any] = [
+            "command": command,
+            "commandID": UUID().uuidString,
+            "workoutID": workoutID,
+            "issuedAt": Date().timeIntervalSince1970
+        ]
+        let session = WCSession.default
+        session.transferUserInfo(payload)
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil)
         }
     }
 }

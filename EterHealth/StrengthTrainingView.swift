@@ -18,13 +18,18 @@ struct RoutineExercise: Identifiable, Codable {
     var restSeconds: Int
     var prescriptionNote: String?
     var historySessions: Int?
+    /// Esfuerzo prescrito para esta sesión. No se guarda como esfuerzo real:
+    /// el atleta debe declarar el RIR de cada serie si quiere registrarlo.
+    var targetRIR: Double?
 
-    init(name: String, sets: [ImportedSet], restSeconds: Int, prescriptionNote: String? = nil, historySessions: Int? = nil) {
+    init(name: String, sets: [ImportedSet], restSeconds: Int, prescriptionNote: String? = nil,
+         historySessions: Int? = nil, targetRIR: Double? = nil) {
         self.name = name
         self.sets = sets
         self.restSeconds = restSeconds
         self.prescriptionNote = prescriptionNote
         self.historySessions = historySessions
+        self.targetRIR = targetRIR
     }
 }
 
@@ -66,10 +71,12 @@ enum StrengthRoutineBuilder {
             if let historical = library.first(where: {
                 $0.name.localizedCaseInsensitiveCompare(proposedExercise.name) == .orderedSame
             }) {
-                return StrengthPrescriptionEngine.prescribe(
+                var result = StrengthPrescriptionEngine.prescribe(
                     historical, workouts: imports.workouts,
                     readiness: readiness, muscleReadiness: muscles, injuries: injuries, goals: GoalStore.shared.profile.goals
                 )
+                result?.targetRIR = targetRIR(from: proposedExercise.prescription)
+                return result
             }
             let numbers = proposedExercise.prescription.split { !$0.isNumber }.compactMap { Int($0) }
             let setCount = min(6, max(1, numbers.first ?? 3))
@@ -80,7 +87,8 @@ enum StrengthRoutineBuilder {
                 sets: (0..<setCount).map { _ in ImportedSet(weight: 0, reps: reps, type: "normal", rpe: nil) },
                 restSeconds: defaultRest(for: descriptor.pattern),
                 prescriptionNote: proposedExercise.cue,
-                historySessions: 0
+                historySessions: 0,
+                targetRIR: targetRIR(from: proposedExercise.prescription)
             )
         }
         return StrengthRoutine(
@@ -132,6 +140,18 @@ enum StrengthRoutineBuilder {
 
     private static func defaultRest(for pattern: String) -> Int {
         pattern.contains("Aislamiento") ? 75 : pattern.contains("Core") ? 60 : 120
+    }
+
+    /// Lee tanto `RIR 2` como `RIR 1–2`. En un rango conserva el punto medio
+    /// como objetivo visual; nunca lo convierte por sí solo en resultado real.
+    private static func targetRIR(from prescription: String) -> Double? {
+        guard let range = prescription.range(of: "RIR", options: .caseInsensitive) else { return nil }
+        let tail = prescription[range.upperBound...]
+        let values = tail.split { character in
+            !character.isNumber && character != "." && character != ","
+        }.compactMap { Double($0.replacingOccurrences(of: ",", with: ".")) }
+        guard let first = values.first else { return nil }
+        return values.count > 1 ? (first + values[1]) / 2 : first
     }
 }
 
@@ -1077,6 +1097,9 @@ private struct LiveSet: Identifiable {
     // eran indistinguibles de repeticiones e inflaban el volumen.
     var durationSeconds: Double?
     var distanceMeters: Double?
+    /// Declarado por el usuario; nil significa que no se registró, no que
+    /// coincida con la prescripción.
+    var actualRIR: Int? = nil
     var completed = false
 }
 
@@ -1085,6 +1108,7 @@ private struct LiveExercise: Identifiable {
     var name: String
     var restSeconds: Int
     var sets: [LiveSet]
+    var targetRIR: Double? = nil
     // Cronometrar las series de un ejercicio de repeticiones. No es que el
     // dato sea prescindible —es justo el que alimenta el componente de
     // estaciones del forecast de HYROX, y por eso se importa de Hevy—: es que
@@ -1164,6 +1188,11 @@ private struct StrengthSessionSummaryView: View {
 
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Impacto muscular").font(.title2.bold())
+                        Text("Estímulo efectivo de esta sesión")
+                            .font(.caption).foregroundStyle(.secondary)
+                        SessionMuscleHeatmapView(
+                            stimulus: Dictionary(uniqueKeysWithValues: summary.muscles.map { ($0.muscle, $0.sessionSets) })
+                        )
                         HStack {
                             Text("Músculo").frame(maxWidth: .infinity, alignment: .leading)
                             Text("Sesión").frame(width: 70, alignment: .trailing)
@@ -1475,7 +1504,7 @@ struct LiveStrengthWorkoutView: View {
         _exercises = State(initialValue: routine.exercises.map { exercise in
             LiveExercise(name: exercise.name, restSeconds: exercise.restSeconds, sets: exercise.sets.map {
                 LiveSet(weight: $0.weight, reps: $0.reps, type: $0.type)
-            })
+            }, targetRIR: exercise.targetRIR)
         })
     }
 
@@ -1595,7 +1624,13 @@ struct LiveStrengthWorkoutView: View {
                             Text("\(descriptor.pattern) · \(descriptor.equipment)").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    restMenu(exercise)
+                    HStack(spacing: 10) {
+                        restMenu(exercise)
+                        if let target = exercise.wrappedValue.targetRIR {
+                            Label("Objetivo RIR \(rirText(target))", systemImage: "scope")
+                                .font(.caption.bold()).foregroundStyle(EterTheme.positive)
+                        }
+                    }
                 }
                 Spacer()
                 // Sólo en los ejercicios de repeticiones: en una plancha o un
@@ -1623,15 +1658,21 @@ struct LiveStrengthWorkoutView: View {
                 Image(systemName: "checkmark").frame(width: 44)
             }.font(.caption2.bold()).foregroundStyle(.secondary)
             ForEach(exercise.sets) { $set in
-                HStack(spacing: 8) {
-                    Text("\((exercise.wrappedValue.sets.firstIndex { $0.id == set.id } ?? 0) + 1)")
-                        .font(.subheadline.bold()).frame(width: 18, alignment: .leading)
-                    if descriptor.tracksWeight {
-                        weightField(value: $set.weight).frame(maxWidth: .infinity)
+                VStack(spacing: 7) {
+                    HStack(spacing: 8) {
+                        Text("\((exercise.wrappedValue.sets.firstIndex { $0.id == set.id } ?? 0) + 1)")
+                            .font(.subheadline.bold()).frame(width: 18, alignment: .leading)
+                        if descriptor.tracksWeight {
+                            weightField(value: $set.weight).frame(maxWidth: .infinity)
+                        }
+                        measurementFields(descriptor.measurement, set: $set,
+                                          tracksTime: exercise.wrappedValue.tracksTime)
+                        completedButton($set, restSeconds: exercise.wrappedValue.restSeconds)
                     }
-                    measurementFields(descriptor.measurement, set: $set,
-                                      tracksTime: exercise.wrappedValue.tracksTime)
-                    completedButton($set, restSeconds: exercise.wrappedValue.restSeconds)
+                    if set.completed, descriptor.measurement == .reps,
+                       !set.type.localizedCaseInsensitiveContains("warm") {
+                        rirSelector($set, target: exercise.wrappedValue.targetRIR)
+                    }
                 }
             }
             Button {
@@ -1700,6 +1741,9 @@ struct LiveStrengthWorkoutView: View {
             set.wrappedValue.completed.toggle()
             if set.wrappedValue.completed {
                 restEndsAt = Date().addingTimeInterval(TimeInterval(restSeconds))
+                // No esperar a que SwiftUI reevalúe `workoutContextSignature`:
+                // el reloj debe arrancar el mismo descanso en este gesto.
+                syncWorkoutContext()
             }
         } label: {
             Image(systemName: "checkmark")
@@ -1711,6 +1755,42 @@ struct LiveStrengthWorkoutView: View {
         .background(set.wrappedValue.completed ? EterTheme.positive : Color.primary.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .eterTouchTarget()
+    }
+
+    private func rirText(_ value: Double) -> String {
+        if value == value.rounded() { return String(Int(value)) }
+        return "\(Int(floor(value)))–\(Int(ceil(value)))"
+    }
+
+    /// Aparece sólo después de completar una serie efectiva. Ningún valor se
+    /// presupone: el borde tenue señala la recomendación, y el relleno señala
+    /// lo que el usuario ha declarado realmente.
+    private func rirSelector(_ set: Binding<LiveSet>, target: Double?) -> some View {
+        HStack(spacing: 6) {
+            Text("RIR real")
+                .font(.caption2.bold())
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            ForEach(0...5, id: \.self) { value in
+                let selected = set.wrappedValue.actualRIR == value
+                let recommended = target.map { Int(ceil($0)) == value } ?? false
+                Button {
+                    set.wrappedValue.actualRIR = selected ? nil : value
+                } label: {
+                    Text(value == 5 ? "5+" : "\(value)")
+                        .font(.caption.bold()).monospacedDigit()
+                        .frame(width: 30, height: 30)
+                        .foregroundStyle(selected ? Color.white : (recommended ? EterTheme.positive : Color.secondary))
+                        .background(selected ? EterTheme.positive : Color.clear)
+                        .overlay(Circle().stroke(recommended ? EterTheme.positive : Color.secondary.opacity(0.25), lineWidth: recommended ? 1.5 : 1))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(value == 5 ? "RIR real 5 o más" : "RIR real \(value)")
+                .accessibilityValue(selected ? "Seleccionado" : (recommended ? "Objetivo recomendado" : ""))
+            }
+        }
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -1881,7 +1961,9 @@ struct LiveStrengthWorkoutView: View {
         return NavigationStack {
             List(filtered) { exercise in
                 Button {
-                    exercises.append(LiveExercise(name: exercise.name, restSeconds: exercise.restSeconds, sets: exercise.sets.map { LiveSet(weight: $0.weight, reps: $0.reps, type: $0.type) }))
+                    exercises.append(LiveExercise(name: exercise.name, restSeconds: exercise.restSeconds,
+                                                  sets: exercise.sets.map { LiveSet(weight: $0.weight, reps: $0.reps, type: $0.type) },
+                                                  targetRIR: exercise.targetRIR))
                     showExercisePicker = false
                 } label: {
                     VStack(alignment: .leading) {
@@ -1921,7 +2003,8 @@ struct LiveStrengthWorkoutView: View {
                 },
                 restSeconds: exercise.restSeconds,
                 prescriptionNote: routine.exercises.first { $0.name == exercise.name }?.prescriptionNote,
-                historySessions: routine.exercises.first { $0.name == exercise.name }?.historySessions
+                historySessions: routine.exercises.first { $0.name == exercise.name }?.historySessions,
+                targetRIR: exercise.targetRIR
             )
         }
         routineStore.save(StrengthRoutine(name: routine.name,
@@ -1997,8 +2080,10 @@ struct LiveStrengthWorkoutView: View {
             // y el volumen, y eso es un cambio de semántica con su propio
             // riesgo, no algo que colar en este PR.
             let details = source.map {
-                ExerciseCatalog.loggedSet(weight: $0.weight, reps: $0.reps, type: $0.type, exerciseName: exercise.name,
+                var logged = ExerciseCatalog.loggedSet(weight: $0.weight, reps: $0.reps, type: $0.type, exerciseName: exercise.name,
                                           durationSeconds: $0.durationSeconds, distanceMeters: $0.distanceMeters)
+                logged.rpe = $0.actualRIR.map { Double(10 - $0) }
+                return logged
             }
             // éter's own live session has no in-session warm-up toggle, so
             // every set is logged as "normal" — the ascending-ramp
@@ -2020,7 +2105,7 @@ struct LiveStrengthWorkoutView: View {
             // el iPhone CREYERA que el reloj grababa (isRunning), y esa creencia
             // depende de que lleguen las métricas por segundo; si no llegaban,
             // "Guardar" en el iPhone dejaba el reloj grabando indefinidamente.
-            WatchMetricsStore.shared.finish()
+            WatchMetricsStore.shared.finish(workoutID: "\(routine.name)|\(startedAt.timeIntervalSince1970)")
             // El guardado propio en Apple Salud sólo si el reloj NO lleva la
             // sesión: con el reloj activo, su builder ya escribe el HKWorkout y
             // guardarlo aquí lo duplicaría. Si estaba grabando, al terminar el
@@ -2042,7 +2127,9 @@ struct LiveStrengthWorkoutView: View {
         // Igual que finish: ordena SIEMPRE descartar en el reloj; si no grababa,
         // lo ignora. No condicionarlo a isRunning evita que el reloj se quede
         // con una sesión abierta cuando el iPhone no había registrado el estado.
-        if notifyWatch { WatchMetricsStore.shared.discard() }
+        if notifyWatch {
+            WatchMetricsStore.shared.discard(workoutID: "\(routine.name)|\(startedAt.timeIntervalSince1970)")
+        }
         restEndsAt = nil
         dismiss()
     }

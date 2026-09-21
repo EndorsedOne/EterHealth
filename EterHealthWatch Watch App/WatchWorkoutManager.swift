@@ -123,6 +123,7 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
     private var startedAt: Date?
     private var workoutID: String?
     private var workoutDate: Date?
+    private var handledCommandIDs: Set<String> = []
     private var heartRateSum = 0.0
     private var heartRateSamples = 0
     private var peakHeartRate = 0.0
@@ -493,6 +494,22 @@ extension WatchWorkoutManager: WCSessionDelegate {
     nonisolated private func receiveCommand(_ message: [String: Any]) {
         guard let command = message["command"] as? String else { return }
         Task { @MainActor in
+            if command == "finish" || command == "discard" {
+                if let issuedAt = message["issuedAt"] as? Double,
+                   Date().timeIntervalSince1970 - issuedAt > 300 { return }
+                // Las órdenes terminales fiables llevan siempre la identidad
+                // de la sesión. Exigir coincidencia evita que una copia
+                // diferida cierre un entrenamiento posterior.
+                if let targetWorkoutID = message["workoutID"] as? String {
+                    guard let workoutID, targetWorkoutID == workoutID else { return }
+                }
+            }
+            if let commandID = message["commandID"] as? String {
+                guard handledCommandIDs.insert(commandID).inserted else { return }
+                // Mantener el conjunto acotado; sólo cubre el duplicado entre
+                // sendMessage y transferUserInfo de la misma orden terminal.
+                if handledCommandIDs.count > 32 { handledCommandIDs = [commandID] }
+            }
             switch command {
             case "pause" where !isPaused: togglePause()
             case "resume" where isPaused: togglePause()
