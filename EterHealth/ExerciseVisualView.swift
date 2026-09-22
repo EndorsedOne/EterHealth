@@ -1,50 +1,84 @@
 import SwiftUI
 
-/// Compact anatomical cue. It deliberately shows the loaded regions rather
-/// than pretending to teach technique with an inaccurate generic animation.
+/// Miniatura anatómica de intención: usa el mismo MuscleMap que el motor para
+/// enseñar qué pretende cargar el ejercicio. El resumen de sesión, en cambio,
+/// muestra el estímulo real después de aplicar series y RIR.
 struct ExerciseVisualView: View {
     let exercise: String
     var size: CGFloat = 42
 
-    private var muscles: Set<String> { Set(MuscleMap.groups(for: exercise)) }
-    private let active = Color(red: 0.16, green: 0.56, blue: 0.39)
-    private let inactive = Color.primary.opacity(0.18)
+    private var involvement: [String: Double] { MuscleMap.involvement(for: exercise) }
+
+    private var dominantMuscle: String? {
+        involvement.max { lhs, rhs in
+            if lhs.value == rhs.value { return lhs.key > rhs.key }
+            return lhs.value < rhs.value
+        }?.key
+    }
+
+    private var side: MuscleViewSide {
+        guard let dominantMuscle else { return .front }
+        return ["Espalda", "Tríceps", "Glúteos", "Isquios", "Gemelos"].contains(dominantMuscle)
+            ? .back : .front
+    }
+
+    private var imageName: String { side == .front ? "BodyComposition" : "BodyCompositionBack" }
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.22)
-                .fill(Color.primary.opacity(0.08))
-            VStack(spacing: size * 0.035) {
-                Circle().fill(inactive).frame(width: size * 0.18, height: size * 0.18)
-                HStack(spacing: size * 0.035) {
-                    limb(upperActive, width: 0.10, height: 0.36).rotationEffect(.degrees(10))
-                    Capsule().fill(torsoActive ? active : inactive).frame(width: size * 0.25, height: size * 0.34)
-                    limb(upperActive, width: 0.10, height: 0.36).rotationEffect(.degrees(-10))
+            RoundedRectangle(cornerRadius: size * 0.20, style: .continuous)
+                .fill(Color.primary.opacity(0.055))
+
+            ZStack {
+                Image(imageName)
+                    .resizable()
+                    .scaledToFit()
+                    .saturation(0.10)
+                    .contrast(1.08)
+                    .brightness(-0.10)
+                    .opacity(0.72)
+                    .blendMode(side == .front ? .screen : .normal)
+
+                ZStack {
+                    ForEach(involvement.keys.sorted(), id: \.self) { muscle in
+                        if let weight = involvement[muscle], weight > 0 {
+                            AnatomicalMuscleRegion(muscle: muscle, side: side)
+                                .fill(targetColor(muscle: muscle, weight: weight).opacity(0.94))
+                                .blendMode(.color)
+                        }
+                    }
                 }
-                HStack(spacing: size * 0.07) {
-                    limb(lowerActive, width: 0.11, height: 0.30).rotationEffect(.degrees(4))
-                    limb(lowerActive, width: 0.11, height: 0.30).rotationEffect(.degrees(-4))
+                .mask {
+                    Image(imageName).resizable().scaledToFit()
                 }
             }
-            .frame(width: size * 0.72, height: size * 0.84)
+            .aspectRatio(2.0 / 3.0, contentMode: .fit)
+            .padding(size * 0.055)
+            .drawingGroup()
         }
         .frame(width: size, height: size * 1.18)
-        .accessibilityLabel("Musculatura principal: \(MuscleMap.groups(for: exercise).joined(separator: ", "))")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
     }
 
-    private func limb(_ highlighted: Bool, width: CGFloat, height: CGFloat) -> some View {
-        Capsule().fill(highlighted ? active : inactive).frame(width: size * width, height: size * height)
+    private func targetColor(muscle: String, weight: Double) -> Color {
+        if muscle == dominantMuscle {
+            return Color(red: 0.94, green: 0.18, blue: 0.16)
+        }
+        if weight >= 0.5 {
+            return Color(red: 1.00, green: 0.46, blue: 0.10)
+        }
+        return Color(red: 0.95, green: 0.78, blue: 0.18)
     }
 
-    private var upperActive: Bool {
-        !muscles.intersection(["Pecho", "Espalda", "Hombros", "Bíceps", "Tríceps"]).isEmpty
-    }
-
-    private var torsoActive: Bool {
-        !muscles.intersection(["Pecho", "Espalda", "Core"]).isEmpty
-    }
-
-    private var lowerActive: Bool {
-        !muscles.intersection(["Cuádriceps", "Glúteos", "Isquios", "Gemelos", "Piernas"]).isEmpty
+    private var accessibilityDescription: String {
+        let ordered = involvement.sorted { lhs, rhs in
+            lhs.value == rhs.value ? lhs.key < rhs.key : lhs.value > rhs.value
+        }
+        guard let first = ordered.first else { return "Sin musculatura objetivo identificada" }
+        let secondary = ordered.dropFirst().map(\.key).joined(separator: ", ")
+        return secondary.isEmpty
+            ? "Músculo objetivo principal: \(first.key)"
+            : "Músculo objetivo principal: \(first.key). Secundarios: \(secondary)"
     }
 }

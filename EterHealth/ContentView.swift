@@ -79,6 +79,7 @@ struct ContentView: View {
     @State private var lifestyleFactorPendingEdit: LifestyleEvent?
     @State private var simulatedDecision: SimulatedDecision? = nil
     @State private var workoutPendingDeletion: HealthWorkout?
+    @State private var healthWorkoutIDsBeingDeleted: Set<UUID> = []
     @State private var showBodyComposition = false
     @State private var bodyMeasurementPendingEdit: BodyMeasurement?
     @State private var importedWorkoutPendingDeletion: String?
@@ -189,9 +190,12 @@ struct ContentView: View {
                 if let workout = workoutPendingDeletion {
                     Button("Eliminar de Éter y Apple Salud", role: .destructive) {
                         workoutPendingDeletion = nil
+                        healthWorkoutIDsBeingDeleted.insert(workout.id)
                         Task {
                             if await health.deleteWorkout(id: workout.id) {
                                 if workout.source.localizedCaseInsensitiveContains("eter") { imports.deleteStrengthWorkout(near: workout.date) }
+                            } else {
+                                healthWorkoutIDsBeingDeleted.remove(workout.id)
                             }
                         }
                     }
@@ -199,8 +203,20 @@ struct ContentView: View {
                 Button("Cancelar", role: .cancel) { workoutPendingDeletion = nil }
             case .deleteImportedWorkout:
                 if let id = importedWorkoutPendingDeletion {
-                    Button("Eliminar de Éter", role: .destructive) {
-                        imports.deleteWorkout(id: id); workoutReviews.delete(workoutID: "hevy-\(id)")
+                    let matchingMirror = matchingHealthWorkout(forImportedWorkoutID: id)
+                    Button(matchingMirror == nil ? "Eliminar de Éter" : "Eliminar de Éter y Apple Salud", role: .destructive) {
+                        let mirror = matchingMirror
+                        if let mirror { healthWorkoutIDsBeingDeleted.insert(mirror.id) }
+                        imports.deleteWorkout(id: id)
+                        workoutReviews.delete(workoutID: "hevy-\(id)")
+                        if let mirror {
+                            workoutReviews.delete(workoutID: "health-\(mirror.id.uuidString)")
+                            Task {
+                                if !(await health.deleteWorkout(id: mirror.id)) {
+                                    healthWorkoutIDsBeingDeleted.remove(mirror.id)
+                                }
+                            }
+                        }
                         importedWorkoutPendingDeletion = nil
                     }
                 }
@@ -215,7 +231,7 @@ struct ContentView: View {
             case .deleteWorkout:
                 Text("Se eliminará el entrenamiento y dejará de afectar a carga, recuperación y predicciones. Esta acción no se puede deshacer.")
             case .deleteImportedWorkout:
-                Text("Se eliminará de los cálculos de carga y recuperación. El archivo CSV original no se modifica.")
+                Text("Se eliminará de los cálculos de carga y recuperación. Si Apple Salud contiene una copia de la misma sesión, también se eliminará para que no reaparezca. El archivo CSV original no se modifica.")
             case nil:
                 EmptyView()
             }
@@ -1371,7 +1387,8 @@ struct ContentView: View {
             )
         }
         let healthSessions = health.recentWorkouts.filter {
-            $0.date >= cutoff && !$0.source.localizedCaseInsensitiveContains("hevy") && !imports.isHealthKitMirror($0)
+            $0.date >= cutoff && !healthWorkoutIDsBeingDeleted.contains($0.id) &&
+            !$0.source.localizedCaseInsensitiveContains("hevy") && !imports.isHealthKitMirror($0)
         }.map { workout in
             RecentTrainingSession(
                 id: "health-\(workout.id.uuidString)", title: workout.activity, date: workout.date,
@@ -1383,6 +1400,19 @@ struct ContentView: View {
             )
         }
         return (hevy + healthSessions).sorted { $0.date > $1.date }
+    }
+
+    /// Éter conserva el detalle de series en ImportStore y el entrenamiento
+    /// biométrico en HealthKit. Para el usuario son una sola sesión y deben
+    /// desaparecer con una sola confirmación de borrado.
+    private func matchingHealthWorkout(forImportedWorkoutID id: String) -> HealthWorkout? {
+        guard let imported = imports.workouts.first(where: { $0.id == id }) else { return nil }
+        let importedDuration = imported.end.timeIntervalSince(imported.start)
+        return health.recentWorkouts.first { workout in
+            guard workout.activity == "Fuerza" || workout.activity == "Fuerza funcional" else { return false }
+            return abs(workout.date.timeIntervalSince(imported.start)) <= 3 * 60 &&
+                   abs(workout.durationMinutes * 60 - importedDuration) <= 8 * 60
+        }
     }
 
     private func sourceCount(_ title: String, value: Int) -> some View {
