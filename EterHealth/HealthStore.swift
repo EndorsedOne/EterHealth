@@ -340,9 +340,17 @@ final class HealthStore: ObservableObject {
             }
         }
         workoutHistory = archive
-        heartRateZones = await loadHeartRateZones(workouts: recentWorkouts, days: 10, profile: athleteProfile)
-        runningHeartRateZones = await loadHeartRateZones(workouts: recentWorkouts.filter { $0.activity == "Carrera" }, days: 10, profile: athleteProfile)
-        heartRateRecoveryHistory = await loadHeartRateRecovery(workouts: recentWorkouts)
+        // Use the archive resolved by THIS task, not `recentWorkouts` from the
+        // lightweight refresh running in parallel. Intraworkout enrichment can
+        // make that refresh finish later; reading its published property here
+        // created a race where zones were calculated from an empty array and
+        // remained empty for the process lifetime, hiding the card and also
+        // depriving the planner of intensity evidence.
+        let recentArchiveCutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
+        let recentArchive = archive.filter { $0.date >= recentArchiveCutoff }
+        heartRateZones = await loadHeartRateZones(workouts: recentArchive, days: 10, profile: athleteProfile)
+        runningHeartRateZones = await loadHeartRateZones(workouts: recentArchive.filter { $0.activity == "Carrera" }, days: 10, profile: athleteProfile)
+        heartRateRecoveryHistory = await loadHeartRateRecovery(workouts: recentArchive)
 
         // El gemelo puede recalcularse ya contra líneas base reales. Este es el
         // único punto donde loadExtendedHistory vuelve a tocar lastUpdated:
