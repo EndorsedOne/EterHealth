@@ -1302,6 +1302,63 @@ final class HealthStore: ObservableObject {
         )
     }
 
+    /// Detailed workout signals are intentionally absent from refresh() and
+    /// loadExtendedHistory(). A chart is the only consumer and it requests one
+    /// workout here when its detail screen appears. HealthKit remains the
+    /// source of truth; Eter neither persists nor duplicates these samples.
+    func workoutTimeline(for workout: HealthWorkout) async -> WorkoutTimeline {
+        guard let raw = await rawWorkout(id: workout.id) else { return .empty }
+        async let heart = workoutSeries(type: .heartRate, workout: raw,
+                                        unit: HKUnit.count().unitDivided(by: .minute()))
+        async let speed = workoutSeries(type: .runningSpeed, workout: raw,
+                                        unit: HKUnit.meter().unitDivided(by: .second()))
+        async let power = workoutSeries(type: .runningPower, workout: raw, unit: .watt())
+        let (heartPoints, speedPoints, powerPoints) = await (heart, speed, power)
+        let structure = RunningSessionStructureEngine.detect(
+            speed: speedPoints.map { RunningSignalPoint(date: $0.date, value: $0.value) },
+            power: powerPoints.map { RunningSignalPoint(date: $0.date, value: $0.value) },
+            heartRate: heartPoints.map { RunningSignalPoint(date: $0.date, value: $0.value) },
+            markedIntervals: (raw.workoutEvents ?? []).filter { $0.type == .lap || $0.type == .segment }.count
+        )
+        return WorkoutTimeline(heartRate: heartPoints, speedMetersPerSecond: speedPoints,
+                               powerWatts: powerPoints, structure: structure)
+    }
+
+    private func rawWorkout(id: UUID) async -> HKWorkout? {
+        let predicate = HKQuery.predicateForObject(with: id)
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(sampleType: .workoutType(), predicate: predicate, limit: 1,
+                                      sortDescriptors: nil) { _, samples, _ in
+                continuation.resume(returning: (samples as? [HKWorkout])?.first)
+            }
+            store.execute(query)
+        }
+    }
+
+    /// HKQuantitySeriesSampleQueryDescriptor expands both ordinary samples and
+    /// Apple's condensed workout series. A plain HKSampleQuery only returns the
+    /// outer container for condensed data and can flatten an interval trace to
+    /// a handful of averages — exactly what a temporal chart must avoid.
+    private func workoutSeries(type identifier: HKQuantityTypeIdentifier, workout: HKWorkout,
+                               unit: HKUnit) async -> [WorkoutTimelinePoint] {
+        guard let type = HKQuantityType.quantityType(forIdentifier: identifier) else { return [] }
+        let associated = HKQuery.predicateForObjects(from: workout)
+        let predicate = HKSamplePredicate.quantitySample(type: type, predicate: associated)
+        let descriptor = HKQuantitySeriesSampleQueryDescriptor(
+            predicate: predicate, options: [.orderByQuantitySampleStartDate]
+        )
+        var points: [WorkoutTimelinePoint] = []
+        do {
+            for try await result in descriptor.results(for: store) {
+                points.append(WorkoutTimelinePoint(date: result.dateInterval.start,
+                                                   value: result.quantity.doubleValue(for: unit)))
+            }
+        } catch {
+            return []
+        }
+        return points.sorted { $0.date < $1.date }
+    }
+
     private nonisolated static func combineZoneDistributions(_ distributions: [[HeartRateZone]]) -> [HeartRateZone] {
         guard !distributions.isEmpty else { return [] }
         var minutes = Array(repeating: 0.0, count: 5)
@@ -1625,6 +1682,21 @@ struct HealthWorkout: Identifiable {
     /// Repeated work/recovery structure detected from this workout's own
     /// speed/power stream. nil means insufficient evidence, never "easy".
     var runningStructure: RunningSessionStructure? = nil
+}
+
+struct WorkoutTimelinePoint: Identifiable, Equatable {
+    let date: Date
+    let value: Double
+    var id: Date { date }
+}
+
+struct WorkoutTimeline: Equatable {
+    let heartRate: [WorkoutTimelinePoint]
+    let speedMetersPerSecond: [WorkoutTimelinePoint]
+    let powerWatts: [WorkoutTimelinePoint]
+    let structure: RunningSessionStructure?
+
+    static let empty = WorkoutTimeline(heartRate: [], speedMetersPerSecond: [], powerWatts: [], structure: nil)
 }
 
 enum WorkoutEffortSource: String, Codable {

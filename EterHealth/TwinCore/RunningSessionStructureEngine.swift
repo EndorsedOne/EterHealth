@@ -20,6 +20,7 @@ struct RunningSessionStructure: Equatable {
     let recoverySeconds: Double?
     let confidence: TrustLevel
     let evidence: String
+    let intervals: [DateInterval]
 
     var isQuality: Bool { repetitions >= 3 }
 }
@@ -90,7 +91,8 @@ enum RunningSessionStructureEngine {
         let evidence = "\(comparable.count) bloques por \(source)" + (corroborated ? " corroborados" : "")
         return RunningSessionStructure(kind: kind, repetitions: comparable.count,
                                        workSeconds: totalWork, recoverySeconds: medianRecovery,
-                                       confidence: confidence, evidence: evidence)
+                                       confidence: confidence, evidence: evidence,
+                                       intervals: comparable.map { DateInterval(start: $0.start, end: $0.end) })
     }
 
     /// HR is a lagging signal, so it must never claim "sprints" or estimate
@@ -124,7 +126,8 @@ enum RunningSessionStructureEngine {
             workSeconds: comparable.reduce(0) { $0 + $1.duration },
             recoverySeconds: percentile(recoveries, 0.5),
             confidence: .medium,
-            evidence: "\(comparable.count) esfuerzos y recuperaciones por pulso"
+            evidence: "\(comparable.count) esfuerzos y recuperaciones por pulso",
+            intervals: comparable.map { DateInterval(start: $0.start, end: $0.end) }
         )
     }
 

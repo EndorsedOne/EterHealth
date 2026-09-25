@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 // Tapping a row in "Últimos entrenamientos" used to do nothing — the row
 // itself had no detail to show, only a "Valorar" (RPE review) shortcut and
@@ -88,6 +89,9 @@ struct WorkoutDetailView: View {
         if hasRunningDynamics(workout) { runningDynamicsCard(workout) }
         if hasCyclingDynamics(workout) { cyclingDynamicsCard(workout) }
         if supportsErgometerEnrichment(workout) { ergometerMachineCard(workout) }
+        if workout.activity == "Carrera" {
+            WorkoutTimelineCard(workout: workout).environmentObject(health)
+        }
         HeartRateZonesCard(workout: workout).environmentObject(health)
     }
 
@@ -255,6 +259,143 @@ struct WorkoutDetailView: View {
             Text(value).font(.title3.bold()).monospacedDigit().minimumScaleFactor(0.7).lineLimit(1)
             Text(title).font(.caption2).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading).eterInsetStyle()
+    }
+}
+
+private struct WorkoutTimelineCard: View {
+    @EnvironmentObject private var health: HealthStore
+    @EnvironmentObject private var goals: GoalStore
+    let workout: HealthWorkout
+    @State private var timeline: WorkoutTimeline?
+    @State private var metric: Metric = .heartRate
+
+    private enum Metric: String, CaseIterable, Identifiable {
+        case heartRate = "Pulso"
+        case speed = "Velocidad"
+        case power = "Potencia"
+        var id: String { rawValue }
+    }
+
+    private var availableMetrics: [Metric] {
+        guard let timeline else { return [.heartRate] }
+        var result: [Metric] = timeline.heartRate.isEmpty ? [] : [.heartRate]
+        if !timeline.speedMetersPerSecond.isEmpty { result.append(.speed) }
+        if !timeline.powerWatts.isEmpty { result.append(.power) }
+        return result
+    }
+
+    private var selectedPoints: [WorkoutTimelinePoint] {
+        guard let timeline else { return [] }
+        switch metric {
+        case .heartRate: return timeline.heartRate
+        case .speed:
+            return timeline.speedMetersPerSecond.map { .init(date: $0.date, value: $0.value * 3.6) }
+        case .power: return timeline.powerWatts
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Estructura de la carrera").font(.subheadline.bold())
+                    Text("Se carga solo al abrir este entrenamiento")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let structure = timeline?.structure {
+                    Text(structure.confidence == .high ? "ALTA CONFIANZA" : "CONFIANZA MEDIA")
+                        .font(.caption2.bold()).foregroundStyle(EterTheme.positive)
+                }
+            }
+            switch timeline {
+            case nil:
+                ProgressView().frame(maxWidth: .infinity).padding(.vertical, 35)
+            case .some(let value) where value.heartRate.isEmpty && value.speedMetersPerSecond.isEmpty && value.powerWatts.isEmpty:
+                Text("Apple Salud no expone muestras temporales para esta sesión.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 18)
+            case .some:
+                if availableMetrics.count > 1 {
+                    Picker("Señal", selection: $metric) {
+                        ForEach(availableMetrics) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
+                }
+                timelineChart
+                if let structure = timeline?.structure {
+                    Label(structureText(structure), systemImage: "waveform.path.ecg.rectangle")
+                        .font(.caption.bold())
+                    Text("\(structure.evidence). La clasificación usa la estructura medida, no el promedio diluido por las recuperaciones.")
+                        .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                } else {
+                    Text("No se detectó un patrón repetido con evidencia suficiente. La curva se muestra como contexto, sin inventar intervalos.")
+                        .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
+                }
+            }
+        }
+        .cardStyle()
+        .task(id: workout.id) {
+            guard timeline == nil else { return }
+            timeline = await health.workoutTimeline(for: workout)
+            if !availableMetrics.contains(metric), let first = availableMetrics.first { metric = first }
+        }
+    }
+
+    private var timelineChart: some View {
+        Chart {
+            if let intervals = timeline?.structure?.intervals {
+                ForEach(Array(intervals.enumerated()), id: \.offset) { _, interval in
+                    RectangleMark(xStart: .value("Inicio", interval.start),
+                                  xEnd: .value("Fin", interval.end))
+                        .foregroundStyle(.orange.opacity(0.10))
+                }
+            }
+            ForEach(selectedPoints) { point in
+                LineMark(x: .value("Hora", point.date), y: .value(axisLabel, point.value))
+                    .interpolationMethod(.catmullRom)
+                    .lineStyle(StrokeStyle(lineWidth: 2.3, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .foregroundStyle(chartStyle)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+                AxisValueLabel(format: .dateTime.hour().minute())
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading) { value in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
+                AxisValueLabel { if let number = value.as(Double.self) { Text("\(Int(number.rounded()))") } }
+            }
+        }
+        .frame(height: 220)
+        .accessibilityLabel("Curva temporal de \(metric.rawValue.lowercased())")
+    }
+
+    private var axisLabel: String {
+        switch metric { case .heartRate: return "ppm"; case .speed: return "km/h"; case .power: return "W" }
+    }
+
+    private var chartStyle: AnyShapeStyle {
+        switch metric {
+        case .heartRate:
+            return AnyShapeStyle(LinearGradient(colors: [.cyan, .blue, .green, .orange, .red],
+                                                startPoint: .bottom, endPoint: .top))
+        case .speed: return AnyShapeStyle(.blue)
+        case .power: return AnyShapeStyle(.purple)
+        }
+    }
+
+    private func structureText(_ structure: RunningSessionStructure) -> String {
+        let title: String
+        switch structure.kind {
+        case .strides: title = "Progresivos detectados"
+        case .sprintIntervals: title = "Sprints detectados"
+        case .repeatedIntervals: title = "Intervalos detectados"
+        case .vo2Intervals: title = "Intervalos VO₂ detectados"
+        case .thresholdIntervals: title = "Bloques de umbral detectados"
+        }
+        return "\(title) · \(structure.repetitions) repeticiones"
     }
 }
 
