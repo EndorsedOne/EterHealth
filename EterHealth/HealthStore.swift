@@ -138,6 +138,7 @@ final class HealthStore: ObservableObject {
             HKQuantityType.quantityType(forIdentifier: .workoutEffortScore),
             HKQuantityType.quantityType(forIdentifier: .heartRateRecoveryOneMinute),
             HKQuantityType.quantityType(forIdentifier: .runningPower),
+            HKQuantityType.quantityType(forIdentifier: .runningSpeed),
             HKQuantityType.quantityType(forIdentifier: .runningGroundContactTime),
             HKQuantityType.quantityType(forIdentifier: .runningVerticalOscillation),
             HKQuantityType.quantityType(forIdentifier: .runningStrideLength),
@@ -980,7 +981,7 @@ final class HealthStore: ObservableObject {
         }
         let effortByWorkout = await loadWorkoutEffortScores(predicate: predicate)
         let heartUnit = HKUnit.count().unitDivided(by: .minute())
-        return rawWorkouts.map { workout in
+        var mapped = rawWorkouts.map { workout in
                     let energyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!
                     let heartType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
                     let elevation = (workout.metadata?[HKMetadataKeyElevationAscended] as? HKQuantity)?.doubleValue(for: .meter())
@@ -1037,6 +1038,44 @@ final class HealthStore: ObservableObject {
                         nativeHeartRateZones: nativeZones
                     )
         }
+        // Structure is only relevant to the rolling planning window. Querying
+        // 365 days of high-frequency samples on every historical refresh would
+        // hurt launch for no planning benefit, so enrich at most the last 35
+        // days (four comparison weeks plus the active microcycle).
+        let structureCutoff = Calendar.current.date(byAdding: .day, value: -35, to: Date()) ?? Date.distantPast
+        let runningWorkouts = rawWorkouts.filter { Self.activityName($0.workoutActivityType) == "Carrera" && $0.startDate >= structureCutoff }
+        if !runningWorkouts.isEmpty,
+           let speedType = HKQuantityType.quantityType(forIdentifier: .runningSpeed),
+           let powerType = HKQuantityType.quantityType(forIdentifier: .runningPower),
+           let heartType = HKQuantityType.quantityType(forIdentifier: .heartRate) {
+            let windows = runningWorkouts.map { DateInterval(start: $0.startDate, end: $0.endDate) }
+            async let speedSamples = quantitySamples(type: speedType, windows: windows)
+            async let powerSamples = quantitySamples(type: powerType, windows: windows)
+            async let heartSamples = quantitySamples(type: heartType, windows: windows)
+            let (speeds, powers, hearts) = await (speedSamples, powerSamples, heartSamples)
+            let speedUnit = HKUnit.meter().unitDivided(by: .second())
+            let heartUnit = HKUnit.count().unitDivided(by: .minute())
+            let rawByID = Dictionary(uniqueKeysWithValues: runningWorkouts.map { ($0.uuid, $0) })
+            for index in mapped.indices where mapped[index].activity == "Carrera" && mapped[index].date >= structureCutoff {
+                guard let raw = rawByID[mapped[index].id] else { continue }
+                let interval = DateInterval(start: raw.startDate, end: raw.endDate)
+                func points(_ samples: [HKQuantitySample], unit: HKUnit) -> [RunningSignalPoint] {
+                    samples.filter { interval.contains($0.startDate) }.map {
+                        RunningSignalPoint(date: $0.startDate, value: $0.quantity.doubleValue(for: unit))
+                    }
+                }
+                let markerCount = (raw.workoutEvents ?? []).filter { event in
+                    event.type == .lap || event.type == .segment
+                }.count
+                mapped[index].runningStructure = RunningSessionStructureEngine.detect(
+                    speed: points(speeds, unit: speedUnit),
+                    power: points(powers, unit: .watt()),
+                    heartRate: points(hearts, unit: heartUnit),
+                    markedIntervals: markerCount
+                )
+            }
+        }
+        return mapped
     }
 
     /// Reads Apple's workout-effort relationship, preferring a user's own
@@ -1575,6 +1614,9 @@ struct HealthWorkout: Identifiable {
     /// Real time in Apple's workout zones on iOS 27. nil means the recording
     /// source did not provide it and Éter must use its existing classifier.
     var nativeHeartRateZones: [HeartRateZone]? = nil
+    /// Repeated work/recovery structure detected from this workout's own
+    /// speed/power stream. nil means insufficient evidence, never "easy".
+    var runningStructure: RunningSessionStructure? = nil
 }
 
 enum WorkoutEffortSource: String, Codable {

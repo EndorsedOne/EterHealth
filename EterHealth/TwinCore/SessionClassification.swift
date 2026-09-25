@@ -13,6 +13,7 @@ import Foundation
 // fiable en vez de pasar por medición.
 enum RunQualityBasis: String, Equatable {
     case review          // lo dijo el atleta
+    case detectedStructure // bloques trabajo/recuperación medidos
     case pace            // ritmo contra su propio forecast
     case heartRate       // pulso medio de ESA sesión
     case legacyCalories  // el proxy de siempre, sin nada mejor
@@ -25,6 +26,7 @@ enum RunQualityBasis: String, Equatable {
     var trust: TrustLevel {
         switch self {
         case .review, .pace: return .high
+        case .detectedStructure: return .high
         case .heartRate: return .medium
         case .legacyCalories, .insufficient: return .low
         }
@@ -34,7 +36,15 @@ enum RunQualityBasis: String, Equatable {
 struct RunQualityVerdict: Equatable {
     let isQuality: Bool
     let basis: RunQualityBasis
-    var trust: TrustLevel { basis.trust }
+    private let measuredTrust: TrustLevel?
+
+    init(isQuality: Bool, basis: RunQualityBasis, trust: TrustLevel? = nil) {
+        self.isQuality = isQuality
+        self.basis = basis
+        measuredTrust = trust
+    }
+
+    var trust: TrustLevel { measuredTrust ?? basis.trust }
 }
 
 enum SessionClassification {
@@ -78,19 +88,26 @@ enum SessionClassification {
             // escalera buscando una razón para llamarlo calidad.
             if review.purpose == .easy || review.effort <= 4 { return RunQualityVerdict(isQuality: false, basis: .review) }
         }
-        // 2. Ritmo contra el forecast propio. Vale igual para intervalos de
+        // 2. Repeated work/recovery structure beats session averages. A sprint
+        //    session can have slow average pace and HR because its recoveries
+        //    are part of the same HealthKit workout.
+        if let structure = workout.runningStructure, structure.isQuality,
+           structure.confidence != .low {
+            return RunQualityVerdict(isQuality: true, basis: .detectedStructure, trust: structure.confidence)
+        }
+        // 3. Ritmo contra el forecast propio. Vale igual para intervalos de
         //    20 min que para 40: el criterio es el ritmo, no la duración.
         if let thresholdPace, let pace = paceSecondsPerKm(workout) {
             return RunQualityVerdict(isQuality: pace <= thresholdPace, basis: .pace)
         }
-        // 3. Pulso medio de esta sesión contra el suelo de Z4 del atleta.
+        // 4. Pulso medio de esta sesión contra el suelo de Z4 del atleta.
         //    Media de sesión, no fracción en zona: es lo que hay por workout,
         //    y por eso su confianza es media. Nunca zonas agregadas de la
         //    semana, que no dicen nada de ESTA sesión.
         if let thresholdHeartRate, let averageHeartRate = workout.averageHeartRate, averageHeartRate > 0 {
             return RunQualityVerdict(isQuality: averageHeartRate >= thresholdHeartRate, basis: .heartRate)
         }
-        // 4. El proxy de siempre, sólo si no hubo nada mejor, y marcado.
+        // 5. El proxy de siempre, sólo si no hubo nada mejor, y marcado.
         if let calories = workout.calories, workout.durationMinutes > 0 {
             let legacy = workout.durationMinutes <= 50 && calories / workout.durationMinutes >= 10
             return RunQualityVerdict(isQuality: legacy, basis: .legacyCalories)

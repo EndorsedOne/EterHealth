@@ -5405,6 +5405,45 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(verdict.basis, .pace)
     }
 
+    func testRepeatedSprintStructureOutranksSlowAveragePace() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var speed: [RunningSignalPoint] = []
+        var heart: [RunningSignalPoint] = []
+        for repetition in 0..<6 {
+            let block = start.addingTimeInterval(Double(repetition * 120))
+            for second in stride(from: 0, to: 30, by: 5) {
+                speed.append(.init(date: block.addingTimeInterval(Double(second)), value: 6.2))
+                heart.append(.init(date: block.addingTimeInterval(Double(second)), value: 145 + Double(repetition * 3)))
+            }
+            for second in stride(from: 30, to: 120, by: 5) {
+                speed.append(.init(date: block.addingTimeInterval(Double(second)), value: 1.8))
+                heart.append(.init(date: block.addingTimeInterval(Double(second)), value: 135))
+            }
+        }
+        let structure = RunningSessionStructureEngine.detect(speed: speed, heartRate: heart)
+        XCTAssertEqual(structure?.kind, .sprintIntervals)
+        XCTAssertEqual(structure?.repetitions, 6)
+        XCTAssertEqual(structure?.confidence, .high)
+
+        var workout = healthRun(kilometers: 5, minutes: 45, calories: 300) // slow average including recovery
+        workout.runningStructure = structure
+        let verdict = SessionClassification.runQuality(workout, review: nil, thresholdPace: 285, thresholdHeartRate: 155)
+        XCTAssertTrue(verdict.isQuality)
+        XCTAssertEqual(verdict.basis, .detectedStructure)
+        XCTAssertEqual(verdict.trust, .high)
+    }
+
+    func testSteadyRunAndGPSSpikesDoNotBecomeIntervals() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var points = (0..<120).map {
+            RunningSignalPoint(date: start.addingTimeInterval(Double($0 * 5)), value: 3.0 + Double($0 % 3) * 0.02)
+        }
+        // Isolated impossible-looking readings are shorter than the minimum
+        // work bout and must not manufacture a quality session.
+        for index in [20, 60, 100] { points[index] = .init(date: points[index].date, value: 8.5) }
+        XCTAssertNil(RunningSessionStructureEngine.detect(speed: points))
+    }
+
     // Lo que dijo el atleta manda sobre cualquier proxy, en los dos sentidos.
     func testDeclaredEffortOutranksEveryProxy() {
         let tenK = RaceForecast(distanceName: "10 km", seconds: 2_700, confidence: .high, basis: "test")
