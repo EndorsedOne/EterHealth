@@ -5444,6 +5444,44 @@ final class EngineTests: XCTestCase {
         XCTAssertNil(RunningSessionStructureEngine.detect(speed: points))
     }
 
+    func testRepeatedHeartRatePatternCountsQualityWithoutSpeedButStaysMediumConfidence() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var heart: [RunningSignalPoint] = []
+        for repetition in 0..<6 {
+            let block = start.addingTimeInterval(Double(repetition * 180))
+            // Rise through the work bout, then a real recovery. This resembles
+            // the saw-tooth trace Apple shows for intervals without pretending
+            // HR can tell whether each effort was a sprint or a hill repeat.
+            for second in stride(from: 0, to: 75, by: 5) {
+                heart.append(.init(date: block.addingTimeInterval(Double(second)),
+                                   value: 138 + Double(second) * 0.34))
+            }
+            for second in stride(from: 75, to: 180, by: 5) {
+                heart.append(.init(date: block.addingTimeInterval(Double(second)), value: 132))
+            }
+        }
+        let structure = RunningSessionStructureEngine.detect(speed: [], heartRate: heart)
+        XCTAssertEqual(structure?.kind, .repeatedIntervals)
+        XCTAssertEqual(structure?.repetitions, 6)
+        XCTAssertEqual(structure?.confidence, .medium)
+
+        var workout = healthRun(kilometers: 5, minutes: 50, calories: 300)
+        workout.runningStructure = structure
+        let verdict = SessionClassification.runQuality(workout, review: nil, thresholdPace: 285, thresholdHeartRate: 155)
+        XCTAssertTrue(verdict.isQuality)
+        XCTAssertEqual(verdict.basis, .detectedStructure)
+        XCTAssertEqual(verdict.trust, .medium)
+    }
+
+    func testOrdinaryHeartRateDriftDoesNotBecomeIntervals() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let heart = (0..<180).map { index in
+            RunningSignalPoint(date: start.addingTimeInterval(Double(index * 5)),
+                               value: 125 + Double(index) * 0.08)
+        }
+        XCTAssertNil(RunningSessionStructureEngine.detect(speed: [], heartRate: heart))
+    }
+
     // Lo que dijo el atleta manda sobre cualquier proxy, en los dos sentidos.
     func testDeclaredEffortOutranksEveryProxy() {
         let tenK = RaceForecast(distanceName: "10 km", seconds: 2_700, confidence: .high, basis: "test")

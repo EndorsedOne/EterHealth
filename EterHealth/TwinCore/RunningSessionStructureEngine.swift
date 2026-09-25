@@ -8,6 +8,7 @@ struct RunningSignalPoint: Equatable {
 enum RunningSessionStructureKind: String, Equatable {
     case strides
     case sprintIntervals
+    case repeatedIntervals
     case vo2Intervals
     case thresholdIntervals
 }
@@ -48,7 +49,7 @@ enum RunningSessionStructureEngine {
             primary = usablePower
             source = "potencia"
         } else {
-            return nil
+            return detectFromHeartRate(heartRate)
         }
 
         let values = primary.map(\.value).sorted()
@@ -90,6 +91,41 @@ enum RunningSessionStructureEngine {
         return RunningSessionStructure(kind: kind, repetitions: comparable.count,
                                        workSeconds: totalWork, recoverySeconds: medianRecovery,
                                        confidence: confidence, evidence: evidence)
+    }
+
+    /// HR is a lagging signal, so it must never claim "sprints" or estimate
+    /// work duration. It can still establish that a session contained repeated
+    /// high-intensity bouts when several clear rises are separated by genuine
+    /// recoveries. That is enough to count quality with medium confidence and
+    /// fixes the common case where Apple keeps the HR trace but does not expose
+    /// running-speed samples to a third-party reader.
+    private static func detectFromHeartRate(_ heartRate: [RunningSignalPoint]) -> RunningSessionStructure? {
+        let points = heartRate.filter { (35...230).contains($0.value) }.sorted { $0.date < $1.date }
+        guard points.count >= 20 else { return nil }
+        let values = points.map(\.value).sorted()
+        guard let low = percentile(values, 0.30), let high = percentile(values, 0.88),
+              high - low >= 14 else { return nil }
+        let bouts = workBouts(points: points,
+                              enter: low + (high - low) * 0.60,
+                              leave: low + (high - low) * 0.35)
+            .filter { $0.duration >= 20 && $0.duration <= 6 * 60 }
+        guard bouts.count >= 3 else { return nil }
+        let durations = bouts.map(\.duration).sorted()
+        guard let median = percentile(durations, 0.5) else { return nil }
+        let comparable = bouts.filter { $0.duration >= median * 0.30 && $0.duration <= median * 3.2 }
+        guard comparable.count >= 3 else { return nil }
+        let recoveries = zip(comparable, comparable.dropFirst()).map { current, next in
+            next.start.timeIntervalSince(current.end)
+        }.filter { $0 >= 10 && $0 <= 12 * 60 }.sorted()
+        guard recoveries.count >= 2 else { return nil }
+        return RunningSessionStructure(
+            kind: .repeatedIntervals,
+            repetitions: comparable.count,
+            workSeconds: comparable.reduce(0) { $0 + $1.duration },
+            recoverySeconds: percentile(recoveries, 0.5),
+            confidence: .medium,
+            evidence: "\(comparable.count) esfuerzos y recuperaciones por pulso"
+        )
     }
 
     private static func workBouts(points: [RunningSignalPoint], enter: Double, leave: Double) -> [Bout] {
