@@ -1061,8 +1061,12 @@ final class HealthStore: ObservableObject {
         let structureCutoff = Calendar.current.date(byAdding: .day, value: -35, to: Date()) ?? Date.distantPast
         let runningWorkouts = rawWorkouts.filter { Self.activityName($0.workoutActivityType) == "Carrera" && $0.startDate >= structureCutoff }
         let sortedRuns = runningWorkouts.sorted { $0.startDate > $1.startDate }
-        let last72Hours = Date().addingTimeInterval(-72 * 3_600)
-        let expandedIDs = Set(sortedRuns.prefix(5).map(\.uuid) + sortedRuns.filter { $0.endDate >= last72Hours }.map(\.uuid))
+        // La cobertura de calidad se razona por semana: una sesión del lunes debe
+        // conservar su estructura fina durante todo el microciclo, incluso si hay
+        // varios rodajes posteriores. El límite de 7 días y la caché por workout
+        // mantienen acotado el coste de expandir las series condensadas de HealthKit.
+        let lastSevenDays = Date().addingTimeInterval(-7 * 24 * 3_600)
+        let expandedIDs = Set(sortedRuns.prefix(5).map(\.uuid) + sortedRuns.filter { $0.endDate >= lastSevenDays }.map(\.uuid))
         let rawByID = Dictionary(uniqueKeysWithValues: runningWorkouts.map { ($0.uuid, $0) })
 
         // The plan must see the same expanded HealthKit series as the detail
