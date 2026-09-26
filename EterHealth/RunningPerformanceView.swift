@@ -57,7 +57,6 @@ struct RunningPerformanceView: View {
             }
             if !running.sessions.isEmpty {
                 if running.hasZoneData { runningIntensityCard(running, coverage: coverage, block: plan.block) }
-                recentRunsCard(running)
             }
         }
     }
@@ -495,32 +494,6 @@ struct RunningPerformanceView: View {
             return "Si la recuperación lo permite y el calendario pide calidad, reserva una única sesión controlada en Z3–Z5; el resto debe seguir siendo fácil."
         }
         return "Mantén una sesión de calidad bien separada y concentra el resto del volumen en Z1–Z2. No hace falta corregir el reparto ahora."
-    }
-
-    private func recentRunsCard(_ running: RunningPerformanceSummary) -> some View {
-        VStack(alignment: .leading, spacing: 11) {
-            Text("Últimas carreras").font(.headline)
-            ForEach(running.sessions.suffix(5).reversed()) { run in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(run.date.formatted(date: .abbreviated, time: .omitted)).font(.subheadline.bold())
-                        Text("\(run.kilometers, specifier: "%.2f") km · \(paceText(run.pace))/km").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        if let heart = run.averageHeartRate { Text("\(Int(heart.rounded())) ppm").font(.caption.bold()) }
-                        if let elevation = run.elevationMeters { Text("+\(Int(elevation.rounded())) m").font(.caption2).foregroundStyle(.secondary) }
-                    }
-                }
-                if run.id != running.sessions.last?.id { Divider() }
-            }
-        }.cardStyle()
-    }
-
-    private func paceText(_ minutes: Double) -> String {
-        guard minutes.isFinite, minutes > 0 else { return "—" }
-        let seconds = Int((minutes * 60).rounded())
-        return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
     }
 
     private func raceTime(_ seconds: Double) -> String {

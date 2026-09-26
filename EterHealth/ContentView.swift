@@ -18,7 +18,6 @@ private enum ContentImporter: Equatable {
 
 private enum ContentSheet: Identifiable {
     case checkIn
-    case workoutReview(RecentTrainingSession)
     case workoutDetail(RecentTrainingSession)
     case goalEditor
     case injuryHistory
@@ -27,7 +26,6 @@ private enum ContentSheet: Identifiable {
     var id: String {
         switch self {
         case .checkIn: return "checkIn"
-        case .workoutReview(let session): return "workoutReview-\(session.id)"
         case .workoutDetail(let session): return "workoutDetail-\(session.id)"
         case .goalEditor: return "goalEditor"
         case .injuryHistory: return "injuryHistory"
@@ -240,14 +238,11 @@ struct ContentView: View {
             switch sheet {
             case .checkIn:
                 DailyCheckInView(existing: checkIns.entry()).environmentObject(checkIns)
-            case .workoutReview(let session):
-                WorkoutReviewView(workoutID: session.id, title: session.title, date: session.date,
-                                  existing: workoutReviews.review(for: session.id))
-                    .environmentObject(workoutReviews)
-                    .environmentObject(planHistory)
             case .workoutDetail(let session):
                 WorkoutDetailView(session: session).environmentObject(health).environmentObject(imports)
                     .environmentObject(workoutEnrichments)
+                    .environmentObject(workoutReviews)
+                    .environmentObject(planHistory)
             case .goalEditor:
                 GoalEditorView(profile: goals.profile).environmentObject(goals)
             case .injuryHistory:
@@ -1300,14 +1295,10 @@ struct ContentView: View {
                             Spacer()
                             VStack(alignment: .trailing, spacing: 4) {
                                 Text("\(Int(session.duration.rounded())) min").font(.caption.bold()).monospacedDigit()
-                                Button { activeSheet = .workoutReview(session) } label: {
-                                    if let review = workoutReviews.review(for: session.id) {
-                                        Label("RPE \(review.effort)", systemImage: review.pain ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                                            .font(.caption2.bold()).foregroundStyle(review.pain ? EterTheme.negative : EterTheme.positive)
-                                    } else {
-                                        Label("Valorar", systemImage: "square.and.pencil").font(.caption2).foregroundStyle(.blue)
-                                    }
-                                }.buttonStyle(.plain).eterTouchTarget().accessibilityLabel("Valorar \(session.title)")
+                                Button { activeSheet = .workoutDetail(session) } label: {
+                                    Label("Ver análisis", systemImage: "chart.xyaxis.line")
+                                        .font(.caption2.bold()).foregroundStyle(.blue)
+                                }.buttonStyle(.plain).eterTouchTarget().accessibilityLabel("Ver análisis de \(session.title)")
                                 if let healthID = session.healthWorkoutID,
                                    let workout = health.recentWorkouts.first(where: { $0.id == healthID }) {
                                     Button(role: .destructive) { workoutPendingDeletion = workout } label: { Image(systemName: "trash").font(.caption2) }
@@ -1361,7 +1352,7 @@ struct ContentView: View {
                         }
                     }
                     // A tap anywhere on the row opens the detail — the
-                    // "Valorar"/borrar buttons above stay their own Buttons,
+                    // "Ver análisis"/borrar buttons above stay their own Buttons,
                     // which SwiftUI resolves independently of this gesture
                     // at the exact tap location, so neither interferes with
                     // the other.

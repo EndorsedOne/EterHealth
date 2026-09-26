@@ -13,8 +13,11 @@ struct WorkoutDetailView: View {
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var workoutEnrichments: WorkoutEnrichmentStore
+    @EnvironmentObject private var workoutReviews: WorkoutReviewStore
+    @EnvironmentObject private var planHistory: PlanHistoryStore
     @Environment(\.dismiss) private var dismiss
     @State private var editingMachineData = false
+    @State private var reviewingSession = false
     let session: RecentTrainingSession
 
     private var healthWorkout: HealthWorkout? {
@@ -41,7 +44,18 @@ struct WorkoutDetailView: View {
             .background(EterTheme.canvas)
             .navigationTitle(session.title)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cerrar") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cerrar") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { reviewingSession = true } label: {
+                        if let review = workoutReviews.review(for: session.id) {
+                            Label("RPE \(review.effort)", systemImage: review.pain ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        } else {
+                            Label("Valorar", systemImage: "square.and.pencil")
+                        }
+                    }
+                }
+            }
             .sheet(isPresented: $editingMachineData) {
                 if let workout = healthWorkout {
                     ErgometerEnrichmentEditor(
@@ -49,6 +63,14 @@ struct WorkoutDetailView: View {
                         existing: workoutEnrichments.enrichment(for: workout.id)
                     ).environmentObject(workoutEnrichments)
                 }
+            }
+            .sheet(isPresented: $reviewingSession) {
+                WorkoutReviewView(
+                    workoutID: session.id, title: session.title, date: session.date,
+                    existing: workoutReviews.review(for: session.id)
+                )
+                .environmentObject(workoutReviews)
+                .environmentObject(planHistory)
             }
         }
     }
