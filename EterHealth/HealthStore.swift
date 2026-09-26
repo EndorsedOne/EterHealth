@@ -77,6 +77,14 @@ final class HealthStore: ObservableObject {
     private let store = HKHealthStore()
     private var observerQueries: [HKObserverQuery] = []
     private var scheduledRefresh: Task<Void, Never>?
+    private struct RunningStructureCacheEntry {
+        let endDate: Date
+        let structure: RunningSessionStructure?
+    }
+    /// HK workouts are immutable. Cache both successful detections and honest
+    /// nil results so observer-driven refreshes never re-expand the same series.
+    private var runningStructureCache: [UUID: RunningStructureCacheEntry] = [:]
+    private var runningStructureTasks: [UUID: Task<RunningSessionStructure?, Never>] = [:]
     /// Perfil proporcionado por la raíz de la app. HealthStore no conoce ni
     /// consulta GoalStore: las zonas usan la misma instancia de perfil que el
     /// gemelo y siguen siendo testeables sin estado global.
@@ -1052,19 +1060,37 @@ final class HealthStore: ObservableObject {
         // days (four comparison weeks plus the active microcycle).
         let structureCutoff = Calendar.current.date(byAdding: .day, value: -35, to: Date()) ?? Date.distantPast
         let runningWorkouts = rawWorkouts.filter { Self.activityName($0.workoutActivityType) == "Carrera" && $0.startDate >= structureCutoff }
-        if !runningWorkouts.isEmpty,
+        let sortedRuns = runningWorkouts.sorted { $0.startDate > $1.startDate }
+        let last72Hours = Date().addingTimeInterval(-72 * 3_600)
+        let expandedIDs = Set(sortedRuns.prefix(5).map(\.uuid) + sortedRuns.filter { $0.endDate >= last72Hours }.map(\.uuid))
+        let rawByID = Dictionary(uniqueKeysWithValues: runningWorkouts.map { ($0.uuid, $0) })
+
+        // The plan must see the same expanded HealthKit series as the detail
+        // chart. A plain HKSampleQuery may return only a condensed container,
+        // flattening real intervals into a few averages. Scope the expensive
+        // path to the sessions that can affect today's plan, then cache it.
+        for index in mapped.indices where expandedIDs.contains(mapped[index].id) {
+            guard let raw = rawByID[mapped[index].id] else { continue }
+            mapped[index].runningStructure = await expandedRunningStructure(for: raw)
+        }
+
+        // Older runs remain useful for comparison but no longer affect the
+        // immediate post-quality window. Preserve the lightweight fallback for
+        // them instead of expanding a month of high-frequency series.
+        let fallbackWorkouts = runningWorkouts.filter { !expandedIDs.contains($0.uuid) }
+        if !fallbackWorkouts.isEmpty,
            let speedType = HKQuantityType.quantityType(forIdentifier: .runningSpeed),
            let powerType = HKQuantityType.quantityType(forIdentifier: .runningPower),
            let heartType = HKQuantityType.quantityType(forIdentifier: .heartRate) {
-            let windows = runningWorkouts.map { DateInterval(start: $0.startDate, end: $0.endDate) }
+            let windows = fallbackWorkouts.map { DateInterval(start: $0.startDate, end: $0.endDate) }
             async let speedSamples = quantitySamples(type: speedType, windows: windows)
             async let powerSamples = quantitySamples(type: powerType, windows: windows)
             async let heartSamples = quantitySamples(type: heartType, windows: windows)
             let (speeds, powers, hearts) = await (speedSamples, powerSamples, heartSamples)
             let speedUnit = HKUnit.meter().unitDivided(by: .second())
             let heartUnit = HKUnit.count().unitDivided(by: .minute())
-            let rawByID = Dictionary(uniqueKeysWithValues: runningWorkouts.map { ($0.uuid, $0) })
-            for index in mapped.indices where mapped[index].activity == "Carrera" && mapped[index].date >= structureCutoff {
+            for index in mapped.indices where mapped[index].activity == "Carrera"
+                && mapped[index].date >= structureCutoff && !expandedIDs.contains(mapped[index].id) {
                 guard let raw = rawByID[mapped[index].id] else { continue }
                 let interval = DateInterval(start: raw.startDate, end: raw.endDate)
                 func points(_ samples: [HKQuantitySample], unit: HKUnit) -> [RunningSignalPoint] {
@@ -1314,14 +1340,44 @@ final class HealthStore: ObservableObject {
                                         unit: HKUnit.meter().unitDivided(by: .second()))
         async let power = workoutSeries(type: .runningPower, workout: raw, unit: .watt())
         let (heartPoints, speedPoints, powerPoints) = await (heart, speed, power)
-        let structure = RunningSessionStructureEngine.detect(
-            speed: speedPoints.map { RunningSignalPoint(date: $0.date, value: $0.value) },
-            power: powerPoints.map { RunningSignalPoint(date: $0.date, value: $0.value) },
-            heartRate: heartPoints.map { RunningSignalPoint(date: $0.date, value: $0.value) },
-            markedIntervals: (raw.workoutEvents ?? []).filter { $0.type == .lap || $0.type == .segment }.count
-        )
+        let structure = detectRunningStructure(raw: raw, heart: heartPoints,
+                                               speed: speedPoints, power: powerPoints)
+        runningStructureCache[raw.uuid] = .init(endDate: raw.endDate, structure: structure)
         return WorkoutTimeline(heartRate: heartPoints, speedMetersPerSecond: speedPoints,
                                powerWatts: powerPoints, structure: structure)
+    }
+
+    private func expandedRunningStructure(for workout: HKWorkout) async -> RunningSessionStructure? {
+        if let cached = runningStructureCache[workout.uuid], cached.endDate == workout.endDate {
+            return cached.structure
+        }
+        if let task = runningStructureTasks[workout.uuid] { return await task.value }
+        let task = Task { @MainActor [weak self] () -> RunningSessionStructure? in
+            guard let self else { return nil }
+            async let heart = workoutSeries(type: .heartRate, workout: workout,
+                                            unit: HKUnit.count().unitDivided(by: .minute()))
+            async let speed = workoutSeries(type: .runningSpeed, workout: workout,
+                                            unit: HKUnit.meter().unitDivided(by: .second()))
+            async let power = workoutSeries(type: .runningPower, workout: workout, unit: .watt())
+            let (heartPoints, speedPoints, powerPoints) = await (heart, speed, power)
+            return detectRunningStructure(raw: workout, heart: heartPoints,
+                                          speed: speedPoints, power: powerPoints)
+        }
+        runningStructureTasks[workout.uuid] = task
+        let structure = await task.value
+        runningStructureTasks[workout.uuid] = nil
+        runningStructureCache[workout.uuid] = .init(endDate: workout.endDate, structure: structure)
+        return structure
+    }
+
+    private func detectRunningStructure(raw: HKWorkout, heart: [WorkoutTimelinePoint],
+                                        speed: [WorkoutTimelinePoint], power: [WorkoutTimelinePoint]) -> RunningSessionStructure? {
+        RunningSessionStructureEngine.detect(
+            speed: speed.map { RunningSignalPoint(date: $0.date, value: $0.value) },
+            power: power.map { RunningSignalPoint(date: $0.date, value: $0.value) },
+            heartRate: heart.map { RunningSignalPoint(date: $0.date, value: $0.value) },
+            markedIntervals: (raw.workoutEvents ?? []).filter { $0.type == .lap || $0.type == .segment }.count
+        )
     }
 
     private func rawWorkout(id: UUID) async -> HKWorkout? {
