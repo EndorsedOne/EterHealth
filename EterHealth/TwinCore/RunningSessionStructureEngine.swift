@@ -5,7 +5,7 @@ struct RunningSignalPoint: Equatable {
     let value: Double
 }
 
-enum RunningSessionStructureKind: String, Equatable {
+enum RunningSessionStructureKind: String, Codable, Equatable {
     case strides
     case sprintIntervals
     case repeatedIntervals
@@ -13,7 +13,7 @@ enum RunningSessionStructureKind: String, Equatable {
     case thresholdIntervals
 }
 
-struct RunningSessionStructure: Equatable {
+struct RunningSessionStructure: Codable, Equatable {
     let kind: RunningSessionStructureKind
     let repetitions: Int
     let workSeconds: Double
@@ -28,8 +28,8 @@ struct RunningSessionStructure: Equatable {
 /// Detects repeated work/recovery structure from the signals recorded inside a
 /// run. It deliberately does not use average pace or average HR: both are
 /// diluted by recoveries, and HR also trails very short efforts. The output is
-/// compact evidence stored on HealthWorkout; raw HealthKit samples remain in
-/// HealthKit and are never persisted by Eter.
+/// compact evidence stored on HealthWorkout and in RunningStructureStore; raw
+/// HealthKit samples remain in HealthKit and are never persisted by Eter.
 enum RunningSessionStructureEngine {
     private struct Bout {
         let start: Date

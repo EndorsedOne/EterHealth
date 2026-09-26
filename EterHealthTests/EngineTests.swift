@@ -39,6 +39,41 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(EterBackupManager.payloadsAreEquivalentIgnoringCaptureTime(original, newSchema))
     }
 
+    func testRunningStructureKnowledgeSurvivesStoreReload() throws {
+        let filename = "running-structure-test-\(UUID().uuidString).json"
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let url = documents.appendingPathComponent(filename)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let workoutID = UUID()
+        let endDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let structure = RunningSessionStructure(
+            kind: .sprintIntervals, repetitions: 6, workSeconds: 240,
+            recoverySeconds: 90, confidence: .high, evidence: "6 bloques por velocidad",
+            intervals: [DateInterval(start: endDate.addingTimeInterval(-300), duration: 40)]
+        )
+
+        RunningStructureStore(filename: filename).save(
+            workoutID: workoutID, endDate: endDate, structure: structure, analyzedAt: endDate
+        )
+        let restored = RunningStructureStore(filename: filename)
+
+        XCTAssertEqual(restored.structure(for: workoutID, endDate: endDate, now: endDate)!, structure)
+    }
+
+    func testNegativeRunningStructureKnowledgeExpiresForLateHealthKitSync() {
+        let filename = "running-structure-test-\(UUID().uuidString).json"
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let url = documents.appendingPathComponent(filename)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = RunningStructureStore(filename: filename)
+        let workoutID = UUID()
+        let endDate = Date(timeIntervalSince1970: 1_800_000_000)
+        store.save(workoutID: workoutID, endDate: endDate, structure: nil, analyzedAt: endDate)
+
+        XCTAssertNotNil(store.structure(for: workoutID, endDate: endDate, now: endDate.addingTimeInterval(3_600)))
+        XCTAssertNil(store.structure(for: workoutID, endDate: endDate, now: endDate.addingTimeInterval(25 * 3_600)))
+    }
+
     func testPersonalAnchorNeedsSevenMorningsBeforeLearning() {
         let anchor = PersonalReadinessAnchor.derive(scores: [52, 55, 54, 53, 56, 10])
         XCTAssertEqual(anchor.score, 70)

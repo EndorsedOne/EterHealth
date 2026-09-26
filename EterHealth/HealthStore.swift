@@ -75,6 +75,7 @@ final class HealthStore: ObservableObject {
     @Published private(set) var hasCriticalHistory = false
 
     private let store = HKHealthStore()
+    private let runningStructureKnowledge = RunningStructureStore.shared
     private var observerQueries: [HKObserverQuery] = []
     private var scheduledRefresh: Task<Void, Never>?
     private struct RunningStructureCacheEntry {
@@ -1059,21 +1060,34 @@ final class HealthStore: ObservableObject {
         // hurt launch for no planning benefit, so enrich at most the last 35
         // days (four comparison weeks plus the active microcycle).
         let structureCutoff = Calendar.current.date(byAdding: .day, value: -35, to: Date()) ?? Date.distantPast
-        let runningWorkouts = rawWorkouts.filter { Self.activityName($0.workoutActivityType) == "Carrera" && $0.startDate >= structureCutoff }
+        let allRunningWorkouts = rawWorkouts.filter { Self.activityName($0.workoutActivityType) == "Carrera" }
+        let runningWorkouts = allRunningWorkouts.filter { $0.startDate >= structureCutoff }
         let sortedRuns = runningWorkouts.sorted { $0.startDate > $1.startDate }
-        // La cobertura de calidad se razona por semana: una sesión del lunes debe
-        // conservar su estructura fina durante todo el microciclo, incluso si hay
-        // varios rodajes posteriores. El límite de 7 días y la caché por workout
-        // mantienen acotado el coste de expandir las series condensadas de HealthKit.
+        // La cobertura usa un horizonte móvil: una sesión debe conservar su
+        // estructura fina durante siete días completos, aunque haya varios
+        // rodajes posteriores. La persistencia evita que el conocimiento se
+        // pierda después; este límite sólo acota qué sesiones nuevas expandimos.
         let lastSevenDays = Date().addingTimeInterval(-7 * 24 * 3_600)
         let expandedIDs = Set(sortedRuns.prefix(5).map(\.uuid) + sortedRuns.filter { $0.endDate >= lastSevenDays }.map(\.uuid))
-        let rawByID = Dictionary(uniqueKeysWithValues: runningWorkouts.map { ($0.uuid, $0) })
+        let rawByID = Dictionary(uniqueKeysWithValues: allRunningWorkouts.map { ($0.uuid, $0) })
+        var knownStructureIDs = Set<UUID>()
+
+        // Persisted knowledge wins regardless of age. Once Éter has classified
+        // an immutable HKWorkout, a later refresh must not forget it merely
+        // because that workout left the expensive expansion window.
+        for index in mapped.indices where mapped[index].activity == "Carrera" {
+            guard let raw = rawByID[mapped[index].id],
+                  let stored = runningStructureKnowledge.structure(for: raw.uuid, endDate: raw.endDate) else { continue }
+            mapped[index].runningStructure = stored
+            knownStructureIDs.insert(raw.uuid)
+        }
 
         // The plan must see the same expanded HealthKit series as the detail
         // chart. A plain HKSampleQuery may return only a condensed container,
         // flattening real intervals into a few averages. Scope the expensive
         // path to the sessions that can affect today's plan, then cache it.
-        for index in mapped.indices where expandedIDs.contains(mapped[index].id) {
+        for index in mapped.indices where expandedIDs.contains(mapped[index].id)
+            && !knownStructureIDs.contains(mapped[index].id) {
             guard let raw = rawByID[mapped[index].id] else { continue }
             mapped[index].runningStructure = await expandedRunningStructure(for: raw)
         }
@@ -1081,7 +1095,9 @@ final class HealthStore: ObservableObject {
         // Older runs remain useful for comparison but no longer affect the
         // immediate post-quality window. Preserve the lightweight fallback for
         // them instead of expanding a month of high-frequency series.
-        let fallbackWorkouts = runningWorkouts.filter { !expandedIDs.contains($0.uuid) }
+        let fallbackWorkouts = runningWorkouts.filter {
+            !expandedIDs.contains($0.uuid) && !knownStructureIDs.contains($0.uuid)
+        }
         if !fallbackWorkouts.isEmpty,
            let speedType = HKQuantityType.quantityType(forIdentifier: .runningSpeed),
            let powerType = HKQuantityType.quantityType(forIdentifier: .runningPower),
@@ -1094,7 +1110,8 @@ final class HealthStore: ObservableObject {
             let speedUnit = HKUnit.meter().unitDivided(by: .second())
             let heartUnit = HKUnit.count().unitDivided(by: .minute())
             for index in mapped.indices where mapped[index].activity == "Carrera"
-                && mapped[index].date >= structureCutoff && !expandedIDs.contains(mapped[index].id) {
+                && mapped[index].date >= structureCutoff && !expandedIDs.contains(mapped[index].id)
+                && !knownStructureIDs.contains(mapped[index].id) {
                 guard let raw = rawByID[mapped[index].id] else { continue }
                 let interval = DateInterval(start: raw.startDate, end: raw.endDate)
                 func points(_ samples: [HKQuantitySample], unit: HKUnit) -> [RunningSignalPoint] {
@@ -1105,12 +1122,14 @@ final class HealthStore: ObservableObject {
                 let markerCount = (raw.workoutEvents ?? []).filter { event in
                     event.type == .lap || event.type == .segment
                 }.count
-                mapped[index].runningStructure = RunningSessionStructureEngine.detect(
+                let structure = RunningSessionStructureEngine.detect(
                     speed: points(speeds, unit: speedUnit),
                     power: points(powers, unit: .watt()),
                     heartRate: points(hearts, unit: heartUnit),
                     markedIntervals: markerCount
                 )
+                mapped[index].runningStructure = structure
+                runningStructureKnowledge.save(workoutID: raw.uuid, endDate: raw.endDate, structure: structure)
             }
         }
         return mapped
@@ -1335,7 +1354,8 @@ final class HealthStore: ObservableObject {
     /// Detailed workout signals are intentionally absent from refresh() and
     /// loadExtendedHistory(). A chart is the only consumer and it requests one
     /// workout here when its detail screen appears. HealthKit remains the
-    /// source of truth; Eter neither persists nor duplicates these samples.
+    /// source of truth; Eter persists only the compact detected structure,
+    /// never these raw samples.
     func workoutTimeline(for workout: HealthWorkout) async -> WorkoutTimeline {
         guard let raw = await rawWorkout(id: workout.id) else { return .empty }
         async let heart = workoutSeries(type: .heartRate, workout: raw,
@@ -1347,11 +1367,15 @@ final class HealthStore: ObservableObject {
         let structure = detectRunningStructure(raw: raw, heart: heartPoints,
                                                speed: speedPoints, power: powerPoints)
         runningStructureCache[raw.uuid] = .init(endDate: raw.endDate, structure: structure)
+        runningStructureKnowledge.save(workoutID: raw.uuid, endDate: raw.endDate, structure: structure)
         return WorkoutTimeline(heartRate: heartPoints, speedMetersPerSecond: speedPoints,
                                powerWatts: powerPoints, structure: structure)
     }
 
     private func expandedRunningStructure(for workout: HKWorkout) async -> RunningSessionStructure? {
+        if let stored = runningStructureKnowledge.structure(for: workout.uuid, endDate: workout.endDate) {
+            return stored
+        }
         if let cached = runningStructureCache[workout.uuid], cached.endDate == workout.endDate {
             return cached.structure
         }
@@ -1371,6 +1395,7 @@ final class HealthStore: ObservableObject {
         let structure = await task.value
         runningStructureTasks[workout.uuid] = nil
         runningStructureCache[workout.uuid] = .init(endDate: workout.endDate, structure: structure)
+        runningStructureKnowledge.save(workoutID: workout.uuid, endDate: workout.endDate, structure: structure)
         return structure
     }
 

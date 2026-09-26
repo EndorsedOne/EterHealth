@@ -18,7 +18,7 @@ enum DataNature: String {
     }
 }
 
-enum TrustLevel: String, Equatable {
+enum TrustLevel: String, Codable, Equatable {
     case high = "Alta"
     case medium = "Media"
     case low = "Baja"

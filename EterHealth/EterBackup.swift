@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct EterBackup: Codable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
 
     let format: String
     let schemaVersion: Int
@@ -37,6 +37,10 @@ struct EterBackup: Codable {
     // grasa visceral, metabolismo basal) que Apple Salud no modela como tipo.
     // Datos propios de Éter, deben poder restaurarse.
     let inBodyMeasurements: [InBodyMeasurement]?
+    // Schema 10: conocimiento compacto derivado de las series de carrera de
+    // HealthKit. Se restaura porque pertenece al aprendizaje de Éter; las
+    // muestras crudas continúan exclusivamente en Salud.
+    let runningStructures: [RunningStructureKnowledge]?
 
     var totalRecords: Int {
         // Cada término con su tipo explícito y sumados con reduce, en vez de
@@ -50,7 +54,8 @@ struct EterBackup: Codable {
             workoutReviews.count, planSnapshots.count, strengthRoutines.count,
             injuryRecords?.count ?? 0, dailyTwinStates?.count ?? 0,
             temperatureDeviationLogs?.count ?? 0, travelEpisodes?.count ?? 0,
-            workoutEnrichments?.count ?? 0, inBodyMeasurements?.count ?? 0
+            workoutEnrichments?.count ?? 0, inBodyMeasurements?.count ?? 0,
+            runningStructures?.count ?? 0
         ]
         return counts.reduce(0, +)
     }
@@ -72,7 +77,8 @@ struct EterBackup: Codable {
             "\(temperatureDeviationLogs?.count ?? 0) respuestas de temperatura de muñeca",
             "\(travelEpisodes?.count ?? 0) viajes registrados",
             "\(workoutEnrichments?.count ?? 0) entrenamientos completados con datos de máquina",
-            "\(inBodyMeasurements?.count ?? 0) mediciones InBody"
+            "\(inBodyMeasurements?.count ?? 0) mediciones InBody",
+            "\(runningStructures?.count ?? 0) estructuras de carrera aprendidas"
         ]
         return parts.joined(separator: ", ") + "."
     }
@@ -171,7 +177,8 @@ enum EterBackupManager {
             temperatureDeviationLogs: TemperatureDeviationStore.shared.logs,
             travelEpisodes: travel.episodes,
             workoutEnrichments: workoutEnrichments.enrichments,
-            inBodyMeasurements: inBody.measurements
+            inBodyMeasurements: inBody.measurements,
+            runningStructures: RunningStructureStore.shared.records
         )
     }
 
@@ -193,6 +200,7 @@ enum EterBackupManager {
         if let travelEpisodes = backup.travelEpisodes { travel.restore(travelEpisodes) }
         if let values = backup.workoutEnrichments { workoutEnrichments.restore(values) }
         if let inBodyMeasurements = backup.inBodyMeasurements { inBody.restore(inBodyMeasurements) }
+        if let runningStructures = backup.runningStructures { RunningStructureStore.shared.restore(runningStructures) }
         // backup.health is intentionally not restored: HealthKit itself stays the
         // on-device source of truth, this field only ever flows outward.
     }
