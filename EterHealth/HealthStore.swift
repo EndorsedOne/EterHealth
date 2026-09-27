@@ -1172,10 +1172,18 @@ final class HealthStore: ObservableObject {
 
     @available(iOS 27.0, *)
     private nonisolated static func heartRateZones(from group: HKWorkoutZoneGroup) -> [HeartRateZone] {
+        heartRateZones(indexedDurations: group.zoneDurations.map { ($0.zone.index, $0.duration) })
+    }
+
+    /// HKWorkoutZone.index is zero-based. Treating it as the user-facing Z1…Z5
+    /// number discarded Apple's real first zone and shifted every remaining
+    /// duration down one slot (Z3 appeared as Z2, etc.). Keep the HealthKit
+    /// indexing conversion in this pure helper so the contract is testable
+    /// without constructing beta HealthKit zone objects.
+    nonisolated static func heartRateZones(indexedDurations: [(index: Int, duration: TimeInterval)]) -> [HeartRateZone] {
         var minutes = Array(repeating: 0.0, count: 5)
-        for item in group.zoneDurations {
-            // HealthKit's public zone index is one-based (Z1...Z5).
-            let index = item.zone.index - 1
+        for item in indexedDurations {
+            let index = item.index
             guard minutes.indices.contains(index) else { continue }
             minutes[index] += item.duration / 60
         }

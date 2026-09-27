@@ -39,6 +39,22 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(EterBackupManager.payloadsAreEquivalentIgnoringCaptureTime(original, newSchema))
     }
 
+    func testNativeHealthKitHeartRateZonesKeepTheirZeroBasedIndexes() {
+        // Same shape as a real Apple Fitness session: 3:31, 27:29,
+        // 40:29, 4:21 and 1:06. Index 0 is Apple's Z1, not an invalid slot.
+        let zones = HealthStore.heartRateZones(indexedDurations: [
+            (0, 211), (1, 1_649), (2, 2_429), (3, 261), (4, 66)
+        ])
+
+        XCTAssertEqual(zones.map(\.zone), [1, 2, 3, 4, 5])
+        XCTAssertEqual(zones.map(\.minutes), [211, 1_649, 2_429, 261, 66].map { Double($0) / 60 })
+        XCTAssertEqual(zones[0].percentage, 4.57, accuracy: 0.01)
+        XCTAssertEqual(zones[1].percentage, 35.72, accuracy: 0.01)
+        XCTAssertEqual(zones[2].percentage, 52.62, accuracy: 0.01)
+        XCTAssertEqual(zones[3].percentage, 5.65, accuracy: 0.01)
+        XCTAssertEqual(zones[4].percentage, 1.43, accuracy: 0.01)
+    }
+
     func testRunningStructureKnowledgeSurvivesStoreReload() throws {
         let filename = "running-structure-test-\(UUID().uuidString).json"
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
