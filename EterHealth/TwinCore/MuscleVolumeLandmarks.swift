@@ -182,12 +182,10 @@ enum MuscleVolumeLandmarkTable {
                    max(prior * minimumToleranceMultiple, halfway)).rounded()
     }
 
-    // Same bucket names MuscleRadar's own radar axes use — its displayed
-    // target is the SUM of its constituent muscles' real MAV, instead of a
-    // second, separately hand-picked aggregate. Sigue leyendo el PRIOR y no
-    // el MAV ajustado: el radar es una vista retrospectiva agregada de 10
-    // días y su denominador tiene que ser estable y comparable período a
-    // período, no moverse con el ajuste de tolerancia de cada músculo.
+    // Same bucket names MuscleRadar's own radar axes use. This prior helper is
+    // retained for previews and old widget snapshots. The live cycle matrix
+    // now receives the athlete's effective MAV explicitly so it cannot diverge
+    // from the post-session summary.
     nonisolated static func bucketMAV(_ bucket: String) -> Double {
         switch bucket {
         case "Piernas": return ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].reduce(0) { $0 + (weeklyMAV[$1] ?? 0) }

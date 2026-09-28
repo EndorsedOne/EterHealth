@@ -57,6 +57,7 @@ struct EterWidgetSnapshot: Codable, Sendable {
     var muscleCurrent: [Double]?
     var musclePrevious: [Double]?
     var muscleCardio: [Double]?
+    var muscleTargets: [Double]?
 }
 
 struct EterWidgetEnergyEvent: Codable, Sendable {
@@ -94,8 +95,8 @@ enum WidgetSnapshotStore {
                        travel: TravelEpisode? = nil, now: Date = Date()) {
         let performance = PerformanceEngine.summarize(health: health, imports: imports, now: now)
         let calendar = Calendar.current
-        let start = calendar.date(byAdding: .day, value: -10, to: now) ?? now
-        let previousStart = calendar.date(byAdding: .day, value: -20, to: now) ?? start
+        let start = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+        let previousStart = calendar.date(byAdding: .day, value: -14, to: now) ?? start
         let muscleAxes = ["Espalda", "Pecho", "Core", "Hombros", "Brazos", "Piernas"]
         let muscleCurrent = MuscleVolumeSection.combinedMuscleDistribution(
             imports: imports, health: health, from: start, to: now
@@ -106,6 +107,7 @@ enum WidgetSnapshotStore {
         let muscleCardio = MuscleVolumeSection.cardioMuscleStimulus(
             imports: imports, health: health, from: start, to: now
         )
+        let muscleTargets = MuscleVolumeSection.cycleTargets(workouts: imports.workouts, now: now)
         let strengthSessions = imports.workouts.filter { $0.start >= start }.count
         let runningSessions = health.recentWorkouts.filter {
             $0.date >= start && $0.activity == "Carrera" && !imports.isHealthKitMirror($0)
@@ -178,7 +180,8 @@ enum WidgetSnapshotStore {
             caffeineBedtimeMg: caffeine.bedtimeMg, caffeineBedtimeHour: caffeine.bedtimeHour,
             muscleCurrent: muscleAxes.map { muscleCurrent[$0] ?? 0 },
             musclePrevious: muscleAxes.map { musclePrevious[$0] ?? 0 },
-            muscleCardio: muscleAxes.map { muscleCardio[$0] ?? 0 }
+            muscleCardio: muscleAxes.map { muscleCardio[$0] ?? 0 },
+            muscleTargets: muscleAxes.map { muscleTargets[$0] ?? 1 }
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         UserDefaults(suiteName: suiteName)?.set(data, forKey: key)

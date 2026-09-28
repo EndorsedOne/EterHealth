@@ -6634,6 +6634,20 @@ final class EngineTests: XCTestCase {
                           "Cardio load must not be normalized against the leg hypertrophy-set target.")
     }
 
+    func testMuscleMatrixCycleTargetsUseTheSameWeeklyLandmarksAsSessionSummary() {
+        let targets = MuscleVolumeSection.cycleTargets(workouts: [], now: Date(timeIntervalSince1970: 1_800_000_000))
+
+        XCTAssertEqual(targets["Pecho"], MuscleVolumeLandmarkTable.landmarks(for: "Pecho").mav)
+        XCTAssertEqual(targets["Hombros"], MuscleVolumeLandmarkTable.landmarks(for: "Hombros").mav)
+        XCTAssertEqual(targets["Brazos"],
+                       MuscleVolumeLandmarkTable.landmarks(for: "Bíceps").mav
+                       + MuscleVolumeLandmarkTable.landmarks(for: "Tríceps").mav)
+        XCTAssertEqual(targets["Piernas"],
+                       ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"].reduce(0) {
+                           $0 + MuscleVolumeLandmarkTable.landmarks(for: $1).mav
+                       })
+    }
+
     // MARK: - PR9: los priors de volumen, revisados y documentados
 
     func testEveryMuscleLandmarkPriorSitsInsideTheLiteratureBand() {

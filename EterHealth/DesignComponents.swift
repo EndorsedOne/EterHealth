@@ -259,6 +259,10 @@ struct MuscleRadar: View {
     // vez de fingir que no cuenta. Vacío = no dibuja nada (comportamiento y
     // llamadas antiguas intactos).
     var cardio: [String: Double] = [:]
+    /// Objetivos efectivos del ciclo, ya agregados por eje. Cuando llegan de
+    /// MuscleVolumeSection usan exactamente el mismo MAV personal que el
+    /// resumen post-entrenamiento; el fallback conserva previews antiguas.
+    var targets: [String: Double] = [:]
     // The window `current`/`previous` were actually summed over — the
     // targets below are per-week, so a 10-day window (this view's one
     // real caller) needs them scaled up ~1.43x, not compared directly
@@ -284,7 +288,9 @@ struct MuscleRadar: View {
     // and the actual prescription logic in TrainingPlanEngine describe
     // "how much is enough this week" with the same number, not two
     // independently hand-picked ones that used to just happen to agree.
-    private func target(_ muscle: String) -> Double { MuscleVolumeLandmarkTable.bucketMAV(muscle) * periodDays / 7 }
+    private func target(_ muscle: String) -> Double {
+        targets[muscle] ?? (MuscleVolumeLandmarkTable.bucketMAV(muscle) * periodDays / 7)
+    }
 
     // Cardio is not hypertrophy volume, so dividing it by the 42-set weekly
     // leg MAV makes several substantial runs look like a near-zero line.
@@ -321,9 +327,6 @@ struct MuscleRadar: View {
                     path.addLine(to: point(center: center, radius: radius, index: index, count: axes.count))
                     context.stroke(path, with: .color(.primary.opacity(0.10)), lineWidth: 1)
                 }
-                // Clamped a little past 1.0 (not hard-capped at it) so a
-                // muscle pushed past its target visibly pokes past the
-                // ring instead of reading identically to "exactly enough".
                 drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1, (previous[$0] ?? 0) / target($0)) }, color: .gray)
                 // Cardio normally touches only one or two aggregated axes.
                 // Closing that as a six-sided polygon collapses through the
@@ -341,7 +344,10 @@ struct MuscleRadar: View {
                     context.fill(Path(ellipseIn: CGRect(x: end.x - 5, y: end.y - 5, width: 10, height: 10)),
                                  with: .color(.orange))
                 }
-                drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1, (current[$0] ?? 0) / target($0)) }, color: .blue)
+                // El anillo exterior representa 100 %. El ciclo actual puede
+                // atravesarlo un poco para que 138 % no parezca idéntico a
+                // 100 %; se limita a 115 % para no invadir textos ni la card.
+                drawSeries(context: &context, center: center, radius: radius, values: axes.map { min(1.15, (current[$0] ?? 0) / target($0)) }, color: .blue)
             }
             ForEach(axes.indices, id: \.self) { index in
                 let position = point(center: center, radius: radius + 22, index: index, count: axes.count)

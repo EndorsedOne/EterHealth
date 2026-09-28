@@ -53,6 +53,7 @@ private struct Snapshot: Codable {
     var muscleCurrent: [Double]?
     var musclePrevious: [Double]?
     var muscleCardio: [Double]?
+    var muscleTargets: [Double]?
 
     static let sample = Snapshot(
         updatedAt: .now, readiness: 70, state: "Disponible", recommendation: "Recuperación",
@@ -80,7 +81,8 @@ private struct Snapshot: Codable {
         caffeineNowMg: 47.5, caffeineBedtimeMg: 10, caffeineBedtimeHour: 23,
         muscleCurrent: [9, 18, 8, 11, 17, 4],
         musclePrevious: [7, 12, 6, 8, 13, 10],
-        muscleCardio: [0, 0, 0, 0, 0, 9]
+        muscleCardio: [0, 0, 0, 0, 0, 9],
+        muscleTargets: [16, 15, 10, 13, 20, 42]
     )
 }
 
@@ -437,20 +439,23 @@ private struct LoadView: View {
 private struct MuscleMatrixView: View {
     let entry: Entry
     private let axes = ["Espalda", "Pecho", "Core", "Hombros", "Brazos", "Piernas"]
-    // Same stable 10-day strength targets and cardio references used by the
-    // app. The widget receives raw values so it cannot drift from the source.
-    private let strengthTargets = [16.0, 15.0, 10.0, 13.0, 20.0, 42.0].map { $0 * 10 / 7 }
-    private let cardioTargets = [4.0, 4.0, 4.0, 4.0, 4.0, 8.0]
+    // El snapshot transporta los mismos MAV personales del ciclo que la app.
+    // El fallback mantiene legibles snapshots escritos por versiones previas.
+    private var strengthTargets: [Double] {
+        let values = entry.snapshot.muscleTargets ?? []
+        return values.count == axes.count ? values : [16, 15, 10, 13, 20, 42]
+    }
+    private let cardioTargets = [4.0, 4.0, 4.0, 4.0, 4.0, 8.0].map { $0 * 7 / 10 }
 
     var body: some View {
         HStack(spacing: 12) {
-            CompactRadar(current: normalized(entry.snapshot.muscleCurrent, targets: strengthTargets),
+            CompactRadar(current: normalized(entry.snapshot.muscleCurrent, targets: strengthTargets, cap: 1.15),
                          previous: normalized(entry.snapshot.musclePrevious, targets: strengthTargets),
                          cardio: normalized(entry.snapshot.muscleCardio, targets: cardioTargets))
                 .frame(width: 145, height: 135)
             VStack(alignment: .leading, spacing: 6) {
                 Text("MATRIZ MUSCULAR").font(.caption2.bold()).tracking(1).foregroundStyle(.secondary)
-                Text("Últimos 10 días").font(.headline)
+                Text("Últimos 7 días").font(.headline)
                 ForEach(priorityRows, id: \.0) { row in
                     HStack {
                         Text(row.0).lineLimit(1)
@@ -471,13 +476,13 @@ private struct MuscleMatrixView: View {
         }
         .containerBackground(eterBackground, for: .widget).foregroundStyle(.white)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Matriz muscular de los últimos diez días")
+        .accessibilityLabel("Matriz muscular de los últimos siete días")
         .accessibilityValue(priorityRows.map { "\($0.0) \($0.1) por ciento" }.joined(separator: ", "))
     }
 
-    private func normalized(_ values: [Double]?, targets: [Double]) -> [Double] {
+    private func normalized(_ values: [Double]?, targets: [Double], cap: Double = 1) -> [Double] {
         let values = values ?? Array(repeating: 0, count: axes.count)
-        return axes.indices.map { min(1, (values.indices.contains($0) ? values[$0] : 0) / targets[$0]) }
+        return axes.indices.map { min(cap, (values.indices.contains($0) ? values[$0] : 0) / targets[$0]) }
     }
     private var strengthPercents: [Int] {
         let values = entry.snapshot.muscleCurrent ?? []

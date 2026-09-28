@@ -12,17 +12,19 @@ struct MuscleVolumeSection: View {
     var body: some View {
         let calendar = Calendar.current
         let now = Date()
-        let start = calendar.date(byAdding: .day, value: -10, to: now)!
-        let previousStart = calendar.date(byAdding: .day, value: -20, to: now)!
+        let periodDays = 7.0
+        let start = calendar.date(byAdding: .day, value: -7, to: now)!
+        let previousStart = calendar.date(byAdding: .day, value: -14, to: now)!
         let current = Self.combinedMuscleDistribution(imports: imports, health: health, from: start, to: now)
         let previous = Self.combinedMuscleDistribution(imports: imports, health: health, from: previousStart, to: start)
         let cardio = Self.cardioMuscleStimulus(imports: imports, health: health, from: start, to: now)
+        let targets = Self.cycleTargets(workouts: imports.workouts, now: now)
         let hasCardio = cardio.values.contains { $0 > 0 }
         let volume = imports.weeklyVolume()
         return VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack { VStack(alignment: .leading) { Text("Distribución muscular").font(.headline); Text("Series de fuerza (Hevy + Apple Salud) · últimos 10 días frente a los 10 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
-                MuscleRadar(current: current, previous: previous, cardio: cardio, periodDays: 10).frame(height: 285)
+                HStack { VStack(alignment: .leading) { Text("Distribución muscular").font(.headline); Text("Series efectivas · últimos 7 días frente a los 7 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
+                MuscleRadar(current: current, previous: previous, cardio: cardio, targets: targets, periodDays: periodDays).frame(height: 285)
                 HStack(spacing: 16) {
                     Label("Actual", systemImage: "circle.fill").foregroundStyle(.blue)
                     Label("Anterior", systemImage: "circle.fill").foregroundStyle(.gray)
@@ -30,7 +32,7 @@ struct MuscleVolumeSection: View {
                 }.font(.caption).frame(maxWidth: .infinity)
                 if hasCardio {
                     let legCardio = cardio["Piernas"] ?? 0
-                    let legPercent = Int((legCardio / MuscleRadar.cardioReference("Piernas", periodDays: 10) * 100).rounded())
+                    let legPercent = Int((legCardio / MuscleRadar.cardioReference("Piernas", periodDays: periodDays) * 100).rounded())
                     Text("El % de cada eje cuenta sólo fuerza. El radio naranja muestra la carga musculoesquelética del cardio con su propia referencia: piernas \(legPercent)%. Correr carga la pierna, pero no se acredita como volumen de hipertrofia.")
                         .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                 }
@@ -79,6 +81,24 @@ struct MuscleVolumeSection: View {
         case "Bíceps", "Tríceps": return "Brazos"
         default: return muscle
         }
+    }
+
+    /// Los mismos objetivos personales que usa StrengthSessionSummary,
+    /// agregados únicamente donde la matriz combina varios músculos.
+    static func cycleTargets(workouts: [ImportedWorkout], now: Date) -> [String: Double] {
+        let context = VolumeLandmarkLearning.context(workouts: workouts, now: now)
+        func mav(_ muscle: String) -> Double {
+            MuscleVolumeLandmarkTable.landmarks(
+                for: muscle, learned: context.learnedMRV,
+                sustained: context.sustainedWeeklySets
+            ).mav
+        }
+        return [
+            "Espalda": mav("Espalda"), "Pecho": mav("Pecho"),
+            "Core": mav("Core"), "Hombros": mav("Hombros"),
+            "Brazos": mav("Bíceps") + mav("Tríceps"),
+            "Piernas": mav("Cuádriceps") + mav("Glúteos") + mav("Isquios") + mav("Gemelos")
+        ]
     }
 
     // Estímulo de PIERNA (y core) que la carrera, el ciclismo y el senderismo
