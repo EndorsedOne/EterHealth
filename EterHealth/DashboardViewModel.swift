@@ -20,6 +20,9 @@ final class DashboardViewModel: ObservableObject {
     // así que volver a Rendimiento siempre lo recargaba desde cero.
     private struct PerformanceStamp: Equatable {
         let healthUpdated: Date?
+        let healthWorkoutCount: Int
+        let latestHealthWorkout: Date?
+        let oldestHealthWorkout: Date?
         let importCount: Int
         let latestImport: Date?
         let reviewCount: Int
@@ -66,6 +69,14 @@ final class DashboardViewModel: ObservableObject {
         // se calculó.
         let stamp = PerformanceStamp(
             healthUpdated: health.lastUpdated,
+            // El archivo pasa de la siembra ligera de 30 días al histórico de
+            // 365 días de forma diferida. Sellar sólo con lastUpdated podía
+            // conservar un "Sin forecast" calculado antes de que llegara una
+            // carrera antigua. La forma real del archivo también es parte de
+            // la clave, sin volver a consultar HealthKit.
+            healthWorkoutCount: health.workoutHistory.count,
+            latestHealthWorkout: health.workoutHistory.map(\.date).max(),
+            oldestHealthWorkout: health.workoutHistory.map(\.date).min(),
             importCount: imports.workoutCount,
             latestImport: imports.workouts.map(\.start).max(),
             reviewCount: reviews.count,

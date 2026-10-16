@@ -425,6 +425,7 @@ struct ContentView: View {
                 physiologicalAlertCard
                 twinCard
                 todayTrendsCard
+                todayCompletedTraining
                 currentPlanCard
                 // "Entrenamiento propuesto" se retira de Hoy: la sesión (cardio o
                 // fuerza) vive en la pestaña Entrenamiento, que ya la muestra con
@@ -492,6 +493,109 @@ struct ContentView: View {
         if let result = dashboard.energyTimeline, result.currentHour > 0.5, result.curve.count > 1 {
             TodayTrendsCardView(result: result)
         }
+    }
+
+    /// La sesión realizada es parte del estado de HOY, no sólo del archivo de
+    /// Rendimiento. Se enseña un resumen útil (incluidos pesos o métricas de
+    /// carrera) y el análisis completo sigue a un toque, sin duplicar aquí sus
+    /// gráficas pesadas ni convertir la portada en una lista interminable.
+    @ViewBuilder private var todayCompletedTraining: some View {
+        let sessions = recentSessions.filter { Calendar.current.isDateInToday($0.date) }
+        if !sessions.isEmpty {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(sessions.count == 1 ? "Entrenamiento de hoy" : "Entrenamientos de hoy")
+                            .font(.headline)
+                        Text("Lo que has realizado y cómo queda registrado")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(EterTheme.positive)
+                }
+                ForEach(Array(sessions.prefix(2).enumerated()), id: \.element.id) { index, session in
+                    if index > 0 { Divider() }
+                    Button { activeSheet = .workoutDetail(session) } label: {
+                        todaySessionPreview(session)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Abre el análisis completo de la sesión")
+                }
+                if sessions.count > 2 {
+                    Text("+ \(sessions.count - 2) sesiones más en Rendimiento")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .cardStyle()
+        }
+    }
+
+    private func todaySessionPreview(_ session: RecentTrainingSession) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.title).font(.subheadline.bold())
+                    Text("\(session.date.formatted(date: .omitted, time: .shortened)) · \(Int(session.duration.rounded())) min")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label("Ver análisis", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon).font(.caption2.bold()).foregroundStyle(.blue)
+            }
+
+            if let importedID = session.importedWorkoutID,
+               let workout = imports.workouts.first(where: { $0.id == importedID }) {
+                todayStrengthImpact(workout)
+            } else if let healthID = session.healthWorkoutID,
+                      let workout = health.recentWorkouts.first(where: { $0.id == healthID }) {
+                TodayCardioSnapshotView(workout: workout)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func todayStrengthImpact(_ workout: ImportedWorkout) -> some View {
+        let stimulus = workout.effectiveMuscleSets.filter { $0.value > 0.05 }
+        let cycleStart = Calendar.current.date(byAdding: .day, value: -7, to: workout.end) ?? workout.end
+        let cycle = imports.workouts.filter { $0.start >= cycleStart && $0.start <= workout.end }
+        let landmarkContext = VolumeLandmarkLearning.context(workouts: imports.workouts, now: workout.end)
+        let progress = stimulus.keys.map { muscle -> (muscle: String, percent: Int) in
+            let accumulated = cycle.reduce(0.0) { $0 + ($1.effectiveMuscleSets[muscle] ?? 0) }
+            let target = MuscleVolumeLandmarkTable.landmarks(
+                for: muscle,
+                learned: landmarkContext.learnedMRV,
+                sustained: landmarkContext.sustainedWeeklySets
+            ).mav
+            return (muscle, target > 0 ? Int((accumulated / target * 100).rounded()) : 0)
+        }.sorted { lhs, rhs in
+            stimulus[lhs.muscle, default: 0] > stimulus[rhs.muscle, default: 0]
+        }
+
+        return VStack(spacing: 12) {
+            SessionMuscleHeatmapView(stimulus: stimulus)
+            VStack(spacing: 7) {
+                ForEach(Array(progress.prefix(4)), id: \.muscle) { item in
+                    HStack(spacing: 9) {
+                        Text(item.muscle).font(.caption.bold())
+                        Spacer()
+                        Text("Ciclo \(item.percent)%")
+                            .font(.caption.monospacedDigit().bold())
+                            .foregroundStyle(todayCycleColor(item.percent))
+                    }
+                }
+                if progress.count > 4 {
+                    Text("+ \(progress.count - 4) grupos en el análisis completo")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private func todayCycleColor(_ percent: Int) -> Color {
+        if percent > 125 { return EterTheme.danger }
+        if percent >= 75 { return EterTheme.positive }
+        return .orange
     }
 
     private var updateControl: some View {
@@ -1015,7 +1119,11 @@ struct ContentView: View {
 
     @ViewBuilder private var twinCard: some View {
         if let assessment = dashboard.assessment {
-            ReadinessCard(assessment: assessment, trust: readinessTrust(assessment.baselineConfidence))
+            ReadinessCard(
+                assessment: assessment,
+                currentEnergy: dashboard.energyTimeline?.energy,
+                trust: readinessTrust(assessment.baselineConfidence)
+            )
         }
     }
 
@@ -1504,6 +1612,112 @@ struct ContentView: View {
         )
     }
 
+}
+
+/// Resumen visual ligero de la sesión cardiovascular de hoy. HealthKit sólo
+/// expande la serie temporal cuando esta vista aparece; nunca durante el
+/// arranque previo de las pestañas. La reducción conserva la forma de la curva
+/// y evita pedir a Charts que dibuje miles de muestras en la portada.
+private struct TodayCardioSnapshotView: View {
+    @EnvironmentObject private var health: HealthStore
+    @EnvironmentObject private var goals: GoalStore
+    let workout: HealthWorkout
+
+    @State private var timeline: WorkoutTimeline?
+    @State private var zones: [HeartRateZone]?
+
+    private var heartPoints: [WorkoutTimelinePoint] {
+        guard let points = timeline?.heartRate else { return [] }
+        guard points.count > 180 else { return points }
+        let step = max(1, Int(ceil(Double(points.count) / 180.0)))
+        var reduced = points.enumerated().compactMap { index, point in index % step == 0 ? point : nil }
+        if let last = points.last, reduced.last?.id != last.id { reduced.append(last) }
+        return reduced
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch timeline {
+            case nil:
+                HStack(spacing: 9) {
+                    ProgressView().controlSize(.small)
+                    Text("Cargando curva cardiaca…").font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 24)
+            case .some where heartPoints.isEmpty:
+                Text("Apple Salud no expone la curva de pulso de esta sesión.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 15)
+            case .some:
+                HStack {
+                    Text("Frecuencia cardiaca").font(.caption.bold())
+                    Spacer()
+                    if let average = workout.averageHeartRate {
+                        Text("Ø \(Int(average.rounded())) ppm")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+                Chart(heartPoints) { point in
+                    LineMark(x: .value("Hora", point.date), y: .value("ppm", point.value))
+                        .interpolationMethod(.catmullRom)
+                        .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+                }
+                .foregroundStyle(LinearGradient(colors: [.cyan, .blue, .green, .orange, .red],
+                                                startPoint: .bottom, endPoint: .top))
+                .chartXAxis(.hidden)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine().foregroundStyle(Color.primary.opacity(0.07))
+                        AxisValueLabel {
+                            if let number = value.as(Double.self) {
+                                Text("\(Int(number.rounded()))").font(.system(size: 8))
+                            }
+                        }
+                    }
+                }
+                .frame(height: 128)
+            }
+
+            if let zones, !zones.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Zonas cardiacas").font(.caption.bold())
+                    GeometryReader { geometry in
+                        HStack(spacing: 2) {
+                            ForEach(zones.sorted { $0.zone < $1.zone }) { zone in
+                                Capsule()
+                                    .fill(zoneColor(zone.zone))
+                                    .frame(width: max(2, (geometry.size.width - 8) * zone.percentage / 100))
+                            }
+                        }
+                    }.frame(height: 10)
+                    HStack(spacing: 4) {
+                        ForEach(zones.sorted { $0.zone < $1.zone }) { zone in
+                            Text("Z\(zone.zone) \(Int(zone.percentage.rounded()))%")
+                                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                                .foregroundStyle(zoneColor(zone.zone))
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: workout.id) {
+            guard timeline == nil || zones == nil else { return }
+            async let loadedTimeline = health.workoutTimeline(for: workout)
+            async let loadedZones = health.heartRateZones(for: workout, profile: goals.profile)
+            let result = await (loadedTimeline, loadedZones)
+            timeline = result.0
+            zones = result.1
+        }
+    }
+
+    private func zoneColor(_ zone: Int) -> Color {
+        switch zone {
+        case 1: return .cyan
+        case 2: return .blue
+        case 3: return .green
+        case 4: return .orange
+        default: return .red
+        }
+    }
 }
 
 struct RecentTrainingSession: Identifiable {

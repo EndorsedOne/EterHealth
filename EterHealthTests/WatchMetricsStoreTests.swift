@@ -45,4 +45,26 @@ final class WatchMetricsStoreTests: XCTestCase {
         XCTAssertNil(payload(restEndsAt: nil)["restEndsAt"],
                      "Sin descanso activo, la clave no debe estar presente (no un 0 que el reloj interprete como temporizador).")
     }
+
+    func testTerminalCommandCarriesIdentityAndExpiry() {
+        let issuedAt = Date(timeIntervalSince1970: 10_000)
+        let payload = WatchMetricsStore.terminalCommandPayload(
+            command: "finish", workoutID: "Empuje A|123",
+            issuedAt: issuedAt, fallbackAfter: 3
+        )
+
+        XCTAssertEqual(payload["command"] as? String, "finish")
+        XCTAssertEqual(payload["workoutID"] as? String, "Empuje A|123")
+        XCTAssertEqual(payload["issuedAt"] as? Double, 10_000)
+        XCTAssertEqual(payload["fallbackDeadline"] as? Double, 10_003)
+        XCTAssertNotNil(payload["commandID"] as? String)
+    }
+
+    func testTerminalCommandWithoutFallbackHasNoDeadline() {
+        let payload = WatchMetricsStore.terminalCommandPayload(
+            command: "discard", workoutID: "Empuje A|123",
+            issuedAt: Date(timeIntervalSince1970: 10_000), fallbackAfter: nil
+        )
+        XCTAssertNil(payload["fallbackDeadline"])
+    }
 }

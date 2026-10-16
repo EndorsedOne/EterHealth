@@ -33,7 +33,7 @@ struct TodayTrendsCardView: View {
             if result.caffeine.currentMg >= 1 || result.caffeine.bedtimeMg >= 1 {
                 caffeineRail
             }
-            Text("Curva de energía estimada (0–100). Los iconos sitúan eventos registrados que aportan contexto; no demuestran por sí solos causalidad. \(result.basis).")
+            Text("Energía estimada en este momento del día (0–100). Modula cuándo entrenar, pero no sustituye tu preparación fisiológica. Los iconos sitúan eventos registrados que aportan contexto; no demuestran por sí solos causalidad. \(result.basis).")
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }
         .cardStyle()
@@ -79,13 +79,13 @@ struct TodayTrendsCardView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Tendencias de hoy").font(.headline)
-                Text("Tu batería del día y cómo responden tus señales").font(.caption).foregroundStyle(.secondary)
+                Text("Energía ahora").font(.headline)
+                Text("Tus recursos disponibles en este momento").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 0) {
                 Text("\(result.energy)").font(.title2.bold()).fontDesign(.rounded).foregroundStyle(energyColor)
-                Text("energía").font(.caption2).foregroundStyle(.secondary)
+                Text("ahora").font(.caption2).foregroundStyle(.secondary)
             }
         }
     }
@@ -210,7 +210,7 @@ struct TodayTrendsCardView: View {
 
     private var legend: some View {
         HStack(spacing: 14) {
-            Label("Energía", systemImage: "bolt.fill").foregroundStyle(energyColor)
+            Label("Energía ahora", systemImage: "bolt.fill").foregroundStyle(energyColor)
             if !result.inputMarkers.isEmpty { Label("Contexto", systemImage: "circle.fill").foregroundStyle(.teal) }
             if !result.events.isEmpty { Label("Ejercicio", systemImage: "circle.fill").foregroundStyle(.orange) }
             if !result.restWindows.isEmpty { Label("Descanso", systemImage: "pause.circle.fill").foregroundStyle(.blue) }
@@ -243,7 +243,7 @@ struct TodayTrendsCardView: View {
     }
 
     private var accessibilitySummary: String {
-        var parts = ["Energía actual \(result.energy) de 100. \(result.basis)."]
+        var parts = ["Energía ahora \(result.energy) de 100. Es una estimación intradía que modula el momento de entrenar, distinta de la preparación fisiológica. \(result.basis)."]
         if let value = result.hrv.value { parts.append("HRV \(Int(value.rounded())) milisegundos. \(comparison(result.hrv, percent: true)).") }
         if let value = result.restingHeartRate.value { parts.append("Pulso en reposo \(Int(value.rounded())) pulsaciones por minuto. \(comparison(result.restingHeartRate, percent: false)).") }
         if !result.inputMarkers.isEmpty {

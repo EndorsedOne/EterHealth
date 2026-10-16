@@ -117,12 +117,25 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         sendTerminal(command: "finish", workoutID: workoutID, fallbackAfter: 3)
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if terminalWorkoutID == workoutID, let terminalOutcome { return terminalOutcome }
+            if terminalWorkoutID == workoutID, let terminalOutcome {
+                // workoutContext/finish usan applicationContext como red de
+                // seguridad y desplazan temporalmente el resumen del widget.
+                // Una vez confirmado el cierre, se restaura su fuente normal.
+                resendLastSummary()
+                return terminalOutcome
+            }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        resendLastSummary()
         return nil
     }
-    func discard(workoutID: String) { sendTerminal(command: "discard", workoutID: workoutID) }
+    func discard(workoutID: String) {
+        sendTerminal(command: "discard", workoutID: workoutID)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            self?.resendLastSummary()
+        }
+    }
 
     // Último resumen enviado, para reenviarlo cuando el reloj aparezca.
     private var lastTwinPayload: [String: Any]?
@@ -221,8 +234,26 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         guard signature != lastWorkoutContextSignature else { return }
         lastWorkoutContextSignature = signature
         let session = WCSession.default
-        if session.isReachable { session.sendMessage(payload, replyHandler: nil) }
-        else { session.transferUserInfo(payload) }
+        // El descanso es ESTADO, no un evento efímero. `isReachable == true`
+        // sólo significa que sendMessage puede intentarse; no garantiza que
+        // llegue (la pantalla puede apagarse o cambiar la conectividad justo
+        // después). Guardar también el último contexto hace que watchOS
+        // entregue el countdown vigente al reactivar la app. Si el reloj no
+        // está alcanzable, transferUserInfo conserva además la transición.
+        do {
+            try session.updateApplicationContext(payload)
+            lastWatchSyncError = nil
+        } catch {
+            lastWatchSyncError = "No se pudo persistir el descanso: \(error.localizedDescription)"
+            print("[éter/watch] workoutContext persistente falló: \(error)")
+        }
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil) { error in
+                print("[éter/watch] workoutContext inmediato falló: \(error)")
+            }
+        } else {
+            session.transferUserInfo(payload)
+        }
     }
 
     /// Contrato del payload `workoutContext` (iPhone → reloj). Función pura para
@@ -258,20 +289,42 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     /// deduplica `commandID` y comprueba `workoutID`, por lo que una entrega
     /// tardía nunca puede cerrar el siguiente entrenamiento.
     private func sendTerminal(command: String, workoutID: String, fallbackAfter: TimeInterval? = nil) {
+        let payload = Self.terminalCommandPayload(
+            command: command, workoutID: workoutID,
+            issuedAt: Date(), fallbackAfter: fallbackAfter
+        )
+        let session = WCSession.default
+        // Tres vías con la misma commandID. El Watch deduplica la orden:
+        // - sendMessage: latencia mínima cuando está visible.
+        // - transferUserInfo: entrega fiable aunque cambie la conectividad.
+        // - applicationContext: último estado terminal para el caso en que el
+        //   proceso del Watch esté vivo pero los mensajes anteriores se pierdan.
+        // issuedAt/workoutID impiden que este contexto cierre otra sesión.
+        do {
+            try session.updateApplicationContext(payload)
+        } catch {
+            print("[éter/watch] orden terminal persistente falló: \(error)")
+        }
+        session.transferUserInfo(payload)
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil) { error in
+                print("[éter/watch] orden terminal inmediata falló: \(error)")
+            }
+        }
+    }
+
+    nonisolated static func terminalCommandPayload(command: String, workoutID: String,
+                                                   issuedAt: Date, fallbackAfter: TimeInterval?) -> [String: Any] {
         var payload: [String: Any] = [
             "command": command,
             "commandID": UUID().uuidString,
             "workoutID": workoutID,
-            "issuedAt": Date().timeIntervalSince1970
+            "issuedAt": issuedAt.timeIntervalSince1970
         ]
         if let fallbackAfter {
-            payload["fallbackDeadline"] = Date().addingTimeInterval(fallbackAfter).timeIntervalSince1970
+            payload["fallbackDeadline"] = issuedAt.addingTimeInterval(fallbackAfter).timeIntervalSince1970
         }
-        let session = WCSession.default
-        session.transferUserInfo(payload)
-        if session.isReachable {
-            session.sendMessage(payload, replyHandler: nil)
-        }
+        return payload
     }
 }
 

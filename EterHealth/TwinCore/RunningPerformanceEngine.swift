@@ -295,7 +295,11 @@ enum RunningPerformanceEngine {
     private static func forecast(name: String, targetKilometers: Double, runs: [RunningSessionMetric],
                                  reviews: [WorkoutReview], asOf: Date) -> RaceForecast? {
         let reviewsByID = Dictionary(uniqueKeysWithValues: reviews.map { ($0.workoutID, $0) })
-        let cutoff = Calendar.current.date(byAdding: .day, value: -180, to: asOf) ?? .distantPast
+        // El archivo que carga HealthStore cubre 365 días. No recortarlo otra
+        // vez a 180: hacerlo convertía de golpe un forecast válido en "Sin
+        // forecast" simplemente por no haber corrido recientemente. La
+        // antigüedad debe degradar confianza y copy, no borrar conocimiento.
+        let cutoff = Calendar.current.date(byAdding: .day, value: -365, to: asOf) ?? .distantPast
         let distanceCandidates = runs.filter { run in
             guard run.date >= cutoff && run.date <= asOf else { return false }
             if targetKilometers < 10 { return run.kilometers >= 3 && run.kilometers <= 15 }
@@ -312,11 +316,21 @@ enum RunningPerformanceEngine {
             return flatMinutes * 60 * pow(targetKilometers / run.kilometers, 1.06)
         }
         if !qualified.isEmpty {
-            let predictions = qualified.map(riegelSeconds).sorted()
+            // Si hay evidencia exigente razonablemente reciente, manda sobre
+            // una marca histórica. Si no, se conserva la histórica, marcada y
+            // penalizada por antigüedad más abajo.
+            let qualifiedCutoff = Calendar.current.date(byAdding: .day, value: -180, to: asOf) ?? cutoff
+            let recentQualified = qualified.filter { $0.date >= qualifiedCutoff }
+            let pool = recentQualified.isEmpty ? qualified : recentQualified
+            let predictions = pool.map(riegelSeconds).sorted()
             let index = min(predictions.count - 1, max(0, predictions.count / 3))
+            let ageDays = evidenceAgeDays(pool, asOf: asOf)
+            let sampleConfidence = ConfidenceEngine.samples(pool.count, medium: 2, high: 5, label: "tests o carreras comparables").level
+            let confidence = recencyAdjustedConfidence(sampleConfidence, ageDays: ageDays)
+            let ageNote = ageDays > 60 ? " · referencia histórica, última hace \(ageDays) días" : ""
             return RaceForecast(distanceName: name, seconds: predictions[index],
-                                 confidence: ConfidenceEngine.samples(qualified.count, medium: 2, high: 5, label: "tests o carreras comparables").level,
-                                 basis: "\(qualified.count) tests/sesiones exigentes · modelo de Riegel")
+                                 confidence: confidence,
+                                 basis: "\(pool.count) tests/sesiones exigentes · modelo de Riegel\(ageNote)")
         }
         // No session here has ever been reviewed as a test/race/quality effort,
         // so there's nothing to Riegel-project except ordinary training runs —
@@ -333,7 +347,20 @@ enum RunningPerformanceEngine {
         let recentCandidates = distanceCandidates.filter { $0.date >= recentCutoff }
         let pool = recentCandidates.isEmpty ? distanceCandidates : recentCandidates
         let seconds = pool.map(riegelSeconds).min() ?? riegelSeconds(pool[0])
+        let ageDays = evidenceAgeDays(pool, asOf: asOf)
+        let ageNote = ageDays > 60 ? " · referencia histórica, última hace \(ageDays) días" : ""
         return RaceForecast(distanceName: name, seconds: seconds, confidence: ConfidenceEngine.level(score: 0),
-                             basis: "Tu marca más rápida reciente a distancia comparable (sin test valorado) · modelo de Riegel")
+                             basis: "Tu marca más rápida a distancia comparable (sin test valorado) · modelo de Riegel\(ageNote)")
+    }
+
+    private static func evidenceAgeDays(_ runs: [RunningSessionMetric], asOf: Date) -> Int {
+        guard let latest = runs.map(\.date).max() else { return 365 }
+        return max(0, Calendar.current.dateComponents([.day], from: latest, to: asOf).day ?? 0)
+    }
+
+    private static func recencyAdjustedConfidence(_ confidence: TrustLevel, ageDays: Int) -> TrustLevel {
+        if ageDays > 90 { return .low }
+        if ageDays > 45, confidence == .high { return .medium }
+        return confidence
     }
 }

@@ -201,12 +201,23 @@ final class HealthStore: ObservableObject {
         }
         do {
             let status = try await store.statusForAuthorizationRequest(toShare: shareTypes, read: readTypes)
-            authorizationRequested = status == .unnecessary
-            if authorizationRequested {
-                installObservers()
-                enableBackgroundDelivery()
-                await refresh()
+            if status != .unnecessary {
+                // HealthKit devuelve `.shouldRequest` también cuando aparece
+                // UN tipo nuevo opcional. Antes eso impedía cargar incluso
+                // HRV, pulso, VO₂ y entrenamientos que el usuario ya había
+                // autorizado: toda Salud parecía vacía hasta pulsar de nuevo
+                // el botón de conexión. Pedimos sólo lo pendiente; iOS conserva
+                // las decisiones anteriores y muestra el diálogo si procede.
+                try await store.requestAuthorization(toShare: shareTypes, read: readTypes)
             }
+            // requestAuthorization confirma que la hoja se procesó, no que el
+            // usuario concedió cada lectura (Apple no expone ese dato). Siempre
+            // consultamos: los tipos permitidos devuelven datos y los denegados
+            // degradan a vacío sin bloquear el resto de la aplicación.
+            authorizationRequested = true
+            installObservers()
+            enableBackgroundDelivery()
+            await refresh()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -265,12 +276,23 @@ final class HealthStore: ObservableObject {
         todayStepSamples = await todaySteps
         todayActiveEnergySamples = await todayActiveEnergy
         recentWorkouts = await initialWorkouts
-        // Sólo se siembra el archivo con los 30 días recientes mientras el
-        // histórico completo aún no ha llegado (primer arranque). Una vez
-        // loadExtendedHistory lo ha poblado con 365 días, un refresh de HOY no
-        // debe machacarlo con la ventana corta: eso obligaba a Rendimiento a
-        // recargar el archivo entero una y otra vez.
-        if !hasLoadedHistory { workoutHistory = recentWorkouts }
+        // `workoutHistory` es la fuente que consumen forecast y plan. Tras la
+        // carga inicial de 365 días no podemos sustituirla por sólo 30 días,
+        // pero tampoco dejarla congelada: eso hacía que una carrera nueva
+        // apareciese en "Últimos entrenamientos" y siguiera siendo invisible
+        // para el forecast hasta reiniciar la app.
+        //
+        // Reemplazamos la franja reciente completa (no sólo hacemos append)
+        // para reflejar también borrados/correcciones de HealthKit, y conservamos
+        // intacto el tramo histórico. Es una operación en memoria: no vuelve a
+        // descargar los 365 días ni penaliza el arranque.
+        if hasLoadedHistory {
+            let recentCutoff = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? .distantPast
+            let historical = workoutHistory.filter { $0.date < recentCutoff }
+            workoutHistory = (historical + recentWorkouts).sorted { $0.date > $1.date }
+        } else {
+            workoutHistory = recentWorkouts
+        }
         // Descent has no HealthKit metadata equivalent to elevationMeters
         // (ascent) — the only way to get it is a per-workout route query,
         // real HealthKit cost on top of everything above. Scoped to just

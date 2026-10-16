@@ -2315,6 +2315,29 @@ final class EngineTests: XCTestCase {
         XCTAssertLessThan(summary.fiveK?.seconds ?? .greatestFiniteMagnitude, 1_500)
     }
 
+    func testForecastKeepsHistoricalRunBeyondSixMonths() {
+        let now = Date(timeIntervalSince1970: 20_000_000)
+        let oldRunDate = Calendar.current.date(byAdding: .day, value: -240, to: now)!
+        let run = healthRun(kilometers: 10, minutes: 50, date: oldRunDate)
+
+        let summary = RunningPerformanceEngine.summarize(workouts: [run], zones: [], reviews: [], now: now)
+
+        XCTAssertNotNil(summary.tenK, "Una marca aún presente en el archivo anual debe degradarse, no desaparecer al cumplir 180 días.")
+        XCTAssertEqual(summary.tenK?.confidence, .low)
+        XCTAssertTrue(summary.tenK?.basis.contains("referencia histórica") == true)
+        XCTAssertTrue(summary.tenK?.basis.contains("240 días") == true)
+    }
+
+    func testForecastDoesNotInventEvidenceOutsideLoadedYear() {
+        let now = Date(timeIntervalSince1970: 40_000_000)
+        let staleRunDate = Calendar.current.date(byAdding: .day, value: -366, to: now)!
+        let run = healthRun(kilometers: 10, minutes: 50, date: staleRunDate)
+
+        let summary = RunningPerformanceEngine.summarize(workouts: [run], zones: [], reviews: [], now: now)
+
+        XCTAssertNil(summary.tenK)
+    }
+
     func testHealthKitStrengthMirrorIsDetectedButRunIsNot() {
         let store = ImportStore(persistToDisk: false)
         let start = Date(timeIntervalSince1970: 10_000)
