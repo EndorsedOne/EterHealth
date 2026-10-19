@@ -78,6 +78,13 @@ final class HealthStore: ObservableObject {
     private let runningStructureKnowledge = RunningStructureStore.shared
     private var observerQueries: [HKObserverQuery] = []
     private var scheduledRefresh: Task<Void, Never>?
+    /// Una sola carga histórica propiedad del store, no de la vista que la
+    /// pidió. Las tareas `.task` de SwiftUI se cancelan al cambiar de escena o
+    /// reconstruir la jerarquía; si la consulta vivía ahí podía quedarse entre
+    /// fases (sueño reciente visible, pero HRV/VO2/composición vacíos). Retener
+    /// aquí una tarea no estructurada permite que termine y que todos los
+    /// consumidores esperen la misma operación.
+    private var extendedHistoryTask: Task<Void, Never>?
     private struct RunningStructureCacheEntry {
         let endDate: Date
         let structure: RunningSessionStructure?
@@ -335,7 +342,22 @@ final class HealthStore: ObservableObject {
         // primer arranque y la segunda llega mientras la carga ya está en
         // curso, sus límites de zonas no deben perderse por el early return.
         if let profile { athleteProfile = profile }
-        guard !hasLoadedHistory, !isHistoryLoading else { return }
+        guard !hasLoadedHistory else { return }
+        if let extendedHistoryTask {
+            await extendedHistoryTask.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performExtendedHistoryLoad()
+        }
+        extendedHistoryTask = task
+        await task.value
+        extendedHistoryTask = nil
+    }
+
+    private func performExtendedHistoryLoad() async {
+        guard !hasLoadedHistory else { return }
         isHistoryLoading = true
         defer { isHistoryLoading = false }
 

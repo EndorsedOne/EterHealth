@@ -544,15 +544,15 @@ private struct CompletedTravelRow: View {
         case let (.some(outboundDays), .some(homeDays)):
             return String(format: "Ida confirmada en %.1f días · vuelta confirmada en %.1f días · %@.", outboundDays, homeDays, learningSuffix)
         case let (.some(days), nil):
-            return String(format: "Ida confirmada en %.1f días y %@ · vuelta sin 3 días consecutivos válidos.", days, learningSuffix)
+            return String(format: "Ida confirmada en %.1f días y %@ · vuelta sin evidencia suficiente en 5 días.", days, learningSuffix)
         case let (nil, .some(days)):
-            return String(format: "Vuelta confirmada en %.1f días y %@ · ida sin 3 días consecutivos válidos.", days, learningSuffix)
+            return String(format: "Vuelta confirmada en %.1f días y %@ · ida sin evidencia suficiente en 5 días.", days, learningSuffix)
         case (nil, nil):
             let stayDays = episode.stayDuration.map { Int(($0 / 86_400).rounded(.down)) }
             if let stayDays, stayDays < TravelImpactEngine.stabilityDays {
-                return "Ida no evaluable: estancia de \(stayDays) día\(stayDays == 1 ? "" : "s") y se requieren \(TravelImpactEngine.stabilityDays). Vuelta sin 3 días consecutivos válidos."
+                return "Ida no evaluable: estancia de \(stayDays) día\(stayDays == 1 ? "" : "s") y se requieren \(TravelImpactEngine.stabilityDays). Vuelta sin evidencia suficiente en su ventana de 5 días."
             }
-            return "Sin confirmación: no hubo 3 días consecutivos con sueño y HRV disponibles y dentro de tus bandas históricas. No se usa para aprender."
+            return "Sin confirmación: no hubo 3 días con sueño, horario local y una señal fisiológica estables dentro de una ventana de 5 días. No se usa para aprender."
         }
     }
 

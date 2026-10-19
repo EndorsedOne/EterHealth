@@ -196,11 +196,15 @@ struct TravelSignalContext {
 // MARK: - Motor
 
 enum TravelImpactEngine {
-    /// Cuántos días consecutivos dentro de banda hacen falta para afirmar
+    /// Cuántos días con evidencia dentro de banda hacen falta para afirmar
     /// estabilidad. Tres, y no uno: una noche buena en medio de un jet lag no
-    /// es estabilidad, y el brief pide explícitamente "varios días
-    /// consecutivos dentro de bandas personales, con datos suficientes".
+    /// es estabilidad.
     static let stabilityDays = 3
+    /// Apple Health no garantiza una muestra de HRV cada día. Exigimos las
+    /// tres evidencias anteriores dentro de cinco días civiles: tolera hasta
+    /// dos huecos de medición, pero no convierte una señal buena aislada en
+    /// adaptación.
+    static let stabilityWindowDays = 5
 
     /// La fatiga de tránsito decae con la MISMA vida media por defecto que
     /// step() ya usa para la fatiga muscular cuando no hay una tasa aprendida
@@ -401,16 +405,14 @@ enum TravelImpactEngine {
     /// irregularidad; no es un umbral nuevo inventado aquí.
     static let bedtimeStabilityToleranceMinutes = 90.0
 
-    /// La fecha en la que se cumplieron `stabilityDays` días consecutivos con
-    /// TODAS las señales disponibles dentro de banda. nil cuando todavía no ha
-    /// pasado o cuando falta algún dato: un día sin medición ROMPE la racha,
-    /// porque "tres días consecutivos dentro de banda" exige conocer los tres.
+    /// La fecha en la que se cumplieron `stabilityDays` días con evidencia
+    /// dentro de una ventana de `stabilityWindowDays`. nil cuando todavía no
+    /// ocurrió. Los huecos de medición no se confunden con inestabilidad.
     ///
-    /// Señales, y por qué estas: sueño (duración) y HRV son obligatorias — sin
-    /// banda personal de las dos no se afirma nada. El pulso en reposo y la
-    /// REGULARIDAD del horario de sueño entran como CONFIRMACIÓN adicional
-    /// cuando hay dato: si están y se salen de banda, el día no cuenta; si no
-    /// están, no penalizan.
+    /// Señales, y por qué estas: sueño y horario local representan el ajuste
+    /// conductual/circadiano. HRV o pulso en reposo aportan corroboración
+    /// fisiológica; cualquiera de los dos basta ese día, pero toda señal
+    /// disponible debe estar dentro de su banda personal.
     ///
     /// El horario de sueño se añadió por un comentario de review acertado:
     /// duración y HRV no distinguen "me he adaptado a Tokio" de "duermo bien a
@@ -471,18 +473,24 @@ enum TravelImpactEngine {
         // (= 23:30 en Lisboa) no, que es la distinción que hace falta.
         let habitualBedtimeMinutes = habitualBedtimeMinutes(episode: episode, signals: signals)
 
-        var streak = 0
-        var cursor = calendar.startOfDay(for: start)
+        var evidenceDays: [Date] = []
+        // El día civil de llegada mezcla horas previas al destino y, a menudo,
+        // sólo una fracción de noche. La primera oportunidad honesta de medir
+        // una noche local completa es el día siguiente.
+        var cursor = calendar.date(byAdding: .day, value: 1,
+                                   to: calendar.startOfDay(for: start))
+            ?? calendar.startOfDay(for: start)
         let limit = calendar.startOfDay(for: date)
         while cursor <= limit {
             if dayIsStable(cursor, calendar: calendar, signals: signals,
                            sleepFloor: sleepFloor, hrvFloor: hrvFloor, restingCeiling: restingCeiling,
                            habitualBedtimeMinutes: habitualBedtimeMinutes, localZone: localZone) {
-                streak += 1
-                if streak >= stabilityDays { return cursor }
-            } else {
-                streak = 0
+                evidenceDays.append(cursor)
             }
+            let oldestAllowed = calendar.date(byAdding: .day, value: -(stabilityWindowDays - 1), to: cursor)
+                ?? cursor
+            evidenceDays.removeAll { $0 < oldestAllowed }
+            if evidenceDays.count >= stabilityDays { return cursor }
             guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
             cursor = next
         }
@@ -517,20 +525,24 @@ enum TravelImpactEngine {
         return result
     }
 
-    /// Un día cuenta como estabilizado si todas las señales CON DATO están en
-    /// banda. Sueño y HRV son obligatorias (sin ellas no se llega hasta aquí);
-    /// pulso en reposo y regularidad de horario confirman cuando existen.
+    /// Un día aporta evidencia si el sueño está en banda, el horario local no
+    /// contradice adaptación y existe al menos una corroboración fisiológica
+    /// (HRV o pulso en reposo) dentro de banda. Una muestra ausente no equivale
+    /// a una muestra mala; una muestra presente y anómala sí invalida el día.
     private nonisolated static func dayIsStable(
         _ day: Date, calendar: Calendar, signals: TravelSignalContext,
         sleepFloor: Double, hrvFloor: Double, restingCeiling: Double?,
         habitualBedtimeMinutes: Double?, localZone: TimeZone?
     ) -> Bool {
         guard let sleep = value(in: signals.sleepHistory, on: day, calendar: calendar),
-              let hrv = value(in: signals.hrvHistory, on: day, calendar: calendar),
-              sleep >= sleepFloor, hrv >= hrvFloor else { return false }
-        if let restingCeiling,
-           let resting = value(in: signals.restingHeartRateHistory, on: day, calendar: calendar),
-           resting > restingCeiling { return false }
+              sleep >= sleepFloor else { return false }
+        let hrv = value(in: signals.hrvHistory, on: day, calendar: calendar)
+        let resting = value(in: signals.restingHeartRateHistory, on: day, calendar: calendar)
+        if let hrv, hrv < hrvFloor { return false }
+        if let restingCeiling, let resting, resting > restingCeiling { return false }
+        let hasStableHRV = hrv.map { $0 >= hrvFloor } ?? false
+        let hasStableResting = restingCeiling.flatMap { ceiling in resting.map { $0 <= ceiling } } ?? false
+        guard hasStableHRV || hasStableResting else { return false }
         if let habitualBedtimeMinutes, let localZone,
            let bedtime = signals.sleepSchedule.first(where: { calendar.isDate($0.night, inSameDayAs: day) })?.bedtime {
             // La hora de acostarse leída en el huso de DONDE ESTÁ, comparada

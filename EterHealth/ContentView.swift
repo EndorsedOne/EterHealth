@@ -301,6 +301,12 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 syncWatchSummary()
+                // Reanuda o se une a la carga histórica propiedad del store.
+                // Así volver del fondo también recupera una fase ampliada que
+                // iOS hubiese interrumpido, sin duplicar consultas HealthKit.
+                if health.authorizationRequested && !health.hasLoadedHistory {
+                    Task { await health.loadExtendedHistory(profile: goals.profile) }
+                }
             } else if phase == .background {
                 performPendingAutomaticBackupInBackground()
             }
@@ -424,6 +430,7 @@ struct ContentView: View {
                 lifestyleFactorCard
                 physiologicalAlertCard
                 twinCard
+                todayTravelStatusCard
                 todayTrendsCard
                 todayCompletedTraining
                 currentPlanCard
@@ -839,6 +846,161 @@ struct ContentView: View {
             // tocar 90 pt a la derecha no hacía nada.
             .contentShape(Rectangle())
         }.buttonStyle(.plain).cardStyle()
+    }
+
+    /// Resumen contextual del viaje en Hoy. No recalcula el impacto: consume
+    /// exactamente `assessment.travel`, la misma evaluación que ya modifica
+    /// disponibilidad y el techo del plan. Así la portada nunca puede decir
+    /// "adaptado" mientras el gemelo todavía está penalizando otra parada.
+    @ViewBuilder private var todayTravelStatusCard: some View {
+        if let assessment = dashboard.assessment,
+           let episode = travel.currentEpisode() {
+            let now = Date()
+            let impact = assessment.travel
+            let phase = impact.phase
+            let stopIndex = episode.currentStopIndex(at: now)
+            let activeStop = stopIndex.flatMap { index in
+                episode.stops.indices.contains(index) ? episode.stops[index] : nil
+            }
+            let destination = activeStop?.destinationTimeZoneID.map(TravelFormat.zoneName) ?? episode.title
+            let route = activeStop.flatMap { stop -> String? in
+                guard let origin = stop.originTimeZoneID,
+                      let destination = stop.destinationTimeZoneID else { return nil }
+                return "\(TravelFormat.zoneName(origin)) → \(TravelFormat.zoneName(destination))"
+            }
+            let measured = phase == .destinationStable && impact.stabilizedAt != nil
+            let initialOffset = abs(activeStop?.shiftHours ?? episode.outboundShiftHours)
+            let remainingOffset = abs(impact.circadianOffsetHours)
+            let adjustmentProgress: Double = {
+                if measured || phase == .destinationStable { return 1 }
+                if phase == .preDeparture || phase == .outboundTransit || phase == .returnTransit { return 0 }
+                return initialOffset > 0.5
+                    ? min(1, max(0, 1 - remainingOffset / initialOffset))
+                    : (impact.isMeaningful ? 0 : 1)
+            }()
+            let ceiling = SessionIntensityCeiling.fromTravel(impact)
+
+            Button { activeSheet = .travel } label: {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: measured ? "checkmark.seal.fill" : "airplane")
+                            .font(.title2)
+                            .foregroundStyle(measured ? Color.green : Color.orange)
+                            .frame(width: 30, height: 30)
+                            .background((measured ? Color.green : Color.orange).opacity(0.12), in: Circle())
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("VIAJE ACTIVO")
+                                .font(.caption2.bold())
+                                .tracking(EterTheme.eyebrowTracking)
+                                .foregroundStyle(.secondary)
+                            Text(destination).font(.title3.bold()).foregroundStyle(.primary)
+                            if let route {
+                                Text(route).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text(travelStatusTitle(phase: phase, measured: measured))
+                                .font(.caption.bold())
+                                .foregroundStyle(measured ? Color.green : Color.orange)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.bold()).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Reloj corporal").font(.caption.bold()).foregroundStyle(.primary)
+                            Spacer()
+                            Text(travelAdjustmentLabel(phase: phase, measured: measured,
+                                                       remainingOffset: remainingOffset,
+                                                       progress: adjustmentProgress))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        GeometryReader { proxy in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.primary.opacity(0.10))
+                                Capsule()
+                                    .fill(measured ? Color.green : Color.orange)
+                                    .frame(width: proxy.size.width * adjustmentProgress)
+                            }
+                        }
+                        .frame(height: 6)
+                    }
+
+                    HStack(spacing: 10) {
+                        travelStatusMetric("Fase", value: phase.rawValue)
+                        travelStatusMetric("Desajuste", value: remainingOffset < 0.5
+                                           ? "<0,5 h"
+                                           : String(format: "%.1f h", remainingOffset))
+                        travelStatusMetric("Entreno", value: ceiling == nil ? "Sin límite" : "Ajustado")
+                    }
+
+                    Text(travelStatusDetail(episode: episode, stop: activeStop, phase: phase,
+                                            measured: measured, ceiling: ceiling, now: now))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .cardStyle()
+        }
+    }
+
+    private func travelStatusMetric(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(.system(size: 9, weight: .bold))
+                .tracking(0.7)
+                .foregroundStyle(.secondary)
+            Text(value).font(.caption.bold()).foregroundStyle(.primary).lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func travelStatusTitle(phase: TravelPhase, measured: Bool) -> String {
+        if measured { return "Adaptación confirmada" }
+        if phase == .destinationStable { return "Pendiente de confirmar" }
+        return phase.rawValue
+    }
+
+    private func travelAdjustmentLabel(phase: TravelPhase, measured: Bool,
+                                       remainingOffset: Double, progress: Double) -> String {
+        if measured { return "Confirmado por tus señales" }
+        if phase == .destinationStable { return "Estimación completada" }
+        if remainingOffset < 0.5 { return "Casi ajustado" }
+        return "\(Int((progress * 100).rounded()))% ajustado"
+    }
+
+    private func travelStatusDetail(episode: TravelEpisode, stop: TravelStop?, phase: TravelPhase,
+                                    measured: Bool, ceiling: SessionIntensityCeiling?, now: Date) -> String {
+        if measured {
+            return "Sueño, horario, HRV y pulso se mantienen dentro de tus bandas en esta parada."
+        }
+        if phase == .destinationStable {
+            return "El plazo estimado terminó, pero éter sigue buscando 3 días estables dentro de una ventana de 5 para confirmarlo."
+        }
+        if phase == .destinationAdaptation, let arrival = stop?.arrival {
+            let days = max(1, Calendar.current.dateComponents([.day], from: arrival, to: now).day.map { $0 + 1 } ?? 1)
+            let training = ceiling == nil
+                ? "Hoy no añade una restricción al entrenamiento."
+                : "Hoy ajusta la intensidad del entrenamiento."
+            return "Día \(days) de adaptación en esta parada. \(training)"
+        }
+        if phase == .homeReadaptation {
+            return ceiling == nil
+                ? "Tu reloj corporal vuelve al horario de casa sin limitar hoy el entrenamiento."
+                : "Tu reloj corporal vuelve al horario de casa; hoy se ajusta la intensidad."
+        }
+        if phase == .outboundTransit || phase == .returnTransit {
+            return "Tránsito activo: el gemelo combina desajuste horario, fatiga del viaje y tus señales reales."
+        }
+        return ceiling == nil
+            ? "El viaje está activo, pero hoy no añade una restricción al entrenamiento."
+            : "El viaje está activo y hoy ajusta la intensidad del entrenamiento."
     }
 
     private var activeAlert: (title: String, message: String)? {

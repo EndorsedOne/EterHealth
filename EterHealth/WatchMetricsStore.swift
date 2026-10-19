@@ -121,16 +121,19 @@ final class WatchMetricsStore: NSObject, ObservableObject {
                 // workoutContext/finish usan applicationContext como red de
                 // seguridad y desplazan temporalmente el resumen del widget.
                 // Una vez confirmado el cierre, se restaura su fuente normal.
+                clearActiveWorkoutContext()
                 resendLastSummary()
                 return terminalOutcome
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        clearActiveWorkoutContext()
         resendLastSummary()
         return nil
     }
     func discard(workoutID: String) {
         sendTerminal(command: "discard", workoutID: workoutID)
+        clearActiveWorkoutContext()
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             self?.resendLastSummary()
@@ -139,6 +142,11 @@ final class WatchMetricsStore: NSObject, ObservableObject {
 
     // Último resumen enviado, para reenviarlo cuando el reloj aparezca.
     private var lastTwinPayload: [String: Any]?
+    /// Mientras hay una sesión, este contexto tiene prioridad sobre el resumen
+    /// del gemelo. WCSession sólo conserva UN applicationContext por dirección:
+    /// reenviar el resumen al hacerse alcanzable el Watch sobrescribía antes la
+    /// identidad y el descanso de la sesión que acababa de comenzar.
+    private var lastWorkoutPayload: [String: Any]?
     /// Por qué no llegó el último envío. Visible para poder diagnosticar un
     /// reloj en "Esperando datos" sin adivinar.
     @Published private(set) var lastWatchSyncError: String?
@@ -171,6 +179,14 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     func resendLastSummary() {
         guard let lastTwinPayload else { return }
         send(lastTwinPayload)
+    }
+
+    private func resendCurrentContext() {
+        if let lastWorkoutPayload {
+            deliverWorkoutPayload(lastWorkoutPayload, enqueueReliably: false)
+        } else {
+            resendLastSummary()
+        }
     }
 
     func updateTwinSummary(readiness: Int, state: String, recommendation: String, reason: String,
@@ -230,9 +246,15 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         // `transferUserInfo`, que se encola en disco y se entrega más tarde.
         // Un mensaje por tecla llenaba esa cola de estados intermedios que
         // nadie iba a leer nunca.
-        let signature = payload.keys.sorted().map { "\($0)=\(payload[$0] ?? "")" }.joined(separator: "&")
+        let signature = payload.keys.filter { $0 != "contextIssuedAt" }.sorted()
+            .map { "\($0)=\(payload[$0] ?? "")" }.joined(separator: "&")
         guard signature != lastWorkoutContextSignature else { return }
         lastWorkoutContextSignature = signature
+        lastWorkoutPayload = payload
+        deliverWorkoutPayload(payload, enqueueReliably: true)
+    }
+
+    private func deliverWorkoutPayload(_ payload: [String: Any], enqueueReliably: Bool) {
         let session = WCSession.default
         // El descanso es ESTADO, no un evento efímero. `isReachable == true`
         // sólo significa que sendMessage puede intentarse; no garantiza que
@@ -251,7 +273,11 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             session.sendMessage(payload, replyHandler: nil) { error in
                 print("[éter/watch] workoutContext inmediato falló: \(error)")
             }
-        } else {
+        }
+        // El canal inmediato puede fallar aun cuando isReachable acababa de
+        // devolver true. La cola fiable cubre esa carrera; contextIssuedAt hace
+        // que el Watch ignore una copia antigua si llega después de otra nueva.
+        if enqueueReliably {
             session.transferUserInfo(payload)
         }
     }
@@ -266,13 +292,19 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         var payload: [String: Any] = [
             "payloadType": "workoutContext", "routineName": routine,
             "workoutID": workoutID, "workoutDate": workoutDate.timeIntervalSince1970,
-            "completedSets": completedSets, "totalVolume": totalVolume
+            "completedSets": completedSets, "totalVolume": totalVolume,
+            "contextIssuedAt": Date().timeIntervalSince1970
         ]
         if let restEndsAt { payload["restEndsAt"] = restEndsAt.timeIntervalSince1970 }
         return payload
     }
 
     private var lastWorkoutContextSignature: String?
+
+    private func clearActiveWorkoutContext() {
+        lastWorkoutPayload = nil
+        lastWorkoutContextSignature = nil
+    }
 
     private func send(command: String) {
         let payload: [String: Any] = ["command": command, "commandID": UUID().uuidString]
@@ -334,13 +366,13 @@ extension WatchMetricsStore: WCSessionDelegate {
     // cambio en el iPhone que podía no llegar nunca.
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         guard error == nil, activationState == .activated else { return }
-        Task { @MainActor in resendLastSummary() }
+        Task { @MainActor in resendCurrentContext() }
     }
     // Y no existía en absoluto: el reloj pasa a alcanzable justo al abrir su
     // app, que es exactamente el momento en que necesita el resumen.
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
         guard session.isReachable else { return }
-        Task { @MainActor in resendLastSummary() }
+        Task { @MainActor in resendCurrentContext() }
     }
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
     nonisolated func sessionDidDeactivate(_ session: WCSession) { session.activate() }

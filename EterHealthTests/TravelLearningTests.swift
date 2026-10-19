@@ -577,6 +577,44 @@ final class TravelLearningTests: XCTestCase {
         XCTAssertNotNil(stabilized(resting: [], schedule: schedule(bedtimeHourLocal: 23, zone: tokyo)))
     }
 
+    func testStabilityToleratesSparseHRVWhenRestingHeartRateCorroborates() {
+        let episode = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let arrival = episode.destinationArrival!
+        let days = (1...5).map { arrival.addingTimeInterval(Double($0) * 86_400) }
+        let sleep = days.map { TrendPoint(date: $0, value: 7.9) }
+        // Sólo dos muestras de HRV en cinco días: una cadencia perfectamente
+        // posible en HealthKit. El pulso en reposo estable cubre los huecos.
+        let hrv = [days[0], days[3]].map { TrendPoint(date: $0, value: 71) }
+        let resting = days.map { TrendPoint(date: $0, value: 48) }
+
+        let stabilized = TravelImpactEngine.stabilizedDate(
+            episode: episode, at: days.last!,
+            signals: TravelSignalContext(
+                baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+                sleepHistory: sleep, hrvHistory: hrv,
+                restingHeartRateHistory: resting, sleepSchedule: [], confounders: .none
+            )
+        )
+        XCTAssertNotNil(stabilized,
+                        "Un hueco de HRV no debe reiniciar la adaptación si otra señal fisiológica la corrobora.")
+    }
+
+    func testStabilityStillRejectsThreeScatteredGoodDaysOutsideFiveDayWindow() {
+        let episode = measuredTokyo(index: 0, destinationDays: nil, homeDays: nil)
+        let arrival = episode.destinationArrival!
+        let offsets = [1, 4, 7]
+        let days = offsets.map { arrival.addingTimeInterval(Double($0) * 86_400) }
+        let signals = TravelSignalContext(
+            baseline: baseline(sleepFloor: 7, hrvFloor: 60),
+            sleepHistory: days.map { TrendPoint(date: $0, value: 7.9) },
+            hrvHistory: days.map { TrendPoint(date: $0, value: 71) },
+            restingHeartRateHistory: [], sleepSchedule: [], confounders: .none
+        )
+        XCTAssertNil(TravelImpactEngine.stabilizedDate(
+            episode: episode, at: days.last!, signals: signals
+        ), "Tres días aislados no son evidencia de estabilidad sostenida.")
+    }
+
     func testTheShortestAngularDifferenceKeepsMidnightCrossingNightsTogether() {
         // Acostarse a las 23:50 y a las 00:10 son 20 minutos de diferencia, no
         // 1420. Sin esto, cualquier noche que cruza medianoche rompía la racha.

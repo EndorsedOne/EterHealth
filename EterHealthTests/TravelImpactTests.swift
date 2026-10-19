@@ -263,16 +263,15 @@ final class TravelImpactTests: XCTestCase {
         XCTAssertNil(oneNight.stabilizedAt)
         XCTAssertEqual(oneNight.circadianOffsetHours, 6, accuracy: 0.2)
 
-        // Tres consecutivas sí: el desajuste se cierra antes que el prior.
+        // Tres evidencias cercanas sí: el desajuste se cierra antes que el prior.
         let threeNights = TravelImpactEngine.impact(episode: episode, at: day(3), signals: signals(goodDays: [1, 2, 3]))
         XCTAssertNotNil(threeNights.stabilizedAt)
         XCTAssertEqual(threeNights.circadianOffsetHours, 0, accuracy: 0.001)
         XCTAssertGreaterThan(threeNights.confidence.score, priorOnly.confidence.score,
                              "Confirmar con señales propias sube la confianza; el prior solo la deja baja.")
 
-        // Un hueco ROMPE la racha: tres días con el de en medio sin dato no
-        // son tres consecutivos, y afirmar estabilidad con huecos sería
-        // inventarse el día que falta.
+        // Dos evidencias siguen sin bastar. Un hueco no se inventa como bueno,
+        // pero tampoco se confunde automáticamente con una señal mala.
         let withGap = TravelImpactEngine.impact(episode: episode, at: day(3), signals: signals(goodDays: [1, 3]))
         XCTAssertNil(withGap.stabilizedAt)
     }

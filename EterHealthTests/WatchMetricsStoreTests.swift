@@ -21,7 +21,7 @@ final class WatchMetricsStoreTests: XCTestCase {
     func testCarriesOnlyWhatTheWatchConsumes() {
         let keys = Set(payload().keys)
         XCTAssertEqual(keys, ["payloadType", "routineName", "workoutID",
-                              "workoutDate", "completedSets", "totalVolume", "restEndsAt"])
+                              "workoutDate", "completedSets", "totalVolume", "restEndsAt", "contextIssuedAt"])
     }
 
     func testNeverCarriesPerSetDetail() {

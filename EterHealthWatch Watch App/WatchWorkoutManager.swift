@@ -52,6 +52,7 @@ private struct WatchActivePayload: Sendable {
     let workoutID: String?
     let workoutDate: Date?
     let totalVolume: Double?
+    let issuedAt: Date?
 
     // Solo lo que el reloj muestra: descanso, resumen (series completadas y
     // volumen) e identidad de la sesión. El detalle serie a serie
@@ -64,6 +65,7 @@ private struct WatchActivePayload: Sendable {
         workoutID = message["workoutID"] as? String
         workoutDate = (message["workoutDate"] as? Double).map(Date.init(timeIntervalSince1970:))
         totalVolume = message["totalVolume"] as? Double
+        issuedAt = (message["contextIssuedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
     }
 }
 
@@ -124,6 +126,7 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
     private var workoutID: String?
     private var workoutDate: Date?
     private var handledCommandIDs: Set<String> = []
+    private var lastAppliedWorkoutContextAt: Date?
     private var heartRateSum = 0.0
     private var heartRateSamples = 0
     private var peakHeartRate = 0.0
@@ -464,6 +467,10 @@ extension WatchWorkoutManager: WCSessionDelegate {
     }
 
     private func apply(_ payload: WatchActivePayload) {
+        if let issuedAt = payload.issuedAt,
+           let lastAppliedWorkoutContextAt,
+           issuedAt < lastAppliedWorkoutContextAt { return }
+        if let issuedAt = payload.issuedAt { lastAppliedWorkoutContextAt = issuedAt }
         routineName = payload.routine ?? routineName
         completedSets = payload.completedSets ?? completedSets
         let now = Date()
@@ -540,8 +547,16 @@ extension WatchWorkoutManager: WCSessionDelegate {
                         // que aún podemos identificar la sesión sin aceptar
                         // una orden destinada a otro entrenamiento.
                         let targetStart = targetWorkoutID.split(separator: "|").last.flatMap { Double($0) }
-                        guard let targetStart,
-                              abs(startedAt.timeIntervalSince1970 - targetStart) < 2 else { return }
+                        let issuedAt = (message["issuedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+                        // Si el contexto se perdió, la orden aún puede
+                        // identificarse temporalmente: la sesión del Watch
+                        // comenzó después que la del iPhone y antes que la
+                        // orden. Una orden vieja nunca puede cerrar una sesión
+                        // nueva porque startedAt sería posterior a issuedAt.
+                        guard let targetStart, let issuedAt,
+                              targetStart <= startedAt.timeIntervalSince1970 + 2,
+                              startedAt <= issuedAt.addingTimeInterval(2),
+                              startedAt.timeIntervalSince1970 - targetStart < 120 else { return }
                         self.workoutID = targetWorkoutID
                     }
                 }
