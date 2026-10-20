@@ -53,6 +53,7 @@ private struct WatchActivePayload: Sendable {
     let workoutDate: Date?
     let totalVolume: Double?
     let issuedAt: Date?
+    let contextID: String?
 
     // Solo lo que el reloj muestra: descanso, resumen (series completadas y
     // volumen) e identidad de la sesión. El detalle serie a serie
@@ -66,6 +67,7 @@ private struct WatchActivePayload: Sendable {
         workoutDate = (message["workoutDate"] as? Double).map(Date.init(timeIntervalSince1970:))
         totalVolume = message["totalVolume"] as? Double
         issuedAt = (message["contextIssuedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+        contextID = message["workoutContextID"] as? String
     }
 }
 
@@ -176,6 +178,17 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         activeEnergy = 0
         elapsed = 0
         completedSummary = nil
+        // Una sesión nueva nunca hereda identidad ni descanso de la anterior.
+        // Si el contexto nuevo se retrasa, conservar el workoutID viejo hace
+        // que la orden de finalizar se rechace por pertenecer a "otra" sesión.
+        workoutID = nil
+        workoutDate = nil
+        routineName = "Entrenamiento"
+        completedSets = 0
+        totalVolume = 0
+        restEndsAt = nil
+        restStartedAt = nil
+        lastAppliedWorkoutContextAt = nil
         heartRateSum = 0
         heartRateSamples = 0
         peakHeartRate = 0
@@ -201,6 +214,7 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
             isRunning = true
             isPaused = false
             startTimer()
+            sendPhoneCommand("requestContext", requiresPhone: false)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -253,6 +267,10 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         self.session = nil
         self.builder = nil
         startedAt = nil
+        workoutID = nil
+        workoutDate = nil
+        restEndsAt = nil
+        restStartedAt = nil
     }
 
     func saveReview(effort: Int, pain: Bool) {
@@ -284,6 +302,10 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         self.session = nil
         self.builder = nil
         startedAt = nil
+        workoutID = nil
+        workoutDate = nil
+        restEndsAt = nil
+        restStartedAt = nil
     }
 
     /// La orden fiable llegó después del límite en el que el iPhone ya toma
@@ -303,6 +325,10 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         session = nil
         builder = nil
         startedAt = nil
+        workoutID = nil
+        workoutDate = nil
+        restEndsAt = nil
+        restStartedAt = nil
     }
 
     private func startTimer() {
@@ -467,6 +493,7 @@ extension WatchWorkoutManager: WCSessionDelegate {
     }
 
     private func apply(_ payload: WatchActivePayload) {
+        acknowledgeWorkoutContext(payload.contextID)
         if let issuedAt = payload.issuedAt,
            let lastAppliedWorkoutContextAt,
            issuedAt < lastAppliedWorkoutContextAt { return }
@@ -487,6 +514,17 @@ extension WatchWorkoutManager: WCSessionDelegate {
         workoutID = payload.workoutID ?? workoutID
         workoutDate = payload.workoutDate ?? workoutDate
         totalVolume = payload.totalVolume ?? totalVolume
+    }
+
+    private func acknowledgeWorkoutContext(_ contextID: String?) {
+        guard let contextID else { return }
+        let payload: [String: Any] = ["workoutContextAckID": contextID]
+        let connection = WCSession.default
+        if connection.isReachable {
+            connection.sendMessage(payload, replyHandler: nil)
+        } else {
+            connection.transferUserInfo(payload)
+        }
     }
 
     func startRest(seconds: Int = 120) {
@@ -523,7 +561,11 @@ extension WatchWorkoutManager: WCSessionDelegate {
         let payload: [String: Any] = ["workoutCommand": command, "commandID": UUID().uuidString]
         let connection = WCSession.default
         guard connection.isReachable else {
-            if requiresPhone { errorMessage = "Abre Éter en el iPhone para realizar esta acción desde el reloj." }
+            if requiresPhone {
+                errorMessage = "Abre Éter en el iPhone para realizar esta acción desde el reloj."
+            } else {
+                connection.transferUserInfo(payload)
+            }
             return
         }
         connection.sendMessage(payload, replyHandler: nil)

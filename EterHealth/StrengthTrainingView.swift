@@ -1596,6 +1596,13 @@ struct LiveStrengthWorkoutView: View {
                         else if command.hasPrefix("restAdjust:"), let seconds = Int(command.dropFirst("restAdjust:".count)) {
                             adjustRest(bySeconds: seconds)
                         }
+                        else if command == "requestContext" {
+                            // El Watch lo pide después de crear SU sesión. Esto
+                            // cierra la carrera en la que el contexto inicial
+                            // llegaba antes del arranque y luego se perdía al
+                            // inicializar el manager del reloj.
+                            syncWorkoutContext()
+                        }
                     }
                 )
             )
@@ -2121,6 +2128,7 @@ struct LiveStrengthWorkoutView: View {
             let sessionStart = startedAt
             let sessionEnd = endedAt
             let workoutID = "\(routine.name)|\(sessionStart.timeIntervalSince1970)"
+            let watchWasObserved = WatchMetricsStore.shared.observedRunningWatchSession
             Task {
                 let outcome = await WatchMetricsStore.shared.finishAndAwait(workoutID: workoutID)
                 if outcome == .savedByWatch { return }
@@ -2128,9 +2136,14 @@ struct LiveStrengthWorkoutView: View {
                 // como respaldo se mira HealthKit directamente. Puede que la
                 // confirmación WCSession se haya perdido aunque el Watch sí
                 // terminara y escribiera la sesión.
-                if !(await health.containsEquivalentStrengthWorkout(start: sessionStart, end: sessionEnd)) {
+                if !(await health.containsEquivalentStrengthWorkout(start: sessionStart, end: sessionEnd)),
+                   !watchWasObserved {
                     await health.saveStrengthWorkout(start: sessionStart, end: sessionEnd)
                 }
+                // Si vimos al Watch grabando, él es el único escritor de
+                // HealthKit. Que su confirmación tarde no autoriza al iPhone a
+                // crear un segundo HKWorkout: la sesión ya está guardada en
+                // Éter y aparecerá en Salud cuando el reloj termine de cerrar.
             }
         }
         completionSummary = StrengthSessionSummary.make(for: completedWorkout,

@@ -8,8 +8,15 @@ final class HealthStore: ObservableObject {
     @Published var authorizationRequested = false
     @Published var isLoading = false
     @Published var errorMessage: String?
+    /// Diagnóstico técnico de una lectura de HealthKit. No se usa como dato ni
+    /// se muestra como cero: permite distinguir "Apple no devolvió muestras"
+    /// de "la consulta falló", que antes eran exactamente el mismo resultado.
+    @Published private(set) var lastHealthReadError: String?
     @Published var lastUpdated: Date?
     @Published var snapshot = HealthSnapshot.empty
+    /// Fecha de la HKQuantitySample individual que alimenta el HRV visible.
+    /// Nunca corresponde a un promedio diario del histórico.
+    @Published private(set) var lastHRVMeasurementDate: Date?
     @Published var vo2MaxHistory: [TrendPoint] = []
     /// Por qué no se abrió la app del reloj, cuando no se abre. nil = todo bien
     /// o nadie lo ha intentado. Antes el fallo era silencioso y no se
@@ -257,9 +264,9 @@ final class HealthStore: ObservableObject {
         async let steps = cumulative(.stepCount, unit: .count(), start: start)
         async let energy = cumulative(.activeEnergyBurned, unit: .kilocalorie(), start: start)
         async let exercise = cumulative(.appleExerciseTime, unit: .minute(), start: start)
-        async let heartRate = latest(.heartRate, unit: HKUnit.count().unitDivided(by: .minute()))
-        async let restingHeartRate = latest(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()))
-        async let hrv = latest(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
+        async let heartRate = latestWithRetry(.heartRate, unit: HKUnit.count().unitDivided(by: .minute()))
+        async let restingHeartRate = latestWithRetry(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()))
+        async let hrvSample = latestSampleWithRetry(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
         async let sleep = sleepBreakdown()
         async let initialWorkouts = loadRecentWorkouts(days: 30)
         async let todayHRV = intradaySamples(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli))
@@ -268,17 +275,32 @@ final class HealthStore: ObservableObject {
         async let todayActiveEnergy = intradaySamples(.activeEnergyBurned, unit: .kilocalorie())
 
         let resolvedSleep = await sleep
+        let resolvedHeartRate = await heartRate
+        let resolvedRestingHeartRate = await restingHeartRate
+        let resolvedHRVSample = await hrvSample
+        let resolvedHRV = resolvedHRVSample?.value ?? 0
+        let resolvedTodayHRV = await todayHRV
+        // La consulta puntual y la intradía leen MUESTRAS individuales reales,
+        // no promedios. Si la primera falla transitoriamente, la última muestra
+        // cruda de hoy sigue siendo válida; cero nunca sustituye un dato real
+        // anterior del mismo proceso.
+        let visibleHRV = resolvedHRV > 0
+            ? resolvedHRV
+            : (resolvedTodayHRV.last?.value ?? Double(snapshot.hrv))
+        if let sample = resolvedHRVSample ?? resolvedTodayHRV.last {
+            lastHRVMeasurementDate = sample.date
+        }
         snapshot = await HealthSnapshot(
             steps: Int(steps.rounded()),
             activeEnergy: Int(energy.rounded()),
             exerciseMinutes: Int(exercise.rounded()),
-            heartRate: Int(heartRate.rounded()),
-            restingHeartRate: Int(restingHeartRate.rounded()),
-            hrv: Int(hrv.rounded()),
+            heartRate: resolvedHeartRate > 0 ? Int(resolvedHeartRate.rounded()) : snapshot.heartRate,
+            restingHeartRate: resolvedRestingHeartRate > 0 ? Int(resolvedRestingHeartRate.rounded()) : snapshot.restingHeartRate,
+            hrv: visibleHRV > 0 ? Int(visibleHRV.rounded()) : snapshot.hrv,
             sleepHours: resolvedSleep.asleepHours
         )
         sleepStages = resolvedSleep
-        todayHRVSamples = await todayHRV
+        todayHRVSamples = resolvedTodayHRV
         todayHeartRateSamples = await todayHeartRate
         todayStepSamples = await todaySteps
         todayActiveEnergySamples = await todayActiveEnergy
@@ -363,16 +385,23 @@ final class HealthStore: ObservableObject {
 
         // ── Fase 1: lo que el gemelo de Hoy necesita ─────────────────────────
         async let workouts = loadRecentWorkouts(days: 365)
-        async let hrv = dailyAverage(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli), days: 90)
-        async let resting = dailyAverage(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), days: 90)
+        async let hrv = dailyAverageWithRetry(.heartRateVariabilitySDNN, unit: .secondUnit(with: .milli), days: 90)
+        async let resting = dailyAverageWithRetry(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), days: 90)
         async let sleep = sleepDurationHistory(days: 90)
         async let sleepSchedule = sleepScheduleHistory(days: 60)
         async let alcohol = loadAlcohol(days: 365)
         async let respiratory = dailyAverage(.respiratoryRate, unit: HKUnit.count().unitDivided(by: .minute()), days: 90)
         async let temperature = dailyAverage(.appleSleepingWristTemperature, unit: .degreeCelsius(), days: 90)
 
-        hrvHistory = await hrv
-        restingHeartRateHistory = await resting
+        let resolvedHRVHistory = await hrv
+        let resolvedRestingHistory = await resting
+        hrvHistory = resolvedHRVHistory
+        restingHeartRateHistory = resolvedRestingHistory
+        // No se usa el último punto de estos históricos para reparar snapshot:
+        // son PROMEDIOS DIARIOS. La tarjeta HRV sólo puede enseñar la última
+        // HKQuantitySample individual que latest()/intradaySamples entreguen.
+        // Si HealthKit no la entrega, la respuesta honesta es conservar la
+        // última muestra individual ya validada o mostrar "—".
         sleepHistory = await sleep
         sleepScheduleHistory = await sleepSchedule
         alcoholHistory = await alcohol
@@ -772,12 +801,59 @@ final class HealthStore: ObservableObject {
         guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return 0 }
         return await withCheckedContinuation { continuation in
             let sort = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
-            let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 1, sortDescriptors: [sort]) { _, samples, _ in
+            let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 1, sortDescriptors: [sort]) { _, samples, error in
+                if let error {
+                    Task { @MainActor in
+                        self.lastHealthReadError = "\(id.rawValue): \(error.localizedDescription)"
+                    }
+                }
                 let value = (samples?.first as? HKQuantitySample)?.quantity.doubleValue(for: unit) ?? 0
                 continuation.resume(returning: value)
             }
             store.execute(query)
         }
+    }
+
+    /// HealthKit puede contestar vacío durante la activación inicial del store
+    /// aunque la misma consulta funcione unas décimas después. Las señales
+    /// críticas se reintentan de forma acotada; nunca se inventa un valor y un
+    /// vacío transitorio tampoco borra el último dato válido del proceso.
+    private func latestWithRetry(_ id: HKQuantityTypeIdentifier, unit: HKUnit) async -> Double {
+        for attempt in 0..<3 {
+            let value = await latest(id, unit: unit)
+            if value > 0 { return value }
+            if attempt < 2 { try? await Task.sleep(for: .milliseconds(350)) }
+        }
+        return 0
+    }
+
+    private func latestSample(_ id: HKQuantityTypeIdentifier, unit: HKUnit) async -> TrendPoint? {
+        guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return nil }
+        return await withCheckedContinuation { continuation in
+            let sort = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
+            let query = HKSampleQuery(sampleType: type, predicate: nil, limit: 1,
+                                      sortDescriptors: [sort]) { _, samples, error in
+                if let error {
+                    Task { @MainActor in
+                        self.lastHealthReadError = "\(id.rawValue): \(error.localizedDescription)"
+                    }
+                }
+                let point = (samples?.first as? HKQuantitySample).map {
+                    TrendPoint(date: $0.endDate, value: $0.quantity.doubleValue(for: unit))
+                }
+                continuation.resume(returning: point)
+            }
+            store.execute(query)
+        }
+    }
+
+    private func latestSampleWithRetry(_ id: HKQuantityTypeIdentifier,
+                                       unit: HKUnit) async -> TrendPoint? {
+        for attempt in 0..<3 {
+            if let point = await latestSample(id, unit: unit), point.value > 0 { return point }
+            if attempt < 2 { try? await Task.sleep(for: .milliseconds(350)) }
+        }
+        return nil
     }
 
     /// Muestras individuales de HOY (desde las 00:00) con su marca de tiempo,
@@ -976,6 +1052,16 @@ final class HealthStore: ObservableObject {
         return await dailyAverage(id, unit: unit, start: start, end: end)
     }
 
+    private func dailyAverageWithRetry(_ id: HKQuantityTypeIdentifier, unit: HKUnit,
+                                       days: Int) async -> [TrendPoint] {
+        for attempt in 0..<3 {
+            let points = await dailyAverage(id, unit: unit, days: days)
+            if !points.isEmpty { return points }
+            if attempt < 2 { try? await Task.sleep(for: .milliseconds(500)) }
+        }
+        return []
+    }
+
     private func dailyAverage(_ id: HKQuantityTypeIdentifier, unit: HKUnit, start: Date, end: Date) async -> [TrendPoint] {
         guard let type = HKQuantityType.quantityType(forIdentifier: id) else { return [] }
         let calendar = Calendar.current
@@ -988,7 +1074,12 @@ final class HealthStore: ObservableObject {
                 anchorDate: calendar.startOfDay(for: end),
                 intervalComponents: DateComponents(day: 1)
             )
-            query.initialResultsHandler = { _, collection, _ in
+            query.initialResultsHandler = { _, collection, error in
+                if let error {
+                    Task { @MainActor in
+                        self.lastHealthReadError = "\(id.rawValue): \(error.localizedDescription)"
+                    }
+                }
                 var points: [TrendPoint] = []
                 collection?.enumerateStatistics(from: start, to: end) { statistics, _ in
                     if let value = statistics.averageQuantity()?.doubleValue(for: unit) {
@@ -1034,12 +1125,17 @@ final class HealthStore: ObservableObject {
         let start = Calendar.current.date(byAdding: .day, value: -days, to: Date())!
         let predicate = HKQuery.predicateForSamples(withStart: start, end: Date())
         let sort = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
-        let rawWorkouts: [HKWorkout] = await withCheckedContinuation { continuation in
+        let fetchedWorkouts: [HKWorkout] = await withCheckedContinuation { continuation in
             let query = HKSampleQuery(sampleType: .workoutType(), predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: [sort]) { _, samples, _ in
                 continuation.resume(returning: samples as? [HKWorkout] ?? [])
             }
             store.execute(query)
         }
+        // Si iPhone y Watch escribieron la misma fuerza por una confirmación
+        // perdida, HealthKit conserva dos UUID distintos. No podemos tratarlos
+        // como dos cargas: colapsamos sólo coincidencias casi exactas y
+        // conservamos la que contiene más métricas. No se borra Apple Salud.
+        let rawWorkouts = Self.collapsingDuplicateStrengthWorkouts(fetchedWorkouts)
         let effortByWorkout = await loadWorkoutEffortScores(predicate: predicate)
         let heartUnit = HKUnit.count().unitDivided(by: .minute())
         var mapped = rawWorkouts.map { workout in
@@ -1177,6 +1273,33 @@ final class HealthStore: ObservableObject {
             }
         }
         return mapped
+    }
+
+    nonisolated private static func collapsingDuplicateStrengthWorkouts(_ workouts: [HKWorkout]) -> [HKWorkout] {
+        let heart = HKQuantityType.quantityType(forIdentifier: .heartRate)
+        let energy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)
+        func richness(_ workout: HKWorkout) -> Int {
+            var score = 0
+            if let heart, workout.statistics(for: heart)?.averageQuantity() != nil { score += 2 }
+            if let energy, workout.statistics(for: energy)?.sumQuantity() != nil { score += 1 }
+            return score
+        }
+        var result: [HKWorkout] = []
+        for workout in workouts {
+            guard workout.workoutActivityType == .traditionalStrengthTraining,
+                  let duplicateIndex = result.firstIndex(where: { existing in
+                      existing.workoutActivityType == .traditionalStrengthTraining
+                          && abs(existing.startDate.timeIntervalSince(workout.startDate)) <= 120
+                          && abs(existing.duration - workout.duration) <= 300
+                  }) else {
+                result.append(workout)
+                continue
+            }
+            if richness(workout) > richness(result[duplicateIndex]) {
+                result[duplicateIndex] = workout
+            }
+        }
+        return result.sorted { $0.startDate > $1.startDate }
     }
 
     /// Reads Apple's workout-effort relationship, preferring a user's own

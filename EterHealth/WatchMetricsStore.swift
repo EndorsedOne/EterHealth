@@ -15,6 +15,7 @@ private struct WatchMetricsPayload: Sendable {
     let reviewPain: Bool?
     let reviewWorkoutID: String?
     let reviewWorkoutDate: Date?
+    let workoutContextAckID: String?
 
     nonisolated init(_ message: [String: Any]) {
         heartRate = message["heartRate"] as? Double
@@ -30,6 +31,7 @@ private struct WatchMetricsPayload: Sendable {
         reviewPain = message["reviewPain"] as? Bool
         reviewWorkoutID = message["reviewWorkoutID"] as? String
         reviewWorkoutDate = (message["reviewWorkoutDate"] as? Double).map(Date.init(timeIntervalSince1970:))
+        workoutContextAckID = message["workoutContextAckID"] as? String
     }
 }
 
@@ -68,6 +70,7 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     @Published var workoutCommand: String?
     private(set) var terminalOutcome: WatchTerminalOutcome?
     private(set) var terminalWorkoutID: String?
+    private(set) var observedRunningWatchSession = false
 
     override init() {
         super.init()
@@ -85,6 +88,7 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         // objectWillChange NO se dispare en cada recepción (evita el repintado
         // por segundo de la sesión).
         if let running = payload.isRunning, running != isRunning { isRunning = running }
+        if payload.isRunning == true { observedRunningWatchSession = true }
         if let paused = payload.isPaused, paused != isPaused { isPaused = paused }
         if let action = payload.terminalAction { terminalAction = action }
         if let outcome = payload.terminalOutcome.flatMap(WatchTerminalOutcome.init(rawValue:)) {
@@ -92,6 +96,11 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             terminalWorkoutID = payload.terminalWorkoutID
         }
         if let command = payload.workoutCommand { workoutCommand = command }
+        if let ack = payload.workoutContextAckID,
+           ack == lastWorkoutPayload?["workoutContextID"] as? String {
+            workoutAckTask?.cancel()
+            lastWatchSyncError = nil
+        }
         if let effort = payload.reviewEffort,
            let pain = payload.reviewPain,
            let workoutID = payload.reviewWorkoutID,
@@ -147,6 +156,7 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     /// reenviar el resumen al hacerse alcanzable el Watch sobrescribía antes la
     /// identidad y el descanso de la sesión que acababa de comenzar.
     private var lastWorkoutPayload: [String: Any]?
+    private var workoutAckTask: Task<Void, Never>?
     /// Por qué no llegó el último envío. Visible para poder diagnosticar un
     /// reloj en "Esperando datos" sin adivinar.
     @Published private(set) var lastWatchSyncError: String?
@@ -246,12 +256,36 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         // `transferUserInfo`, que se encola en disco y se entrega más tarde.
         // Un mensaje por tecla llenaba esa cola de estados intermedios que
         // nadie iba a leer nunca.
-        let signature = payload.keys.filter { $0 != "contextIssuedAt" }.sorted()
+        let signature = payload.keys.filter { $0 != "contextIssuedAt" && $0 != "workoutContextID" }.sorted()
             .map { "\($0)=\(payload[$0] ?? "")" }.joined(separator: "&")
         guard signature != lastWorkoutContextSignature else { return }
         lastWorkoutContextSignature = signature
         lastWorkoutPayload = payload
+        if completedSets == 0 && restEndsAt == nil { observedRunningWatchSession = false }
         deliverWorkoutPayload(payload, enqueueReliably: true)
+        scheduleWorkoutContextRetries(for: payload)
+    }
+
+    /// El contexto de descanso necesita confirmación, no sólo "se intentó
+    /// enviar". WatchConnectivity puede aceptar updateApplicationContext y
+    /// perder el salto inmediato al cambiar la pantalla o la radio. El Watch
+    /// responde con el ID que aplicó; mientras no llegue, repetimos el último
+    /// estado por el canal inmediato/persistente.
+    private func scheduleWorkoutContextRetries(for payload: [String: Any]) {
+        guard let contextID = payload["workoutContextID"] as? String else { return }
+        workoutAckTask?.cancel()
+        workoutAckTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for delay in [0.7, 1.5, 3.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled,
+                      self.lastWorkoutPayload?["workoutContextID"] as? String == contextID else { return }
+                self.deliverWorkoutPayload(payload, enqueueReliably: false)
+            }
+            guard !Task.isCancelled,
+                  self.lastWorkoutPayload?["workoutContextID"] as? String == contextID else { return }
+            self.lastWatchSyncError = "El Apple Watch no confirmó el contexto del entrenamiento."
+        }
     }
 
     private func deliverWorkoutPayload(_ payload: [String: Any], enqueueReliably: Bool) {
@@ -293,7 +327,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             "payloadType": "workoutContext", "routineName": routine,
             "workoutID": workoutID, "workoutDate": workoutDate.timeIntervalSince1970,
             "completedSets": completedSets, "totalVolume": totalVolume,
-            "contextIssuedAt": Date().timeIntervalSince1970
+            "contextIssuedAt": Date().timeIntervalSince1970,
+            "workoutContextID": UUID().uuidString
         ]
         if let restEndsAt { payload["restEndsAt"] = restEndsAt.timeIntervalSince1970 }
         return payload
@@ -304,6 +339,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     private func clearActiveWorkoutContext() {
         lastWorkoutPayload = nil
         lastWorkoutContextSignature = nil
+        workoutAckTask?.cancel()
+        workoutAckTask = nil
     }
 
     private func send(command: String) {
