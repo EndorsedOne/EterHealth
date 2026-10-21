@@ -123,7 +123,9 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     func finishAndAwait(workoutID: String, timeout: TimeInterval = 5) async -> WatchTerminalOutcome? {
         terminalOutcome = nil
         terminalWorkoutID = nil
-        sendTerminal(command: "finish", workoutID: workoutID, fallbackAfter: 3)
+        // El timeout limita cuánto espera la UI, no quién escribe HealthKit.
+        // Una orden que llegue tarde al Watch sigue debiendo guardar su builder.
+        sendTerminal(command: "finish", workoutID: workoutID)
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if terminalWorkoutID == workoutID, let terminalOutcome {
@@ -357,10 +359,9 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     /// envía por el canal inmediato y también por la cola fiable. El reloj
     /// deduplica `commandID` y comprueba `workoutID`, por lo que una entrega
     /// tardía nunca puede cerrar el siguiente entrenamiento.
-    private func sendTerminal(command: String, workoutID: String, fallbackAfter: TimeInterval? = nil) {
+    private func sendTerminal(command: String, workoutID: String) {
         let payload = Self.terminalCommandPayload(
-            command: command, workoutID: workoutID,
-            issuedAt: Date(), fallbackAfter: fallbackAfter
+            command: command, workoutID: workoutID, issuedAt: Date()
         )
         let session = WCSession.default
         // Tres vías con la misma commandID. El Watch deduplica la orden:
@@ -383,17 +384,13 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     }
 
     nonisolated static func terminalCommandPayload(command: String, workoutID: String,
-                                                   issuedAt: Date, fallbackAfter: TimeInterval?) -> [String: Any] {
-        var payload: [String: Any] = [
+                                                   issuedAt: Date) -> [String: Any] {
+        [
             "command": command,
             "commandID": UUID().uuidString,
             "workoutID": workoutID,
             "issuedAt": issuedAt.timeIntervalSince1970
         ]
-        if let fallbackAfter {
-            payload["fallbackDeadline"] = issuedAt.addingTimeInterval(fallbackAfter).timeIntervalSince1970
-        }
-        return payload
     }
 }
 

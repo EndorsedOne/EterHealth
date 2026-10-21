@@ -48,24 +48,25 @@ final class WatchMetricsStoreTests: XCTestCase {
                      "Sin descanso activo, la clave no debe estar presente (no un 0 que el reloj interprete como temporizador).")
     }
 
-    func testTerminalCommandCarriesIdentityAndExpiry() {
+    func testTerminalCommandCarriesIdentityWithoutDiscardDeadline() {
         let issuedAt = Date(timeIntervalSince1970: 10_000)
         let payload = WatchMetricsStore.terminalCommandPayload(
             command: "finish", workoutID: "Empuje A|123",
-            issuedAt: issuedAt, fallbackAfter: 3
+            issuedAt: issuedAt
         )
 
         XCTAssertEqual(payload["command"] as? String, "finish")
         XCTAssertEqual(payload["workoutID"] as? String, "Empuje A|123")
         XCTAssertEqual(payload["issuedAt"] as? Double, 10_000)
-        XCTAssertEqual(payload["fallbackDeadline"] as? Double, 10_003)
+        XCTAssertNil(payload["fallbackDeadline"],
+                     "El timeout del iPhone nunca debe ordenar al Watch descartar un builder válido.")
         XCTAssertNotNil(payload["commandID"] as? String)
     }
 
     func testTerminalCommandWithoutFallbackHasNoDeadline() {
         let payload = WatchMetricsStore.terminalCommandPayload(
             command: "discard", workoutID: "Empuje A|123",
-            issuedAt: Date(timeIntervalSince1970: 10_000), fallbackAfter: nil
+            issuedAt: Date(timeIntervalSince1970: 10_000)
         )
         XCTAssertNil(payload["fallbackDeadline"])
     }

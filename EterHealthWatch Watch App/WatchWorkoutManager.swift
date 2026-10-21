@@ -308,29 +308,6 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         restStartedAt = nil
     }
 
-    /// La orden fiable llegó después del límite en el que el iPhone ya toma
-    /// la escritura de HealthKit. Se detiene y descarta el builder del Watch
-    /// para que una entrega tardía no cree un duplicado.
-    private func discardExpiredFinish(requestedWorkoutID: String?) {
-        if let session, let builder {
-            session.end()
-            builder.discardWorkout()
-        }
-        timer?.invalidate()
-        timer = nil
-        isRunning = false
-        isPaused = false
-        sendMetrics(terminalAction: "finish", terminalOutcome: "expiredAndDiscarded",
-                    terminalWorkoutID: requestedWorkoutID ?? workoutID)
-        session = nil
-        builder = nil
-        startedAt = nil
-        workoutID = nil
-        workoutDate = nil
-        restEndsAt = nil
-        restStartedAt = nil
-    }
-
     private func startTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(timeInterval: 1, target: self, selector: #selector(updateElapsedTime), userInfo: nil, repeats: true)
@@ -614,12 +591,10 @@ extension WatchWorkoutManager: WCSessionDelegate {
             case "resume" where isPaused: togglePause()
             case "finish":
                 let target = message["workoutID"] as? String
-                if let deadline = message["fallbackDeadline"] as? Double,
-                   Date().timeIntervalSince1970 > deadline {
-                    discardExpiredFinish(requestedWorkoutID: target)
-                } else {
-                    await finish(requestedWorkoutID: target)
-                }
+                // La entrega fiable puede tardar. Si este builder corresponde
+                // a la sesión solicitada, siempre se intenta guardar: un plazo
+                // del iPhone sólo limita su espera, nunca autoriza a descartar.
+                await finish(requestedWorkoutID: target)
             case "discard": discard()
             default: break
             }
