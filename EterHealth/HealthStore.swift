@@ -300,6 +300,11 @@ final class HealthStore: ObservableObject {
             sleepHours: resolvedSleep.asleepHours
         )
         sleepStages = resolvedSleep
+        // `snapshot` y la alerta fisiológica deben hablar de la misma noche.
+        // El histórico pesado se carga una vez, pero HealthKit puede consolidar
+        // fases después (por ejemplo, 5,6 h parciales pasan a 9,1 h). Actualizar
+        // sólo ese punto evita releer 90/365 días y conserva una fuente real.
+        sleepHistory = Self.upsertingLatestSleep(resolvedSleep, into: sleepHistory)
         todayHRVSamples = resolvedTodayHRV
         todayHeartRateSamples = await todayHeartRate
         todayStepSamples = await todaySteps
@@ -402,7 +407,7 @@ final class HealthStore: ObservableObject {
         // HKQuantitySample individual que latest()/intradaySamples entreguen.
         // Si HealthKit no la entrega, la respuesta honesta es conservar la
         // última muestra individual ya validada o mostrar "—".
-        sleepHistory = await sleep
+        sleepHistory = Self.upsertingLatestSleep(sleepStages, into: await sleep)
         sleepScheduleHistory = await sleepSchedule
         alcoholHistory = await alcohol
         respiratoryRateHistory = await respiratory
@@ -968,6 +973,20 @@ final class HealthStore: ObservableObject {
     private func sleepDurationHistory(days: Int) async -> [TrendPoint] {
         let start = Calendar.current.date(byAdding: .day, value: -days, to: Calendar.current.startOfDay(for: Date()))!
         return await sleepDurationHistory(from: start, to: Date())
+    }
+
+    /// Sustituye únicamente la noche medida por `sleepBreakdown()`. No crea un
+    /// punto si no existe una sesión real y válida; el resto del histórico se
+    /// mantiene como baseline para PersonalBaselineEngine.
+    nonisolated static func upsertingLatestSleep(_ stages: SleepStages,
+                                                 into history: [TrendPoint],
+                                                 calendar: Calendar = .current) -> [TrendPoint] {
+        guard let end = stages.endDate,
+              stages.asleepHours > 0.5, stages.asleepHours < 16 else { return history }
+        let night = calendar.startOfDay(for: end)
+        var result = history.filter { !calendar.isDate($0.date, inSameDayAs: night) }
+        result.append(TrendPoint(date: night, value: stages.asleepHours))
+        return result.sorted { $0.date < $1.date }
     }
 
     private func sleepDurationHistory(from start: Date, to end: Date) async -> [TrendPoint] {

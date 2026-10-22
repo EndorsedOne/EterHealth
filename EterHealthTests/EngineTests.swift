@@ -6868,4 +6868,35 @@ final class EngineTests: XCTestCase {
                       "Cada día de fuerza tiene que DECIR su patrón: tres 'Fuerza' seguidos sin nombrar pierna/empuje/tirón no dejan planificar la semana. \(patterns[2])")
     }
 
+    func testLatestMeasuredSleepReplacesPartialValueForSameNight() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let night = Date(timeIntervalSince1970: 1_800_057_600)
+        let previous = night.addingTimeInterval(-86_400)
+        let stages = SleepStages(
+            awakeHours: 0.4, coreHours: 5.0, deepHours: 2.0, remHours: 2.1,
+            unspecifiedHours: 0, startDate: night.addingTimeInterval(-9.5 * 3_600),
+            endDate: night.addingTimeInterval(8 * 3_600)
+        )
+
+        let merged = HealthStore.upsertingLatestSleep(
+            stages,
+            into: [TrendPoint(date: previous, value: 7.4), TrendPoint(date: night, value: 5.6)],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(merged.count, 2)
+        XCTAssertEqual(try XCTUnwrap(merged.last).value, 9.1, accuracy: 0.0001)
+        XCTAssertEqual(merged.filter { calendar.isDate($0.date, inSameDayAs: night) }.count, 1)
+    }
+
+    func testMissingMeasuredSleepDoesNotInventOrEraseHistory() {
+        let history = [TrendPoint(date: Date(timeIntervalSince1970: 1_800_000_000), value: 7.2)]
+        let merged = HealthStore.upsertingLatestSleep(.empty, into: history)
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.value, 7.2)
+        XCTAssertEqual(merged.first?.date, history.first?.date)
+    }
+
 }

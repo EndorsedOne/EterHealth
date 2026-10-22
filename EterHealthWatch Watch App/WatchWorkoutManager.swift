@@ -5,6 +5,23 @@ import WatchConnectivity
 import WidgetKit
 import WatchKit
 
+/// WatchConnectivity serializa los escalares numéricos como `NSNumber` con
+/// frecuencia. No debemos confundir un tipo puenteado con la ausencia del dato:
+/// en particular, perder `restEndsAt` deja el descanso visualmente en idle.
+private nonisolated func watchDouble(_ value: Any?) -> Double? {
+    if let value = value as? Double { return value }
+    if let value = value as? NSNumber { return value.doubleValue }
+    if let value = value as? Int { return Double(value) }
+    return nil
+}
+
+private nonisolated func watchInt(_ value: Any?) -> Int? {
+    if let value = value as? Int { return value }
+    if let value = value as? NSNumber { return value.intValue }
+    if let value = value as? Double, value.isFinite { return Int(value) }
+    return nil
+}
+
 private struct WatchTwinPayload: Sendable {
     let readiness: Int?
     let state: String?
@@ -61,12 +78,12 @@ private struct WatchActivePayload: Sendable {
     // envía, esas claves se ignoran sin más.
     nonisolated init(_ message: [String: Any]) {
         routine = message["routineName"] as? String
-        completedSets = message["completedSets"] as? Int
-        restEndsAt = (message["restEndsAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+        completedSets = watchInt(message["completedSets"])
+        restEndsAt = watchDouble(message["restEndsAt"]).map(Date.init(timeIntervalSince1970:))
         workoutID = message["workoutID"] as? String
-        workoutDate = (message["workoutDate"] as? Double).map(Date.init(timeIntervalSince1970:))
-        totalVolume = message["totalVolume"] as? Double
-        issuedAt = (message["contextIssuedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+        workoutDate = watchDouble(message["workoutDate"]).map(Date.init(timeIntervalSince1970:))
+        totalVolume = watchDouble(message["totalVolume"])
+        issuedAt = watchDouble(message["contextIssuedAt"]).map(Date.init(timeIntervalSince1970:))
         contextID = message["workoutContextID"] as? String
     }
 }
