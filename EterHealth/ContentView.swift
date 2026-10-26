@@ -585,7 +585,7 @@ struct ContentView: View {
                     HStack(spacing: 9) {
                         Text(item.muscle).font(.caption.bold())
                         Spacer()
-                        Text("Ciclo \(item.percent)%")
+                        Text(weeklyTargetLabel(item.percent))
                             .font(.caption.monospacedDigit().bold())
                             .foregroundStyle(todayCycleColor(item.percent))
                     }
@@ -603,6 +603,10 @@ struct ContentView: View {
         if percent > 125 { return EterTheme.danger }
         if percent >= 75 { return EterTheme.positive }
         return .orange
+    }
+
+    private func weeklyTargetLabel(_ percent: Int) -> String {
+        percent > 100 ? "Objetivo +\(percent - 100)%" : "Objetivo \(percent)%"
     }
 
     private var updateControl: some View {

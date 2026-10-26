@@ -23,7 +23,7 @@ struct MuscleVolumeSection: View {
         let volume = imports.weeklyVolume()
         return VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack { VStack(alignment: .leading) { Text("Distribución muscular").font(.headline); Text("Series efectivas · últimos 7 días frente a los 7 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
+                HStack { VStack(alignment: .leading) { Text("Cobertura por regiones").font(.headline); Text("Series efectivas · últimos 7 días frente a los 7 anteriores").font(.caption).foregroundStyle(.secondary) }; Spacer() }
                 MuscleRadar(current: current, previous: previous, cardio: cardio, targets: targets, periodDays: periodDays).frame(height: 285)
                 HStack(spacing: 16) {
                     Label("Actual", systemImage: "circle.fill").foregroundStyle(.blue)
@@ -36,6 +36,8 @@ struct MuscleVolumeSection: View {
                     Text("El % de cada eje cuenta sólo fuerza. El radio naranja muestra la carga musculoesquelética del cardio con su propia referencia: piernas \(legPercent)%. Correr carga la pierna, pero no se acredita como volumen de hipertrofia.")
                         .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                 }
+                Text("Cada eje agrupa músculos: Piernas combina cuádriceps, glúteos, isquios y gemelos; Brazos combina bíceps y tríceps. El porcentaje es la cobertura conjunta de la región, no el valor del músculo más trabajado.")
+                    .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
             }.cardStyle()
             VStack(alignment: .leading, spacing: 12) {
                 Text("Volumen de fuerza").font(.headline)

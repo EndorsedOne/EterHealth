@@ -302,7 +302,7 @@ enum StrengthPrescriptionEngine {
         }
 
         let sessions = Array(history)
-        let setCount = medianInt(sessions.map { $0.2.count })
+        let historicalSetCount = medianInt(sessions.map { $0.2.count })
         let representative = latest.2.sorted { estimatedOneRM($0) > estimatedOneRM($1) }.first ?? latest.2[0]
         var targetWeight = representative.weight
         var targetReps = representative.reps
@@ -322,6 +322,7 @@ enum StrengthPrescriptionEngine {
         else if days >= 21 { loadFactor -= 0.05; reasons.append("retorno tras \(days) días") }
 
         let context = goalContext(for: exercise.name, goals: goals)
+        let band = repRange(for: context, light: false)
         let latestRPE = latest.2.compactMap(\.rpe).max()
         let recentEstimates = sessions.compactMap { session in session.2.map(estimatedOneRM).max() }
         let stableOrImproving = recentEstimates.count >= 2 && recentEstimates[0] >= recentEstimates[1] * 0.98
@@ -347,7 +348,6 @@ enum StrengthPrescriptionEngine {
         // specificity, and an endurance-support exercise inheriting a
         // hypertrophy rep count isn't a minimum effective dose.
         if context != .hypertrophy {
-            let band = repRange(for: context, light: false)
             let clampedReps = min(max(targetReps, band.minReps), band.maxReps)
             let e1RM = estimatedOneRM(representative)
             if e1RM > 0 { targetWeight = e1RM / (1 + Double(min(12, clampedReps)) / 30) }
@@ -357,11 +357,36 @@ enum StrengthPrescriptionEngine {
 
         targetWeight = roundedLoad(targetWeight * loadFactor)
         if targetWeight == 0 { targetReps = max(1, representative.reps) }
-        let prescribed = (0..<max(1, setCount)).map { _ in
+        // La historia informa, pero no puede convertir seis o siete series
+        // planas en la recomendación por defecto. `band.sets` es el límite de
+        // trabajo efectivo que el propio motor anuncia (3–4 según objetivo).
+        let workingSetCount = max(1, min(historicalSetCount, band.sets))
+        let descriptor = ExerciseCatalog.descriptor(for: exercise.name)
+        let supportsRamp = targetWeight >= 20
+            && !descriptor.pattern.localizedCaseInsensitiveContains("aislamiento")
+            && !descriptor.pattern.localizedCaseInsensitiveContains("core")
+        let warmupCount = supportsRamp ? min(2, max(0, historicalSetCount - workingSetCount)) : 0
+        let warmups: [ImportedSet]
+        if warmupCount == 2 {
+            warmups = [
+                ImportedSet(weight: roundedLoad(targetWeight * 0.50), reps: max(targetReps, 5), type: "warmup", rpe: nil),
+                ImportedSet(weight: roundedLoad(targetWeight * 0.75), reps: max(3, min(targetReps, 5)), type: "warmup", rpe: nil)
+            ]
+        } else if warmupCount == 1 {
+            warmups = [ImportedSet(weight: roundedLoad(targetWeight * 0.65), reps: max(3, min(targetReps, 6)), type: "warmup", rpe: nil)]
+        } else {
+            warmups = []
+        }
+        let workingSets = (0..<workingSetCount).map { _ in
             ImportedSet(weight: targetWeight, reps: max(1, targetReps), type: "normal", rpe: nil)
         }
+        if warmupCount > 0 {
+            reasons.append("\(warmupCount) de aproximación + \(workingSetCount) efectivas")
+        } else if historicalSetCount > workingSetCount {
+            reasons.append("volumen limitado a \(workingSetCount) series efectivas")
+        }
         var result = exercise
-        result.sets = prescribed
+        result.sets = warmups + workingSets
         result.prescriptionNote = reasons.joined(separator: " · ")
         result.historySessions = sessions.count
         return result

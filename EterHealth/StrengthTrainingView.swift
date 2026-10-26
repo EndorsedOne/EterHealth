@@ -1196,7 +1196,7 @@ private struct StrengthSessionSummaryView: View {
                         HStack {
                             Text("Músculo").frame(maxWidth: .infinity, alignment: .leading)
                             Text("Sesión").frame(width: 70, alignment: .trailing)
-                            Text("Ciclo").frame(width: 70, alignment: .trailing)
+                            Text("7 días").frame(width: 70, alignment: .trailing)
                         }.font(.caption.bold()).foregroundStyle(.secondary)
 
                         ForEach(summary.muscles) { row in
@@ -1204,11 +1204,11 @@ private struct StrengthSessionSummaryView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(row.muscle).font(.subheadline.bold())
-                                        Text("Hoy \(number(row.sessionSets)) · ciclo \(number(row.cycleSets))/\(number(row.targetSets)) series")
+                                        Text("Hoy \(number(row.sessionSets)) · 7 días \(number(row.cycleSets))/\(number(row.targetSets)) series")
                                             .font(.caption2).foregroundStyle(.secondary)
                                     }.frame(maxWidth: .infinity, alignment: .leading)
                                     Text("\(row.sessionShare)%").frame(width: 70, alignment: .trailing)
-                                    Text("\(row.cycleProgress)%").bold()
+                                    Text(weeklyTargetLabel(row.cycleProgress)).bold()
                                         .foregroundStyle(cycleColor(row.cycleProgress))
                                         .frame(width: 70, alignment: .trailing)
                                 }
@@ -1219,7 +1219,7 @@ private struct StrengthSessionSummaryView: View {
                         }
                     }.cardStyle()
 
-                    Text("Sesión indica cómo se repartió el estímulo efectivo de hoy. Ciclo compara las series efectivas acumuladas en los últimos 7 días con tu volumen semanal óptimo personal; puede superar el 100 %. El tonelaje excluye ejercicios de peso corporal.")
+                    Text("Sesión indica cómo se repartió el estímulo efectivo de hoy. 7 días compara cada músculo con su objetivo semanal personal; al superarlo se muestra sólo el exceso (+x%), no un confuso 157% de ciclo. El tonelaje excluye ejercicios de peso corporal.")
                         .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
 
                     Button("Cerrar resumen", action: onDone).buttonStyle(EterPrimaryButtonStyle())
@@ -1249,6 +1249,10 @@ private struct StrengthSessionSummaryView: View {
         if percent > 125 { return EterTheme.danger }
         if percent >= 75 { return EterTheme.positive }
         return .orange
+    }
+
+    private func weeklyTargetLabel(_ percent: Int) -> String {
+        percent > 100 ? "+\(percent - 100)%" : "\(percent)%"
     }
 }
 
@@ -1671,16 +1675,32 @@ struct LiveStrengthWorkoutView: View {
                 Image(systemName: "checkmark").frame(width: 44)
             }.font(.caption2.bold()).foregroundStyle(.secondary)
             ForEach(exercise.sets) { $set in
+                let setIndex = exercise.wrappedValue.sets.firstIndex { $0.id == set.id } ?? 0
+                let isWarmup = set.type.localizedCaseInsensitiveContains("warm")
+                    || set.type.localizedCaseInsensitiveContains("calent")
+                let priorWarmups = exercise.wrappedValue.sets.prefix(setIndex).filter {
+                    $0.type.localizedCaseInsensitiveContains("warm")
+                        || $0.type.localizedCaseInsensitiveContains("calent")
+                }.count
+                let displayIndex = isWarmup ? "A\(priorWarmups + 1)" : "\(setIndex + 1 - priorWarmups)"
                 VStack(spacing: 7) {
                     HStack(spacing: 8) {
-                        Text("\((exercise.wrappedValue.sets.firstIndex { $0.id == set.id } ?? 0) + 1)")
-                            .font(.subheadline.bold()).frame(width: 18, alignment: .leading)
+                        Text(displayIndex)
+                            .font(.subheadline.bold())
+                            .foregroundStyle(isWarmup ? .orange : .primary)
+                            .frame(width: 24, alignment: .leading)
                         if descriptor.tracksWeight {
                             weightField(value: $set.weight).frame(maxWidth: .infinity)
                         }
                         measurementFields(descriptor.measurement, set: $set,
                                           tracksTime: exercise.wrappedValue.tracksTime)
                         completedButton($set, restSeconds: exercise.wrappedValue.restSeconds)
+                    }
+                    if isWarmup {
+                        Text("Aproximación · no cuenta como serie efectiva")
+                            .font(.caption2).foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 32)
                     }
                     if set.completed, descriptor.measurement == .reps,
                        !set.type.localizedCaseInsensitiveContains("warm") {

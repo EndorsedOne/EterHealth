@@ -2637,6 +2637,34 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(result.sets.first?.reps, 9)
     }
 
+    func testStrengthPrescriptionCapsWorkingSetsAndUsesLighterApproximationSets() {
+        let now = Date()
+        let workouts = [0, 7, 14].map { daysAgo -> ImportedWorkout in
+            let date = Calendar.current.date(byAdding: .day, value: -daysAgo, to: now)!
+            let sets = (0..<6).map { _ in ImportedSet(weight: 82.5, reps: 5, type: "normal", rpe: 8.5) }
+            return ImportedWorkout(
+                title: "Pierna", start: date, end: date.addingTimeInterval(3_600),
+                exercises: [ImportedExercise(name: "Squat (Barbell)", sets: 6, volume: 2_475,
+                                             totalReps: 30, averageWeight: 82.5, setDetails: sets)],
+                muscleSets: [:]
+            )
+        }
+        let goals = [TrainingGoal(id: UUID(), kind: .squat, title: "Sentadilla", date: nil,
+                                  targetValue: 120, unit: "kg", priority: .primary, isActive: true)]
+        let result = try! XCTUnwrap(StrengthPrescriptionEngine.prescribe(
+            RoutineExercise(name: "Squat (Barbell)", sets: [], restSeconds: 120),
+            workouts: workouts, readiness: 75, muscleReadiness: muscles(legs: 80),
+            goals: goals, now: now
+        ))
+
+        let warmups = result.sets.filter { $0.type == "warmup" }
+        let working = result.sets.filter { $0.type == "normal" }
+        XCTAssertEqual(warmups.count, 2)
+        XCTAssertEqual(working.count, 4, "La banda de fuerza prescribe cuatro series efectivas, no seis o siete heredadas del histórico.")
+        XCTAssertTrue(warmups.allSatisfy { $0.weight < (working.first?.weight ?? 0) })
+        XCTAssertTrue(result.prescriptionNote?.contains("2 de aproximación + 4 efectivas") == true)
+    }
+
     func testWorkingSetsInfersAnAscendingWarmupRampWhenNothingIsTagged() {
         // "Las 3 primeras series subiendo el volumen para calentar, luego 3
         // o 4 series válidas" — no explicit set_type at all (every set

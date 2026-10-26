@@ -353,7 +353,7 @@ struct MuscleRadar: View {
                 let position = point(center: center, radius: radius + 22, index: index, count: axes.count)
                 VStack(spacing: 0) {
                     Text(axes[index]).font(.caption2).foregroundStyle(.secondary)
-                    Text("Fuerza \(Int(((current[axes[index]] ?? 0) / target(axes[index]) * 100).rounded()))%")
+                    Text("Región \(Int(((current[axes[index]] ?? 0) / target(axes[index]) * 100).rounded()))%")
                         .font(.caption2.bold()).foregroundStyle(.secondary.opacity(0.8))
                     if (cardio[axes[index]] ?? 0) > 0 {
                         Text("Cardio \(Int((cardioRatio(axes[index]) * 100).rounded()))%")
@@ -363,7 +363,7 @@ struct MuscleRadar: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Distribución muscular")
+        .accessibilityLabel("Cobertura muscular por regiones")
         .accessibilityValue(accessibilitySummary)
     }
 
