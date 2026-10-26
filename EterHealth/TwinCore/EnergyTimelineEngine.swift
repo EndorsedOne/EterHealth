@@ -21,6 +21,7 @@ enum EnergyTimelineEngine {
         let restingHeartRate: DailyMetricContext
         let caffeine: CaffeineTimelineResult
         let restWindows: [RestorativeWindow]
+        let autonomicStrainWindows: [AutonomicStrainWindow]
     }
 
     struct DailyMetricContext {
@@ -60,7 +61,8 @@ enum EnergyTimelineEngine {
             hrv: DailyMetricContext(value: baseline.hrv.current, expected: baseline.hrv.expected),
             restingHeartRate: DailyMetricContext(
                 value: baseline.restingHeartRate.current, expected: baseline.restingHeartRate.expected
-            ), caffeine: caffeine, restWindows: model.restWindows
+            ), caffeine: caffeine, restWindows: model.restWindows,
+            autonomicStrainWindows: model.autonomicStrainWindows
         )
     }
 
@@ -130,6 +132,7 @@ enum EnergyTimelineEngine {
         let curve: [Double]
         let basis: String
         let restWindows: [RestorativeWindow]
+        let autonomicStrainWindows: [AutonomicStrainWindow]
     }
 
     struct RestorativeWindow: Equatable {
@@ -139,6 +142,14 @@ enum EnergyTimelineEngine {
         /// normal aplana la curva; sólo una calma fisiológica bien observada
         /// permite una subida pequeña.
         let credit: Double
+    }
+
+    struct AutonomicStrainWindow: Equatable {
+        let startHour: Double
+        let endHour: Double
+        /// Coste acumulado de pulso anormalmente elevado y sostenido estando
+        /// quieto. HRV baja sólo refuerza; una lectura aislada nunca lo crea.
+        let penalty: Double
     }
 
     @MainActor
@@ -193,6 +204,15 @@ enum EnergyTimelineEngine {
             hrvBaseline: baseline.hrv.expected,
             day: now, fromHour: endOfSleep, toHour: currentHour
         )
+        let autonomicStrainWindows = autonomicStrainWindows(
+            heartRate: health.todayHeartRateSamples,
+            hrv: health.todayHRVSamples,
+            steps: health.todayStepSamples,
+            workouts: health.recentWorkouts,
+            restingBaseline: baseline.restingHeartRate.expected,
+            hrvBaseline: baseline.hrv.expected,
+            day: now, fromHour: endOfSleep, toHour: currentHour
+        )
         var contextualPenalty = 0.0
         if let checkIn {
             contextualPenalty += Double(max(0, checkIn.stress - 3)) * 2.0
@@ -216,6 +236,10 @@ enum EnergyTimelineEngine {
             }
             let awakeProgress = (representedHour - endOfSleep) / max(0.5, awakeHours)
             let basalDrain = max(0, representedHour - endOfSleep) * 0.58
+            // Tras unas 10 h despierto la sensación de reserva no cae de forma
+            // perfectamente lineal. Es un coste circadiano modesto y observable
+            // por tiempo, no una inferencia de enfermedad o fatiga subjetiva.
+            let longWakeDrain = max(0, representedHour - endOfSleep - 10) * 1.0
             let activeEnergy = cumulativeValue(
                 health.todayActiveEnergySamples, through: representedHour, on: now,
                 fallbackTotal: Double(health.snapshot.activeEnergy), currentHour: currentHour
@@ -237,24 +261,32 @@ enum EnergyTimelineEngine {
                 let completion = clamp((representedHour - window.startHour) / duration, 0, 1)
                 return total + window.credit * completion
             }
+            let autonomicDrain = autonomicStrainWindows.reduce(0.0) { total, window in
+                let duration = max(0.01, window.endHour - window.startHour)
+                let completion = clamp((representedHour - window.startHour) / duration, 0, 1)
+                return total + window.penalty * completion
+            }
             let exerciseDrain = events.reduce(0.0) { total, event in
                 let duration = max(0.05, event.endHour - event.startHour)
                 let completed = clamp((representedHour - event.startHour) / duration, 0, 1)
                 return total + event.drain * completed
             }
-            return max(5, wakeEnergy - basalDrain - nonWorkoutDrain -
-                       contextualPenalty * awakeProgress - exerciseDrain + restCredit)
+            return max(5, wakeEnergy - basalDrain - longWakeDrain - nonWorkoutDrain -
+                       contextualPenalty * awakeProgress - exerciseDrain - autonomicDrain + restCredit)
         }
         let exerciseDrain = events.reduce(0) { $0 + $1.drain }
         let restCredit = restWindows.reduce(0) { $0 + $1.credit }
+        let autonomicDrain = autonomicStrainWindows.reduce(0) { $0 + $1.penalty }
         let grossDayDrain = max(0, wakeEnergy - (curve.last ?? wakeEnergy) - Double(exerciseDrain) + restCredit)
         var basis = "Noche +\(Int(recharge.rounded())) · día −\(Int(grossDayDrain.rounded())) · ejercicio −\(Int(exerciseDrain.rounded()))"
         if restCredit >= 0.5 { basis += " · descanso +\(Int(restCredit.rounded()))" }
+        if autonomicDrain >= 0.5 { basis += " · tensión autonómica −\(Int(autonomicDrain.rounded()))" }
         return EnergyModelResult(
             energy: Int((curve.last ?? wakeEnergy).rounded()),
             curve: curve,
             basis: basis,
-            restWindows: restWindows
+            restWindows: restWindows,
+            autonomicStrainWindows: autonomicStrainWindows
         )
     }
 
@@ -300,7 +332,10 @@ enum EnergyTimelineEngine {
                     let deepCalm = medianPulse <= restingBaseline + 4 && (hrvSupports || pulse.count >= 4)
                     result.append(RestorativeWindow(
                         startHour: start, endHour: end,
-                        credit: deepCalm ? 0.50 : 0.30
+                        // 30 min despierto consumen ~0,29 puntos basales. Una
+                        // pausa normal los compensa; ni siquiera una calma muy
+                        // sólida debe fabricar una recarga relevante por sí sola.
+                        credit: deepCalm ? 0.35 : 0.29
                     ))
                 }
             }
@@ -315,6 +350,69 @@ enum EnergyTimelineEngine {
                 merged[merged.count - 1] = RestorativeWindow(
                     startHour: last.startHour, endHour: window.endHour,
                     credit: last.credit + window.credit
+                )
+            } else {
+                merged.append(window)
+            }
+        }
+        return merged
+    }
+
+    /// Detecta tensión autonómica durante reposo aparente. El movimiento y el
+    /// entrenamiento ya tienen sus propios costes, por lo que se excluyen para
+    /// no contar doble. Se requieren al menos tres lecturas de pulso en 30 min;
+    /// HRV sólo aumenta la confianza cuando hay dos muestras bajas recientes.
+    static func autonomicStrainWindows(
+        heartRate: [TrendPoint], hrv: [TrendPoint], steps: [TrendPoint],
+        workouts: [HealthWorkout], restingBaseline: Double?, hrvBaseline: Double?,
+        day: Date, fromHour: Double, toHour: Double
+    ) -> [AutonomicStrainWindow] {
+        guard let restingBaseline, restingBaseline > 0, toHour - fromHour >= 0.5 else { return [] }
+        var result: [AutonomicStrainWindow] = []
+        var start = (fromHour * 2).rounded(.up) / 2
+        while start + 0.5 <= toHour + 0.001 {
+            let end = start + 0.5
+            let pulse = heartRate.filter {
+                let sampleHour = hour(of: $0.date, on: day)
+                return sampleHour >= start && sampleHour < end
+            }.map(\.value).sorted()
+            let stepCount = steps.filter {
+                let sampleHour = hour(of: $0.date, on: day)
+                return sampleHour >= start && sampleHour < end
+            }.reduce(0.0) { $0 + $1.value }
+            let overlapsWorkout = workouts.contains { workout in
+                guard Calendar.current.isDate(workout.date, inSameDayAs: day) else { return false }
+                let workoutStart = hour(of: workout.date, on: day)
+                let workoutEnd = workoutStart + workout.durationMinutes / 60
+                return workoutStart < end && workoutEnd > start
+            }
+            if !overlapsWorkout, stepCount <= 25, pulse.count >= 3 {
+                let medianPulse = pulse[pulse.count / 2]
+                let elevatedThreshold = restingBaseline + max(25, restingBaseline * 0.50)
+                if medianPulse >= elevatedThreshold {
+                    let recentHRV = hrv.filter {
+                        let sampleHour = hour(of: $0.date, on: day)
+                        return sampleHour >= max(fromHour, start - 3) && sampleHour < end
+                    }.map(\.value).sorted()
+                    let lowHRV = hrvBaseline.map { baseline in
+                        recentHRV.count >= 2 && recentHRV[recentHRV.count / 2] <= baseline * 0.80
+                    } ?? false
+                    let veryElevated = medianPulse >= restingBaseline + max(35, restingBaseline * 0.70)
+                    let basePenalty = veryElevated ? 0.90 : 0.55
+                    result.append(AutonomicStrainWindow(
+                        startHour: start, endHour: end,
+                        penalty: basePenalty + (lowHRV ? 0.25 : 0)
+                    ))
+                }
+            }
+            start = end
+        }
+        var merged: [AutonomicStrainWindow] = []
+        for window in result {
+            if let last = merged.last, abs(last.endHour - window.startHour) < 0.001 {
+                merged[merged.count - 1] = AutonomicStrainWindow(
+                    startHour: last.startHour, endHour: window.endHour,
+                    penalty: last.penalty + window.penalty
                 )
             } else {
                 merged.append(window)

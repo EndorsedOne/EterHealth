@@ -710,6 +710,50 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(moving.isEmpty)
     }
 
+    func testEnergyAutonomicStrainRequiresSustainedElevatedPulseAtRest() {
+        let day = Calendar.current.startOfDay(for: Date())
+        func point(_ hour: Double, _ value: Double) -> TrendPoint {
+            TrendPoint(date: day.addingTimeInterval(hour * 3_600), value: value)
+        }
+        let sustained = [point(19.05, 79), point(19.18, 82), point(19.34, 80), point(19.45, 81)]
+        let windows = EnergyTimelineEngine.autonomicStrainWindows(
+            heartRate: sustained, hrv: [], steps: [point(19.2, 4)], workouts: [],
+            restingBaseline: 48, hrvBaseline: 60, day: day, fromHour: 19, toHour: 19.5
+        )
+        XCTAssertEqual(windows.count, 1)
+        XCTAssertGreaterThan(windows[0].penalty, 0)
+
+        let isolated = EnergyTimelineEngine.autonomicStrainWindows(
+            heartRate: [point(19.18, 95)], hrv: [point(19.2, 35)], steps: [], workouts: [],
+            restingBaseline: 48, hrvBaseline: 60, day: day, fromHour: 19, toHour: 19.5
+        )
+        XCTAssertTrue(isolated.isEmpty, "Una lectura aislada no debe convertir ruido fisiológico en fatiga.")
+    }
+
+    func testEnergyAutonomicStrainIsReinforcedByRepeatedLowHRVButRejectedWhenMoving() {
+        let day = Calendar.current.startOfDay(for: Date())
+        func point(_ hour: Double, _ value: Double) -> TrendPoint {
+            TrendPoint(date: day.addingTimeInterval(hour * 3_600), value: value)
+        }
+        let pulse = [point(20.05, 78), point(20.16, 80), point(20.31, 79), point(20.43, 81)]
+        let base = EnergyTimelineEngine.autonomicStrainWindows(
+            heartRate: pulse, hrv: [], steps: [], workouts: [], restingBaseline: 48,
+            hrvBaseline: 60, day: day, fromHour: 20, toHour: 20.5
+        )
+        let reinforced = EnergyTimelineEngine.autonomicStrainWindows(
+            heartRate: pulse, hrv: [point(18.3, 42), point(19.7, 44)], steps: [], workouts: [],
+            restingBaseline: 48, hrvBaseline: 60, day: day, fromHour: 18, toHour: 20.5
+        )
+        XCTAssertGreaterThan(reinforced.last?.penalty ?? 0, base.first?.penalty ?? 0)
+
+        let moving = EnergyTimelineEngine.autonomicStrainWindows(
+            heartRate: pulse, hrv: [point(18.3, 42), point(19.7, 44)], steps: [point(20.2, 180)],
+            workouts: [], restingBaseline: 48, hrvBaseline: 60,
+            day: day, fromHour: 20, toHour: 20.5
+        )
+        XCTAssertTrue(moving.isEmpty, "El movimiento ya se cobra por actividad y no debe contarse otra vez como tensión autonómica.")
+    }
+
     func testFastedTrainingLearnsSeparatelyFromGeneralFasting() {
         let calendar = Calendar(identifier: .gregorian)
         let start = calendar.startOfDay(for: Date()).addingTimeInterval(-40 * 86_400)
