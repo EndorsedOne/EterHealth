@@ -28,6 +28,24 @@ final class EngineTests: XCTestCase {
                    calibration: neutralCalibration, personalAnchor: neutralAnchor)
     }
 
+    func testFreeFocusedRoutinesStayOnTheirRequestedMuscleGroup() {
+        let imports = ImportStore(persistToDisk: false)
+        let chest = StrengthRoutineBuilder.focusedRoutine(
+            name: "Pecho", targetMuscles: ["Pecho"], imports: imports,
+            readiness: 72, muscles: []
+        )
+        let back = StrengthRoutineBuilder.focusedRoutine(
+            name: "Espalda", targetMuscles: ["Espalda"], imports: imports,
+            readiness: 72, muscles: []
+        )
+
+        XCTAssertFalse(chest.exercises.isEmpty)
+        XCTAssertFalse(back.exercises.isEmpty)
+        XCTAssertTrue(chest.exercises.allSatisfy { MuscleMap.groups(for: $0.name).contains("Pecho") })
+        XCTAssertTrue(back.exercises.allSatisfy { MuscleMap.groups(for: $0.name).contains("Espalda") })
+        XCTAssertTrue((chest.exercises + back.exercises).allSatisfy { !$0.sets.isEmpty })
+    }
+
     func testAutomaticBackupComparisonIgnoresCaptureDatesButNotRealChanges() {
         let original = Data(#"{"createdAt":"2026-09-04T06:00:00Z","schemaVersion":8,"health":{"capturedAt":"2026-09-04T06:00:00Z","workouts":[{"id":"one"}]},"lifestyleEvents":[]}"#.utf8)
         let newerCapture = Data(#"{"createdAt":"2026-09-04T07:00:00Z","schemaVersion":8,"health":{"capturedAt":"2026-09-04T07:00:00Z","workouts":[{"id":"one"}]},"lifestyleEvents":[]}"#.utf8)

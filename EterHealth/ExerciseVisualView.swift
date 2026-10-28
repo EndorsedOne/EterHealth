@@ -82,3 +82,73 @@ struct ExerciseVisualView: View {
             : "Músculo objetivo principal: \(first.key). Secundarios: \(secondary)"
     }
 }
+
+/// Miniatura de una rutina completa. Agrega la implicación de todos sus
+/// ejercicios y enseña frontal + posterior porque una sesión puede cargar
+/// ambas caras. Usa el mismo render, MuscleMap y máscaras que el resumen.
+struct RoutineMuscleVisualView: View {
+    let exercises: [RoutineExercise]
+    var height: CGFloat = 64
+
+    private var involvement: [String: Double] {
+        exercises.reduce(into: [:]) { result, exercise in
+            for (muscle, weight) in MuscleMap.involvement(for: exercise.name) {
+                result[muscle, default: 0] += weight * Double(max(1, exercise.sets.count))
+            }
+        }
+    }
+
+    private var maximum: Double { involvement.values.max() ?? 1 }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 4) {
+            figure(
+                image: "BodyComposition", side: .front,
+                muscles: ["Pecho", "Hombros", "Bíceps", "Core", "Cuádriceps"]
+            )
+            figure(
+                image: "BodyCompositionBack", side: .back,
+                muscles: ["Espalda", "Hombros", "Tríceps", "Glúteos", "Isquios", "Gemelos"]
+            )
+        }
+        .frame(height: height)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityDescription)
+    }
+
+    private func figure(image: String, side: MuscleViewSide, muscles: [String]) -> some View {
+        ZStack {
+            Image(image)
+                .resizable().scaledToFit()
+                .saturation(0.10).contrast(1.08).brightness(-0.10)
+                .opacity(0.72)
+
+            ZStack {
+                ForEach(muscles, id: \.self) { muscle in
+                    if let load = involvement[muscle], load > 0 {
+                        AnatomicalMuscleRegion(muscle: muscle, side: side)
+                            .fill(color(for: load).opacity(0.94))
+                            .blendMode(.color)
+                    }
+                }
+            }
+            .mask { Image(image).resizable().scaledToFit() }
+        }
+        .aspectRatio(2.0 / 3.0, contentMode: .fit)
+        .drawingGroup()
+    }
+
+    private func color(for load: Double) -> Color {
+        let ratio = load / max(0.01, maximum)
+        if ratio >= 0.85 { return Color(red: 0.94, green: 0.18, blue: 0.16) }
+        if ratio >= 0.50 { return Color(red: 1.00, green: 0.46, blue: 0.10) }
+        return Color(red: 0.95, green: 0.78, blue: 0.18)
+    }
+
+    private var accessibilityDescription: String {
+        let ordered = involvement.sorted { $0.value > $1.value }.map(\.key)
+        return ordered.isEmpty
+            ? "Rutina sin musculatura identificada"
+            : "Rutina para " + ordered.joined(separator: ", ")
+    }
+}

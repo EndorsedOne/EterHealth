@@ -109,6 +109,10 @@ enum StrengthRoutineBuilder {
             target = ["Espalda", "Bíceps"]
         case let name where name.contains("pierna"):
             target = ["Cuádriceps", "Glúteos", "Isquios", "Gemelos"]
+        case let name where name.contains("pecho") || name.contains("chest"):
+            target = ["Pecho"]
+        case let name where name.contains("espalda") || name.contains("back"):
+            target = ["Espalda"]
         default:
             target = ["Pecho", "Espalda", "Hombros", "Bíceps", "Tríceps", "Cuádriceps", "Glúteos", "Isquios", "Core"]
         }
@@ -123,6 +127,43 @@ enum StrengthRoutineBuilder {
             if leftMatch != rightMatch { return leftMatch > rightMatch }
             return frequency[left.name, default: 0] > frequency[right.name, default: 0]
         }
+    }
+
+    /// Construye una rutina libre para un grupo concreto usando exactamente
+    /// la misma prescripción que las sesiones recomendadas: historial real,
+    /// disponibilidad muscular, objetivos y restricciones activas. Elegirla
+    /// es libre; los datos no se inventan ni se salta la capa de seguridad.
+    static func focusedRoutine(
+        name: String, targetMuscles: Set<String>, imports: ImportStore,
+        readiness: Int, muscles: [MuscleReadiness], maximumExercises: Int = 4
+    ) -> StrengthRoutine {
+        let injuries = InjuryStore.shared.active
+        let candidates = recommendations(for: name, excluding: [], imports: imports).filter {
+            !Set(MuscleMap.groups(for: $0.name)).isDisjoint(with: targetMuscles)
+        }
+        let exercises = candidates.prefix(maximumExercises).compactMap { exercise -> RoutineExercise? in
+            guard var prescribed = StrengthPrescriptionEngine.prescribe(
+                exercise, workouts: imports.workouts, readiness: readiness,
+                muscleReadiness: muscles, injuries: injuries,
+                goals: GoalStore.shared.profile.goals
+            ) else { return nil }
+            let goal = StrengthPrescriptionEngine.goalContext(
+                for: exercise.name, goals: GoalStore.shared.profile.goals
+            )
+            prescribed.targetRIR = StrengthPrescriptionEngine.repRange(for: goal, light: false).estimatedRIR
+            return prescribed
+        }
+        return StrengthRoutine(
+            name: name,
+            subtitle: exercises.map(\.name).joined(separator: " · "),
+            exercises: exercises,
+            lastPerformed: imports.workouts.first { workout in
+                !workout.exercises.allSatisfy {
+                    Set(MuscleMap.groups(for: $0.name)).isDisjoint(with: targetMuscles)
+                }
+            }?.start,
+            historicalVolume: 0
+        )
     }
 
     private static func routineExercise(_ exercise: ImportedExercise) -> RoutineExercise {
@@ -178,6 +219,17 @@ private enum StrengthSheet: Identifiable {
     }
 }
 
+private enum FreeStrengthTemplate: String, CaseIterable, Identifiable {
+    case push = "Push"
+    case pull = "Pull"
+    case legs = "Pierna"
+    case fullBody = "Full body"
+    case chest = "Pecho"
+    case back = "Espalda"
+
+    var id: String { rawValue }
+}
+
 struct StrengthTrainingView: View {
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var health: HealthStore
@@ -222,6 +274,8 @@ struct StrengthTrainingView: View {
             recommendedStrengthSection(strengthForecasts: strengthForecasts, nextTrainable: nextTrainable,
                                        assessment: assessment, plan: plan)
 
+            freeTrainingSection(assessment: assessment, plan: plan)
+
             strengthProgressSection
 
             // Constancia de entrenamiento (movida desde Rendimiento): la carga
@@ -256,6 +310,98 @@ struct StrengthTrainingView: View {
         }
         .onAppear { selectDefaultProgressExercise() }
         .onChange(of: imports.workoutCount) { _, _ in selectDefaultProgressExercise() }
+    }
+
+    private func freeTrainingSection(assessment: TwinAssessment, plan: WeeklyPlanStatus) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            EterSectionHeader("Entrenar ahora", eyebrow: "Siempre disponible")
+            Text("Elige una rutina aunque hoy no esté calendarizada. Éter mantiene tus cargas, RIR, recuperación y restricciones; la recomendación de arriba sigue siendo el mejor encaje del plan.")
+                .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(FreeStrengthTemplate.allCases) { template in
+                        let routine = freeRoutine(template, assessment: assessment, plan: plan)
+                        Button { activeSheet = .liveWorkout(routine) } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                RoutineMuscleVisualView(exercises: routine.exercises, height: 66)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                Text(template.rawValue).font(.headline).foregroundStyle(.primary)
+                                Text("\(routine.exercises.count) ejercicios")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            .frame(width: 124, alignment: .leading)
+                            .padding(14)
+                            .background(EterTheme.raisedSurface)
+                            .clipShape(RoundedRectangle(cornerRadius: EterTheme.cardRadius))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(routine.exercises.isEmpty)
+                        .accessibilityLabel("Comenzar rutina \(template.rawValue)")
+                    }
+                }
+            }
+
+            if assessment.score < 55 {
+                Label("Disponibilidad \(assessment.score)/100: puedes entrenar, pero las cargas y el volumen se ajustan de forma conservadora.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(EterTheme.warning)
+            }
+        }
+        .cardStyle()
+    }
+
+    private func freeRoutine(
+        _ template: FreeStrengthTemplate, assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> StrengthRoutine {
+        let generated: StrengthRoutine
+        switch template {
+        case .push:
+            generated = patternRoutine(.push, name: template.rawValue, assessment: assessment, plan: plan)
+        case .pull:
+            generated = patternRoutine(.pull, name: template.rawValue, assessment: assessment, plan: plan)
+        case .legs:
+            generated = patternRoutine(.legs, name: template.rawValue, assessment: assessment, plan: plan)
+        case .fullBody:
+            let patterns: [StrengthPattern] = [.legs, .push, .pull]
+            let exercises = patterns.flatMap { pattern -> [RoutineExercise] in
+                let routine = patternRoutine(pattern, name: pattern.label, assessment: assessment, plan: plan)
+                return Array(routine.exercises.prefix(pattern == .legs ? 2 : 1))
+            }
+            generated = StrengthRoutine(
+                name: template.rawValue,
+                subtitle: exercises.map(\.name).joined(separator: " · "), exercises: exercises,
+                lastPerformed: nil, historicalVolume: 0
+            )
+        case .chest:
+            generated = StrengthRoutineBuilder.focusedRoutine(
+                name: template.rawValue, targetMuscles: ["Pecho"], imports: imports,
+                readiness: assessment.score, muscles: assessment.muscles
+            )
+        case .back:
+            generated = StrengthRoutineBuilder.focusedRoutine(
+                name: template.rawValue, targetMuscles: ["Espalda"], imports: imports,
+                readiness: assessment.score, muscles: assessment.muscles
+            )
+        }
+        // Las ediciones explícitas del usuario siguen mandando sobre la
+        // generación automática, igual que en el resto de rutinas.
+        return routineStore.routine(named: template.rawValue)
+            ?? StrengthRoutineBuilder.applyingVolumeFactor(generated, factor: min(1, plan.volumeFactor))
+    }
+
+    private func patternRoutine(
+        _ pattern: StrengthPattern, name: String,
+        assessment: TwinAssessment, plan: WeeklyPlanStatus
+    ) -> StrengthRoutine {
+        let proposed = proposedStrength(
+            pattern: pattern, title: name,
+            rationale: "Rutina libre: el usuario elige entrenarla fuera de la secuencia sugerida.",
+            assessment: assessment, plan: plan
+        )
+        return StrengthRoutineBuilder.routine(
+            from: proposed, imports: imports,
+            readiness: assessment.score, muscles: assessment.muscles
+        )
     }
 
     @ViewBuilder private func recommendedStrengthSection(
