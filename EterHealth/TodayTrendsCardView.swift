@@ -30,6 +30,9 @@ struct TodayTrendsCardView: View {
             physiologicalContext
             chart.frame(height: 210)
             legend
+            if !result.activeEnergyBins.isEmpty {
+                activeEnergyRail
+            }
             if result.caffeine.currentMg >= 1 || result.caffeine.bedtimeMg >= 1 {
                 caffeineRail
             }
@@ -37,6 +40,48 @@ struct TodayTrendsCardView: View {
                 .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
         }
         .cardStyle()
+    }
+
+    private var activeEnergyRail: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "flame.fill").foregroundStyle(.orange)
+                Text("Calorías activas").font(.caption.bold())
+                Spacer()
+                Text("\(Int(result.activeEnergyBins.reduce(0) { $0 + $1.calories }.rounded())) kcal hoy")
+                    .font(.caption.bold()).fontDesign(.rounded)
+            }
+            Chart(result.activeEnergyBins) { bin in
+                BarMark(
+                    x: .value("Hora", bin.startHour + 0.25),
+                    y: .value("kcal", bin.calories), width: .fixed(5)
+                )
+                .foregroundStyle(bin.duringWorkout ? Color.orange : Color.teal.opacity(0.72))
+                .cornerRadius(2)
+            }
+            .chartXScale(domain: 0...24)
+            .chartXAxis {
+                AxisMarks(values: [0, 6, 12, 18, 24]) { value in
+                    AxisValueLabel {
+                        if let hour = value.as(Int.self) { Text(String(format: "%02d", hour)) }
+                    }
+                }
+            }
+            .chartYAxis(.hidden)
+            .frame(height: 48)
+            HStack(spacing: 14) {
+                Label("Actividad", systemImage: "circle.fill").foregroundStyle(.teal)
+                Label("Entrenamiento", systemImage: "circle.fill").foregroundStyle(.orange)
+                Spacer()
+                Text("Bloques de 30 min").foregroundStyle(.secondary)
+            }
+            .font(.system(size: 9))
+        }
+        .padding(.vertical, 9).padding(.horizontal, 10)
+        .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Calorías activas de hoy")
+        .accessibilityValue("\(Int(result.activeEnergyBins.reduce(0) { $0 + $1.calories }.rounded())) kilocalorías, distribuidas en bloques de treinta minutos")
     }
 
     private var caffeineRail: some View {
@@ -251,6 +296,10 @@ struct TodayTrendsCardView: View {
         }
         if result.caffeine.currentMg >= 1 {
             parts.append("Cafeína estimada restante ahora \(Int(result.caffeine.currentMg.rounded())) miligramos y \(Int(result.caffeine.bedtimeMg.rounded())) miligramos a la hora habitual de dormir.")
+        }
+        if !result.activeEnergyBins.isEmpty {
+            let calories = result.activeEnergyBins.reduce(0) { $0 + $1.calories }
+            parts.append("Calorías activas registradas hoy \(Int(calories.rounded())) kilocalorías.")
         }
         return parts.joined(separator: " ")
     }

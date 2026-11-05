@@ -22,6 +22,14 @@ enum EnergyTimelineEngine {
         let caffeine: CaffeineTimelineResult
         let restWindows: [RestorativeWindow]
         let autonomicStrainWindows: [AutonomicStrainWindow]
+        let activeEnergyBins: [ActiveEnergyBin]
+    }
+
+    struct ActiveEnergyBin: Identifiable, Equatable {
+        var id: Double { startHour }
+        let startHour: Double
+        let calories: Double
+        let duringWorkout: Bool
     }
 
     struct DailyMetricContext {
@@ -62,8 +70,38 @@ enum EnergyTimelineEngine {
             restingHeartRate: DailyMetricContext(
                 value: baseline.restingHeartRate.current, expected: baseline.restingHeartRate.expected
             ), caffeine: caffeine, restWindows: model.restWindows,
-            autonomicStrainWindows: model.autonomicStrainWindows
+            autonomicStrainWindows: model.autonomicStrainWindows,
+            activeEnergyBins: activeEnergyBins(
+                samples: health.todayActiveEnergySamples, events: events,
+                day: now, through: currentHour
+            )
         )
+    }
+
+    /// Agrupa únicamente muestras reales de Energía activa de HealthKit. No
+    /// distribuye el total diario cuando falta la serie intradía: hacerlo
+    /// dibujaría una precisión temporal que Apple Salud no ha proporcionado.
+    static func activeEnergyBins(
+        samples: [TrendPoint], events: [EterWidgetEnergyEvent], day: Date,
+        through currentHour: Double
+    ) -> [ActiveEnergyBin] {
+        guard !samples.isEmpty else { return [] }
+        var totals: [Int: Double] = [:]
+        for sample in samples where Calendar.current.isDate(sample.date, inSameDayAs: day) && sample.value > 0 {
+            let sampleHour = hour(of: sample.date, on: day)
+            guard sampleHour <= currentHour + 0.001 else { continue }
+            let index = max(0, min(47, Int(floor(sampleHour * 2))))
+            totals[index, default: 0] += sample.value
+        }
+        return totals.keys.sorted().compactMap { index in
+            guard let calories = totals[index], calories > 0 else { return nil }
+            let start = Double(index) / 2
+            let end = start + 0.5
+            let overlapsWorkout = events.contains { $0.startHour < end && $0.endHour > start }
+            return ActiveEnergyBin(
+                startHour: start, calories: calories, duringWorkout: overlapsWorkout
+            )
+        }
     }
 
     struct CaffeineTimelineResult {

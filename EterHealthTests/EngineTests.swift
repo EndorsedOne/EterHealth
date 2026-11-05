@@ -711,6 +711,24 @@ final class EngineTests: XCTestCase {
                       "Un punto aislado de HRV nunca debe inventar una recarga diurna.")
     }
 
+    func testActiveEnergyBinsUseOnlyRealSamplesAndGroupHalfHours() {
+        let day = Calendar.current.startOfDay(for: Date())
+        func point(_ hour: Double, _ value: Double) -> TrendPoint {
+            TrendPoint(date: day.addingTimeInterval(hour * 3_600), value: value)
+        }
+        let bins = EnergyTimelineEngine.activeEnergyBins(
+            samples: [point(8.05, 3), point(8.42, 7), point(9.10, 5)],
+            events: [], day: day, through: 10
+        )
+
+        XCTAssertEqual(bins.map(\.startHour), [8, 9])
+        XCTAssertEqual(bins.map(\.calories), [10, 5])
+        XCTAssertTrue(bins.allSatisfy { !$0.duringWorkout })
+        XCTAssertTrue(EnergyTimelineEngine.activeEnergyBins(
+            samples: [], events: [], day: day, through: 10
+        ).isEmpty, "Sin serie intradía no se debe inventar una distribución del total diario.")
+    }
+
     func testEnergyRestRejectsMovementOrElevatedPulse() {
         let day = Calendar.current.startOfDay(for: Date())
         func point(_ hour: Double, _ value: Double) -> TrendPoint {
