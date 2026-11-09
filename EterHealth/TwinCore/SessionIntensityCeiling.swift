@@ -33,12 +33,16 @@ import Foundation
 struct SessionIntensityCeiling: Equatable {
     /// Los kinds que hoy no pueden proponerse.
     let excluded: Set<PlannedSessionKind>
-    /// A qué se sustituye uno excluido. Siempre un estímulo real y ligero, no
-    /// recuperación: el brief pide explícitamente permitir una sesión ligera
-    /// si las señales son buenas.
+    /// A qué se sustituye uno excluido. Viaje/alerta conservan un estímulo
+    /// ligero; una restricción aguda de seguridad (alcohol abundante reciente)
+    /// sí puede llevar a recuperación.
     let substitute: PlannedSessionKind
     /// La fuerza se mantiene pero con margen: RIR 3–4 en vez de 2–3.
     let capsStrengthIntensity: Bool
+    /// Límite visible de preparación cuando la propia causa impide interpretar
+    /// una fisiología favorable como permiso para entrenar. Hoy sólo lo usa el
+    /// alcohol agudo; el viaje nunca altera por sí solo la puntuación global.
+    let readinessCap: Int?
     /// Los motivos CONCRETOS, ya enumerados. "vuelo nocturno + sueño 5.2 h +
     /// HRV bajo tu banda", no "porque has viajado".
     let reasons: [String]
@@ -63,6 +67,7 @@ struct SessionIntensityCeiling: Equatable {
             // la misma tabla que el resto del plan ya usa.
             substitute: present.map(\.substitute).min { TrainingPlanEngine.forecastSessionLoad($0) < TrainingPlanEngine.forecastSessionLoad($1) } ?? .easyRun,
             capsStrengthIntensity: present.contains(where: \.capsStrengthIntensity),
+            readinessCap: present.compactMap(\.readinessCap).min(),
             reasons: present.flatMap(\.reasons)
         )
     }
@@ -75,7 +80,7 @@ struct SessionIntensityCeiling: Equatable {
         guard let alert, alert.severity == .caution else { return nil }
         return SessionIntensityCeiling(
             excluded: [.qualityRun, .longRun, .hybrid, .brick],
-            substitute: .easyRun, capsStrengthIntensity: false,
+            substitute: .easyRun, capsStrengthIntensity: false, readinessCap: nil,
             reasons: ["\(alert.summary) \(alert.action)"]
         )
     }
@@ -134,7 +139,7 @@ struct SessionIntensityCeiling: Equatable {
         if isHighRisk {
             return SessionIntensityCeiling(
                 excluded: [.qualityRun, .longRun, .hybrid, .brick],
-                substitute: .easyRun, capsStrengthIntensity: true, reasons: reasons
+                substitute: .easyRun, capsStrengthIntensity: true, readinessCap: nil, reasons: reasons
             )
         }
         // Moderado: la tirada larga en Z2 sigue siendo asumible con señales
@@ -142,12 +147,53 @@ struct SessionIntensityCeiling: Equatable {
         // objetivo sobre un reloj que todavía no está en hora.
         return SessionIntensityCeiling(
             excluded: [.qualityRun, .brick],
-            substitute: .easyRun, capsStrengthIntensity: true, reasons: reasons
+            substitute: .easyRun, capsStrengthIntensity: true, readinessCap: nil, reasons: reasons
+        )
+    }
+
+    /// El alcohol aprendido sigue modulando la puntuación en TwinEngine, pero
+    /// una ingesta abundante y reciente no es un fenómeno que un HRV favorable
+    /// pueda "compensar". Esta capa gobierna la sesión, no inventa un BAC ni
+    /// afirma sobriedad: usa únicamente bebidas y hora declaradas.
+    nonisolated static func fromAlcohol(_ events: [LifestyleEvent], now: Date) -> SessionIntensityCeiling? {
+        let recent = events.filter { $0.alcoholDrinks > 0 && $0.date <= now }
+        let drinksIn12Hours = recent.filter { now.timeIntervalSince($0.date) <= 12 * 3_600 }
+            .reduce(0) { $0 + $1.alcoholDrinks }
+        let drinksIn6Hours = recent.filter { now.timeIntervalSince($0.date) <= 6 * 3_600 }
+            .reduce(0) { $0 + $1.alcoholDrinks }
+        let drinksIn3Hours = recent.filter { now.timeIntervalSince($0.date) <= 3 * 3_600 }
+            .reduce(0) { $0 + $1.alcoholDrinks }
+        guard drinksIn3Hours >= 1 || drinksIn6Hours >= 2 || drinksIn12Hours >= 3 else { return nil }
+        let drinks = max(drinksIn3Hours, drinksIn6Hours, drinksIn12Hours)
+        let relevantHours = drinksIn12Hours >= 3 ? 12.0 : (drinksIn6Hours >= 2 ? 6.0 : 3.0)
+        let relevant = recent.filter { now.timeIntervalSince($0.date) <= relevantHours * 3_600 }
+        let hours = relevant.map { now.timeIntervalSince($0.date) / 3_600 }.min() ?? relevantHours
+        let reason = "Alcohol reciente: \(drinks) bebidas registradas hace \(max(0, Int(hours.rounded()))) h."
+
+        if drinksIn12Hours >= 3 {
+            return SessionIntensityCeiling(
+                excluded: [.easyRun, .qualityRun, .longRun, .strength, .hybrid,
+                           .swim, .bike, .brick, .raceDay],
+                substitute: .recovery, capsStrengthIntensity: true,
+                readinessCap: 44,
+                reasons: ["\(reason) Hoy no se recomienda una sesión exigente ni una tirada larga"]
+            )
+        }
+        return SessionIntensityCeiling(
+            excluded: [.qualityRun, .longRun, .hybrid, .brick, .raceDay],
+            substitute: .easyRun, capsStrengthIntensity: true,
+            readinessCap: 61,
+            reasons: ["\(reason) Se limita la intensidad hasta una nueva valoración"]
         )
     }
 
     /// El techo del día: el más restrictivo de la alerta y el viaje.
     nonisolated static func resolve(alert: PhysiologicalAlert?, travel: TravelImpact) -> SessionIntensityCeiling? {
         merged([fromAlert(alert), fromTravel(travel)])
+    }
+
+    nonisolated static func resolve(alert: PhysiologicalAlert?, travel: TravelImpact,
+                                    lifestyle: [LifestyleEvent], now: Date) -> SessionIntensityCeiling? {
+        merged([fromAlert(alert), fromTravel(travel), fromAlcohol(lifestyle, now: now)])
     }
 }

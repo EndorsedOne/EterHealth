@@ -1141,7 +1141,10 @@ enum TrainingPlanEngine {
         // rebajarla, y nunca a recuperación. Ver SessionIntensityCeiling para
         // las dos reglas que no se negocian (el viaje jamás anula el
         // calendario, y la fuerza se rebaja en vez de sustituirse).
-        let ceiling = SessionIntensityCeiling.resolve(alert: physiologicalAlert, travel: travel)
+        let ceiling = SessionIntensityCeiling.resolve(
+            alert: physiologicalAlert, travel: travel,
+            lifestyle: context.events, now: now
+        )
         if let ceiling, ceiling.excludes(next) {
             rationale = "\(ceiling.explanation) Se sustituye \(next.rawValue.lowercased()) por un estímulo más suave."
             next = ceiling.substitute

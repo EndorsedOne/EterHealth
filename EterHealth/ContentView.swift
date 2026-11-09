@@ -356,7 +356,8 @@ struct ContentView: View {
                          profile: goals.profile, events: lifestyle.events, reviews: workoutReviews.reviews,
                          activeInjuries: injuries.active, calibration: twinStates.calibration,
                          personalAnchor: twinStates.personalAnchor(),
-                         travel: travel.episodeForEvaluation(), travelHistory: travel.episodes)
+                         travel: travel.episodeForEvaluation(), travelHistory: travel.episodes,
+                         basalMetabolicRateKcal: inBody.latest?.basalMetabolicRateKcal)
     }
 
     private func scheduleDashboardRefresh(includeBackup: Bool = false) {
@@ -1288,6 +1289,11 @@ struct ContentView: View {
             ReadinessCard(
                 assessment: assessment,
                 currentEnergy: dashboard.energyTimeline?.energy,
+                acuteTrainingRestriction: SessionIntensityCeiling
+                    .fromAlcohol(lifestyle.events, now: Date())
+                    .map { $0.explanation },
+                acuteRecoveryOnly: SessionIntensityCeiling
+                    .fromAlcohol(lifestyle.events, now: Date())?.substitute == .recovery,
                 trust: readinessTrust(assessment.baselineConfidence)
             )
         }
@@ -1458,7 +1464,8 @@ struct ContentView: View {
         let energyTimeline = EnergyTimelineEngine.build(
             assessment: assessment, health: health, imports: imports,
             checkIn: checkIns.entry(), lifestyle: lifestyle.recent(before: Date(), hours: 30),
-            travel: travel.episodeForEvaluation()
+            travel: travel.episodeForEvaluation(),
+            basalMetabolicRateKcal: inBody.latest?.basalMetabolicRateKcal
         )
         // Driven by the plan's own structured PlannedSessionKind, not by
         // re-parsing the rendered Spanish recommendation text — see

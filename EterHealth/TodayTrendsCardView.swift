@@ -28,10 +28,10 @@ struct TodayTrendsCardView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             physiologicalContext
-            chart.frame(height: 210)
+            chart.frame(height: 235)
             legend
-            if !result.activeEnergyBins.isEmpty {
-                activeEnergyRail
+            if !result.calorieBins.isEmpty {
+                calorieRail
             }
             if result.caffeine.currentMg >= 1 || result.caffeine.bedtimeMg >= 1 {
                 caffeineRail
@@ -42,21 +42,29 @@ struct TodayTrendsCardView: View {
         .cardStyle()
     }
 
-    private var activeEnergyRail: some View {
-        VStack(alignment: .leading, spacing: 7) {
+    private var calorieRail: some View {
+        let active = result.calorieBins.last?.cumulativeActive ?? 0
+        let total = result.calorieBins.last?.cumulativeTotal ?? active
+        return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Image(systemName: "flame.fill").foregroundStyle(.orange)
-                Text("Calorías activas").font(.caption.bold())
+                Text("Calorías gastadas").font(.caption.bold())
                 Spacer()
-                Text("\(Int(result.activeEnergyBins.reduce(0) { $0 + $1.calories }.rounded())) kcal hoy")
+                Text("\(Int(total.rounded())) total · \(Int(active.rounded())) activas")
                     .font(.caption.bold()).fontDesign(.rounded)
             }
-            Chart(result.activeEnergyBins) { bin in
+            Chart(result.calorieBins) { bin in
                 BarMark(
                     x: .value("Hora", bin.startHour + 0.25),
-                    y: .value("kcal", bin.calories), width: .fixed(5)
+                    y: .value("Total", bin.cumulativeTotal), width: .fixed(7)
                 )
-                .foregroundStyle(bin.duringWorkout ? Color.orange : Color.teal.opacity(0.72))
+                .foregroundStyle(Color.orange.opacity(0.25))
+                .cornerRadius(2)
+                BarMark(
+                    x: .value("Hora", bin.startHour + 0.25),
+                    y: .value("Activas", bin.cumulativeActive), width: .fixed(4)
+                )
+                .foregroundStyle(Color.orange.opacity(0.88))
                 .cornerRadius(2)
             }
             .chartXScale(domain: 0...24)
@@ -67,21 +75,26 @@ struct TodayTrendsCardView: View {
                     }
                 }
             }
-            .chartYAxis(.hidden)
-            .frame(height: 48)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) {
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.06))
+                    AxisValueLabel()
+                }
+            }
+            .frame(height: 78)
             HStack(spacing: 14) {
-                Label("Actividad", systemImage: "circle.fill").foregroundStyle(.teal)
-                Label("Entrenamiento", systemImage: "circle.fill").foregroundStyle(.orange)
+                Label("Total acumulado", systemImage: "square.fill").foregroundStyle(Color.orange.opacity(0.45))
+                Label("Activas acumuladas", systemImage: "square.fill").foregroundStyle(.orange)
                 Spacer()
-                Text("Bloques de 30 min").foregroundStyle(.secondary)
             }
             .font(.system(size: 9))
+            Text(result.calorieSource).font(.caption2).foregroundStyle(.secondary)
         }
         .padding(.vertical, 9).padding(.horizontal, 10)
         .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Calorías activas de hoy")
-        .accessibilityValue("\(Int(result.activeEnergyBins.reduce(0) { $0 + $1.calories }.rounded())) kilocalorías, distribuidas en bloques de treinta minutos")
+        .accessibilityLabel("Calorías gastadas hoy")
+        .accessibilityValue("\(Int(total.rounded())) kilocalorías totales, \(Int(active.rounded())) activas")
     }
 
     private var caffeineRail: some View {
@@ -174,11 +187,26 @@ struct TodayTrendsCardView: View {
 
     private var chart: some View {
         Chart {
+            // La banda principal conserva literalmente la escala 0–100. El
+            // pequeño espacio superior sólo existe para mostrar pulso >100
+            // sin comprimir la lectura útil de la energía.
+            RectangleMark(
+                xStart: .value("Inicio día", 0), xEnd: .value("Fin día", 24),
+                yStart: .value("Base", 0), yEnd: .value("Techo energía", 100)
+            )
+            .foregroundStyle(Color.primary.opacity(0.012))
+            RuleMark(y: .value("Techo energía", 100))
+                .foregroundStyle(Color.primary.opacity(0.14))
+                .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 4]))
             if let start = result.sleepStartHour, let end = result.sleepEndHour, end > start {
                 RectangleMark(
                     xStart: .value("Inicio", start), xEnd: .value("Fin", end),
                     yStart: .value("min", 0), yEnd: .value("max", 100)
-                ).foregroundStyle(Color.indigo.opacity(0.10))
+                )
+                .foregroundStyle(LinearGradient(
+                    colors: [Color.indigo.opacity(0.16), Color.blue.opacity(0.07)],
+                    startPoint: .leading, endPoint: .trailing
+                ))
             }
             ForEach(Array(result.restWindows.enumerated()), id: \.offset) { _, window in
                 RectangleMark(
@@ -186,12 +214,47 @@ struct TodayTrendsCardView: View {
                     xEnd: .value("Fin descanso", window.endHour),
                     yStart: .value("min", 0), yEnd: .value("max", 100)
                 )
-                .foregroundStyle(Color.blue.opacity(0.055))
+                .foregroundStyle(LinearGradient(
+                    colors: [Color.blue.opacity(0.05), Color.cyan.opacity(0.15), Color.blue.opacity(0.04)],
+                    startPoint: .leading, endPoint: .trailing
+                ))
+            }
+            ForEach(Array(result.autonomicStrainWindows.enumerated()), id: \.offset) { _, window in
+                RectangleMark(
+                    xStart: .value("Inicio activación", window.startHour),
+                    xEnd: .value("Fin activación", window.endHour),
+                    yStart: .value("min", 0), yEnd: .value("max", 100)
+                )
+                .foregroundStyle(LinearGradient(
+                    colors: [Color.yellow.opacity(0.035), Color.orange.opacity(0.14), Color.red.opacity(0.07)],
+                    startPoint: .leading, endPoint: .trailing
+                ))
+            }
+            ForEach(Array(result.events.enumerated()), id: \.offset) { _, event in
+                RectangleMark(
+                    xStart: .value("Inicio ejercicio", event.startHour),
+                    xEnd: .value("Fin ejercicio", event.endHour),
+                    yStart: .value("min", 0), yEnd: .value("max", 100)
+                )
+                .foregroundStyle(LinearGradient(
+                    colors: [Color.orange.opacity(0.07), Color.red.opacity(0.16), Color.orange.opacity(0.05)],
+                    startPoint: .leading, endPoint: .trailing
+                ))
             }
             ForEach(curvePoints) { point in
                 AreaMark(x: .value("Hora", point.hour), y: .value("Energía", point.value))
                     .foregroundStyle(LinearGradient(colors: [energyColor.opacity(0.28), .clear], startPoint: .top, endPoint: .bottom))
                     .interpolationMethod(.catmullRom)
+            }
+            ForEach(result.heartRatePoints) { point in
+                LineMark(
+                    x: .value("Hora pulso", point.hour),
+                    y: .value("Pulso", pulseChartValue(point.bpm)),
+                    series: .value("Tramo pulso", point.segment)
+                )
+                    .foregroundStyle(Color.red.opacity(0.72))
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
             }
             ForEach(curvePoints) { point in
                 LineMark(x: .value("Hora", point.hour), y: .value("Energía", point.value))
@@ -206,7 +269,7 @@ struct TodayTrendsCardView: View {
             }
         }
         .chartXScale(domain: 0...24)
-        .chartYScale(domain: 0...100)
+        .chartYScale(domain: 0...pulseChartCeiling)
         .chartXAxis {
             AxisMarks(values: [0, 6, 12, 18, 24]) { value in
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
@@ -229,7 +292,7 @@ struct TodayTrendsCardView: View {
                         marker(proxy: proxy, rect: rect, hour: (event.startHour + event.endHour) / 2,
                                symbol: event.symbol, color: .orange, y: rect.minY + 10 + CGFloat(index % 2) * 22)
                     }
-                    ForEach(Array(result.inputMarkers.enumerated()), id: \.offset) { index, input in
+                    ForEach(Array(result.inputMarkers.filter { $0.kind != "coffee" }.enumerated()), id: \.offset) { index, input in
                         marker(proxy: proxy, rect: rect, hour: input.hour,
                                symbol: input.symbol, color: inputColor(input.kind),
                                y: rect.maxY - 10 - CGFloat(index % 2) * 22)
@@ -256,6 +319,9 @@ struct TodayTrendsCardView: View {
     private var legend: some View {
         HStack(spacing: 14) {
             Label("Energía ahora", systemImage: "bolt.fill").foregroundStyle(energyColor)
+            if let pulse = result.heartRatePoints.last?.bpm {
+                Label("Pulso \(Int(pulse.rounded())) ppm", systemImage: "waveform.path.ecg").foregroundStyle(.red)
+            }
             if !result.inputMarkers.isEmpty { Label("Contexto", systemImage: "circle.fill").foregroundStyle(.teal) }
             if !result.events.isEmpty { Label("Ejercicio", systemImage: "circle.fill").foregroundStyle(.orange) }
             if !result.restWindows.isEmpty { Label("Descanso", systemImage: "pause.circle.fill").foregroundStyle(.blue) }
@@ -269,6 +335,18 @@ struct TodayTrendsCardView: View {
 
     private var energyColor: Color {
         result.energy >= 65 ? Color(red: 0.50, green: 0.78, blue: 0.39) : result.energy >= 35 ? .yellow : .orange
+    }
+
+    /// Hasta 100, ppm y posición son exactamente el mismo número. Por encima
+    /// de 100 reservamos una franja comprimida: deja claro que el pulso salió
+    /// de la escala de energía sin aplastar toda la curva 0–100.
+    private func pulseChartValue(_ bpm: Double) -> Double {
+        bpm <= 100 ? bpm : 100 + (bpm - 100) * 0.22
+    }
+
+    private var pulseChartCeiling: Double {
+        let peak = result.heartRatePoints.map { pulseChartValue($0.bpm) }.max() ?? 100
+        return max(105, min(130, peak + 4))
     }
 
     private func inputColor(_ kind: String) -> Color {
@@ -297,9 +375,8 @@ struct TodayTrendsCardView: View {
         if result.caffeine.currentMg >= 1 {
             parts.append("Cafeína estimada restante ahora \(Int(result.caffeine.currentMg.rounded())) miligramos y \(Int(result.caffeine.bedtimeMg.rounded())) miligramos a la hora habitual de dormir.")
         }
-        if !result.activeEnergyBins.isEmpty {
-            let calories = result.activeEnergyBins.reduce(0) { $0 + $1.calories }
-            parts.append("Calorías activas registradas hoy \(Int(calories.rounded())) kilocalorías.")
+        if let calories = result.calorieBins.last {
+            parts.append("Calorías registradas hoy \(Int(calories.cumulativeTotal.rounded())) totales y \(Int(calories.cumulativeActive.rounded())) activas.")
         }
         return parts.joined(separator: " ")
     }

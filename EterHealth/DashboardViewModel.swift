@@ -40,7 +40,8 @@ final class DashboardViewModel: ObservableObject {
     func refresh(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                 profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
                 activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
-                travel: TravelEpisode?, travelHistory: [TravelEpisode]) {
+                travel: TravelEpisode?, travelHistory: [TravelEpisode],
+                basalMetabolicRateKcal: Double? = nil) {
         let context = TwinContext(profile: profile, events: events, reviews: reviews,
                                   activeInjuries: activeInjuries, calibration: calibration,
                                   personalAnchor: personalAnchor, travel: travel, travelHistory: travelHistory)
@@ -48,7 +49,8 @@ final class DashboardViewModel: ObservableObject {
         self.assessment = assessment
         energyTimeline = EnergyTimelineEngine.build(
             assessment: assessment, health: health, imports: imports,
-            checkIn: checkIn, lifestyle: events, travel: travel
+            checkIn: checkIn, lifestyle: events, travel: travel,
+            basalMetabolicRateKcal: basalMetabolicRateKcal
         )
         plan = TrainingPlanEngine.status(
             health: health, imports: imports, readiness: assessment.score,

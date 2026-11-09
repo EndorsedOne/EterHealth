@@ -25,9 +25,16 @@ enum TravelNotificationRouting {
 }
 
 final class EterNotificationDelegate: NSObject, UIApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate {
+    private let backgroundVitals = BackgroundVitalsObserver()
+
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // Apple exige instalar los observer queries aquí: HealthKit puede
+        // despertar el proceso sin crear una escena SwiftUI ni ejecutar sus
+        // `.task`. Antes, en ese caso el widget no recibía HRV/pulso hasta que
+        // el usuario abría Éter manualmente.
+        backgroundVitals.start()
         return true
     }
 

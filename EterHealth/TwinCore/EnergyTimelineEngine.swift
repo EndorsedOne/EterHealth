@@ -22,9 +22,33 @@ enum EnergyTimelineEngine {
         let caffeine: CaffeineTimelineResult
         let restWindows: [RestorativeWindow]
         let autonomicStrainWindows: [AutonomicStrainWindow]
-        let activeEnergyBins: [ActiveEnergyBin]
+        let heartRatePoints: [HeartRatePoint]
+        let calorieBins: [CalorieBin]
+        let calorieSource: String
     }
 
+    struct HeartRatePoint: Identifiable, Equatable {
+        var id: Date { date }
+        let date: Date
+        let hour: Double
+        let bpm: Double
+        /// Un tramo nuevo comienza cuando HealthKit deja un hueco largo. Así
+        /// la gráfica no inventa una diagonal entre dos lecturas aisladas.
+        let segment: Int
+    }
+
+    struct CalorieBin: Identifiable, Equatable {
+        var id: Double { startHour }
+        let startHour: Double
+        let active: Double
+        let basal: Double
+        let cumulativeActive: Double
+        let cumulativeTotal: Double
+    }
+
+    /// Compatibilidad del helper probado que agrupa sólo energía activa. La
+    /// tarjeta nueva consume `CalorieBin`, pero otros consumidores todavía
+    /// pueden necesitar distinguir actividad dentro/fuera de entrenamientos.
     struct ActiveEnergyBin: Identifiable, Equatable {
         var id: Double { startHour }
         let startHour: Double
@@ -44,6 +68,7 @@ enum EnergyTimelineEngine {
     @MainActor
     static func build(assessment: TwinAssessment, health: HealthStore, imports: ImportStore,
                       checkIn: DailyCheckIn?, lifestyle: [LifestyleEvent], travel: TravelEpisode? = nil,
+                      basalMetabolicRateKcal: Double? = nil,
                       now: Date = Date()) -> Result {
         let currentHour = hour(of: now, on: now)
         let sleepStart = health.sleepStages.startDate.map { max(0, hour(of: $0, on: now)) }
@@ -59,6 +84,12 @@ enum EnergyTimelineEngine {
             lifestyle: lifestyle, sleepSchedule: health.sleepScheduleHistory,
             now: now, currentHour: currentHour
         )
+        let calories = calorieTimeline(
+            activeSamples: health.todayActiveEnergySamples,
+            basalSamples: health.todayBasalEnergySamples,
+            fallbackDailyBasal: basalMetabolicRateKcal,
+            day: now, through: currentHour
+        )
         return Result(
             energy: model.energy, curve: model.curve, basis: model.basis, events: events,
             inputMarkers: inputMarkers(
@@ -71,11 +102,71 @@ enum EnergyTimelineEngine {
                 value: baseline.restingHeartRate.current, expected: baseline.restingHeartRate.expected
             ), caffeine: caffeine, restWindows: model.restWindows,
             autonomicStrainWindows: model.autonomicStrainWindows,
-            activeEnergyBins: activeEnergyBins(
-                samples: health.todayActiveEnergySamples, events: events,
-                day: now, through: currentHour
-            )
+            heartRatePoints: heartRatePoints(samples: health.todayHeartRateSamples, day: now, through: currentHour),
+            calorieBins: calories.bins, calorieSource: calories.source
         )
+    }
+
+    static func heartRatePoints(samples: [TrendPoint], day: Date, through currentHour: Double) -> [HeartRatePoint] {
+        let valid = samples.filter {
+            Calendar.current.isDate($0.date, inSameDayAs: day)
+                && hour(of: $0.date, on: day) <= currentHour + 0.001
+                && $0.value >= 30 && $0.value <= 240
+        }.sorted { $0.date < $1.date }
+        var segment = 0
+        var previousDate: Date?
+        return valid.map { sample in
+            // El Watch suele entregar pulso cada pocos minutos. Un hueco de
+            // más de 30 min es ausencia de señal, no una transición lineal.
+            if let previousDate, sample.date.timeIntervalSince(previousDate) > 30 * 60 { segment += 1 }
+            previousDate = sample.date
+            return HeartRatePoint(date: sample.date, hour: hour(of: sample.date, on: day),
+                                  bpm: sample.value, segment: segment)
+        }
+    }
+
+    struct CalorieTimelineResult {
+        let bins: [CalorieBin]
+        let source: String
+    }
+
+    /// Barras acumuladas de gasto real. Apple Salud gana siempre que entregue
+    /// energía basal intradía; el BMR de InBody sólo completa la base cuando
+    /// Apple no la proporciona, distribuyéndolo uniformemente y declarándolo.
+    static func calorieTimeline(activeSamples: [TrendPoint], basalSamples: [TrendPoint],
+                                fallbackDailyBasal: Double?, day: Date,
+                                through currentHour: Double) -> CalorieTimelineResult {
+        var activeByBin: [Int: Double] = [:]
+        var basalByBin: [Int: Double] = [:]
+        func collect(_ samples: [TrendPoint], into target: inout [Int: Double]) {
+            for sample in samples where Calendar.current.isDate(sample.date, inSameDayAs: day) && sample.value > 0 {
+                let sampleHour = hour(of: sample.date, on: day)
+                guard sampleHour <= currentHour + 0.001 else { continue }
+                target[max(0, min(47, Int(floor(sampleHour * 2)))), default: 0] += sample.value
+            }
+        }
+        collect(activeSamples, into: &activeByBin)
+        collect(basalSamples, into: &basalByBin)
+
+        let usesAppleBasal = !basalByBin.isEmpty
+        if !usesAppleBasal, let daily = fallbackDailyBasal, daily > 0 {
+            let completedBins = max(1, min(48, Int(ceil(currentHour * 2))))
+            for index in 0..<completedBins { basalByBin[index] = daily / 48 }
+        }
+        let indices = Set(activeByBin.keys).union(basalByBin.keys).sorted()
+        var cumulativeActive = 0.0
+        var cumulativeTotal = 0.0
+        let bins = indices.map { index -> CalorieBin in
+            let active = activeByBin[index, default: 0]
+            let basal = basalByBin[index, default: 0]
+            cumulativeActive += active
+            cumulativeTotal += active + basal
+            return CalorieBin(startHour: Double(index) / 2, active: active, basal: basal,
+                              cumulativeActive: cumulativeActive, cumulativeTotal: cumulativeTotal)
+        }
+        let source = usesAppleBasal ? "Total y basal de Apple Salud"
+            : (fallbackDailyBasal != nil ? "Activas de Apple Salud · basal estimada con tu último InBody" : "Solo activas de Apple Salud")
+        return CalorieTimelineResult(bins: bins, source: source)
     }
 
     /// Agrupa únicamente muestras reales de Energía activa de HealthKit. No
@@ -190,6 +281,32 @@ enum EnergyTimelineEngine {
         let penalty: Double
     }
 
+    /// Coste agudo temporal de alcohol ya registrado. No estima alcoholemia:
+    /// traduce una exposición conocida a la reserva subjetiva del modelo. El
+    /// efecto sube durante 90 min, se mantiene hasta 4 h y se desvanece hasta
+    /// las 18 h. Antes de la toma siempre es cero, evitando reescribir el día.
+    static func acuteAlcoholPenalty(lifestyle: [LifestyleEvent], at date: Date,
+                                    after wakeDate: Date) -> Double {
+        let penalty = lifestyle.reduce(0.0) { total, event in
+            guard event.alcoholDrinks > 0, event.date > wakeDate, date >= event.date else { return total }
+            let age = date.timeIntervalSince(event.date) / 3_600
+            guard age <= 18 else { return total }
+            let onset = min(1, age / 1.5)
+            let recovery = age <= 4 ? 1 : max(0, 1 - (age - 4) / 14)
+            return total + min(30, Double(event.alcoholDrinks) * 5) * onset * recovery
+        }
+        return min(35, penalty)
+    }
+
+    /// Consumo inevitable de reserva por permanecer despierto. No depende de
+    /// llevar el Watch ni de que Apple entregue calorías: esas señales añaden
+    /// coste, pero su ausencia no puede dejar la batería en 90 al acabar el
+    /// día. Tras diez horas despierto aumenta suavemente por presión circadiana.
+    nonisolated static func diurnalDrain(awakeHours: Double) -> Double {
+        let hours = max(0, awakeHours)
+        return min(hours, 10) * 0.90 + max(0, hours - 10) * 1.60
+    }
+
     @MainActor
     static func energyModel(
         assessment: TwinAssessment, health: HealthStore, baseline: PersonalBaselineProfile,
@@ -206,8 +323,13 @@ enum EnergyTimelineEngine {
         let hrvAdjustment = clamp((baseline.hrv.deviation ?? 0) * 4, -8, 8)
         let restingAdjustment = clamp((baseline.restingHeartRate.deviation ?? 0) * 3, -6, 6)
         let subjectiveSleep = Double((checkIn?.sleepFeeling ?? 3) - 3) * 3
+        let endOfSleep = min(currentHour, max(0.5, sleepEndHour ?? min(8, currentHour)))
+        let startOfSleep = min(endOfSleep, max(0, sleepStartHour ?? 0))
+        let startOfDay = Calendar.current.startOfDay(for: now)
+        let wakeDate = startOfDay.addingTimeInterval(endOfSleep * 3_600)
         let overnightAlcohol = lifestyle.filter {
-            $0.alcoholDrinks > 0 && now.timeIntervalSince($0.date) <= 18 * 3600
+            $0.alcoholDrinks > 0 && $0.date <= wakeDate
+                && wakeDate.timeIntervalSince($0.date) <= 18 * 3_600
         }.reduce(0.0) { $0 + Double($1.alcoholDrinks) * 2.5 }
         let illnessPenalty = checkIn?.illness == true ? 10.0 : 0
         // El coste del viaje entra por assessment.score (vía TravelImpact), no
@@ -230,8 +352,6 @@ enum EnergyTimelineEngine {
         let midnightEnergy = clamp(wakeEnergy - rechargePotential, 5, 65)
         let recharge = wakeEnergy - midnightEnergy
 
-        let endOfSleep = min(currentHour, max(0.5, sleepEndHour ?? min(8, currentHour)))
-        let startOfSleep = min(endOfSleep, max(0, sleepStartHour ?? 0))
         let awakeHours = max(0, currentHour - endOfSleep)
         let restWindows = restorativeWindows(
             heartRate: health.todayHeartRateSamples,
@@ -273,11 +393,8 @@ enum EnergyTimelineEngine {
                 return min(100, midnightEnergy + recharge * progress)
             }
             let awakeProgress = (representedHour - endOfSleep) / max(0.5, awakeHours)
-            let basalDrain = max(0, representedHour - endOfSleep) * 0.58
-            // Tras unas 10 h despierto la sensación de reserva no cae de forma
-            // perfectamente lineal. Es un coste circadiano modesto y observable
-            // por tiempo, no una inferencia de enfermedad o fatiga subjetiva.
-            let longWakeDrain = max(0, representedHour - endOfSleep - 10) * 1.0
+            let timeAwake = max(0, representedHour - endOfSleep)
+            let basalDrain = diurnalDrain(awakeHours: timeAwake)
             let activeEnergy = cumulativeValue(
                 health.todayActiveEnergySamples, through: representedHour, on: now,
                 fallbackTotal: Double(health.snapshot.activeEnergy), currentHour: currentHour
@@ -309,8 +426,13 @@ enum EnergyTimelineEngine {
                 let completed = clamp((representedHour - event.startHour) / duration, 0, 1)
                 return total + event.drain * completed
             }
-            return max(5, wakeEnergy - basalDrain - longWakeDrain - nonWorkoutDrain -
-                       contextualPenalty * awakeProgress - exerciseDrain - autonomicDrain + restCredit)
+            let representedDate = startOfDay.addingTimeInterval(representedHour * 3_600)
+            let acuteAlcoholDrain = acuteAlcoholPenalty(
+                lifestyle: lifestyle, at: representedDate, after: wakeDate
+            )
+            return max(5, wakeEnergy - basalDrain - nonWorkoutDrain -
+                       contextualPenalty * awakeProgress - exerciseDrain - autonomicDrain -
+                       acuteAlcoholDrain + restCredit)
         }
         let exerciseDrain = events.reduce(0) { $0 + $1.drain }
         let restCredit = restWindows.reduce(0) { $0 + $1.credit }
@@ -319,6 +441,8 @@ enum EnergyTimelineEngine {
         var basis = "Noche +\(Int(recharge.rounded())) · día −\(Int(grossDayDrain.rounded())) · ejercicio −\(Int(exerciseDrain.rounded()))"
         if restCredit >= 0.5 { basis += " · descanso +\(Int(restCredit.rounded()))" }
         if autonomicDrain >= 0.5 { basis += " · tensión autonómica −\(Int(autonomicDrain.rounded()))" }
+        let currentAlcoholDrain = acuteAlcoholPenalty(lifestyle: lifestyle, at: now, after: wakeDate)
+        if currentAlcoholDrain >= 0.5 { basis += " · alcohol reciente −\(Int(currentAlcoholDrain.rounded()))" }
         return EnergyModelResult(
             energy: Int((curve.last ?? wakeEnergy).rounded()),
             curve: curve,

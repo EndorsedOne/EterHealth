@@ -649,6 +649,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Éter";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Éter lee tus datos de actividad, sueño y corazón para crear tu gemelo personal y mostrarte tendencias.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Éter no escribirá datos sin pedirte permiso.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiredDeviceCapabilities = "arm64 healthkit";
@@ -674,6 +675,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Éter";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Éter lee tus datos de actividad, sueño y corazón para crear tu gemelo personal y mostrarte tendencias.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Éter no escribirá datos sin pedirte permiso.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiredDeviceCapabilities = "arm64 healthkit";

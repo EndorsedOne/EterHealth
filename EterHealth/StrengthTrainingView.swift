@@ -1757,6 +1757,13 @@ struct LiveStrengthWorkoutView: View {
                 )
             )
             .onChange(of: workoutContextSignature) { _, _ in syncWorkoutContext() }
+            .task {
+                syncLiveActivity(startIfNeeded: true)
+                while !Task.isCancelled && !hasCompleted {
+                    processLiveActivityCommands()
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+            }
             .task(id: restEndsAt) {
                 guard let expectedEnd = restEndsAt else { return }
                 let delay = expectedEnd.timeIntervalSinceNow
@@ -2212,15 +2219,99 @@ struct LiveStrengthWorkoutView: View {
     /// siguiente ya no le dice nada nuevo y no dispara envío.
     private var workoutContextSignature: String {
         let completed = exercises.flatMap(\.sets).filter(\.completed).count
-        return ["\(completed)", "\(restEndsAt?.timeIntervalSince1970 ?? 0)"].joined(separator: "|")
+        let currentRIR = exercises.lazy.flatMap(\.sets).first(where: { !$0.completed })?.actualRIR
+        return ["\(completed)", "\(restEndsAt?.timeIntervalSince1970 ?? 0)", "\(currentRIR ?? -1)"].joined(separator: "|")
+    }
+
+    private var workoutID: String { "\(routine.name)|\(startedAt.timeIntervalSince1970)" }
+
+    private func liveActivityState() -> StrengthLiveActivityAttributes.ContentState? {
+        let completed = exercises.flatMap(\.sets).filter(\.completed).count
+        let total = exercises.reduce(0) { $0 + $1.sets.count }
+        for exercise in exercises {
+            if let index = exercise.sets.firstIndex(where: { !$0.completed }) {
+                let set = exercise.sets[index]
+                return StrengthLiveActivityAttributes.ContentState(
+                    exerciseName: exercise.name, setID: set.id.uuidString,
+                    setNumber: index + 1, totalSets: exercise.sets.count,
+                    weight: set.weight, reps: set.reps, targetRIR: exercise.targetRIR,
+                    actualRIR: set.actualRIR,
+                    completedSets: completed, totalSetsInWorkout: total,
+                    restSeconds: exercise.restSeconds, restEndsAt: restEndsAt,
+                    canCompleteSet: true, updatedAt: Date()
+                )
+            }
+        }
+        guard let exercise = exercises.last, let set = exercise.sets.last else { return nil }
+        return StrengthLiveActivityAttributes.ContentState(
+            exerciseName: exercise.name, setID: set.id.uuidString,
+            setNumber: exercise.sets.count, totalSets: exercise.sets.count,
+            weight: set.weight, reps: set.reps, targetRIR: exercise.targetRIR,
+            actualRIR: set.actualRIR,
+            completedSets: completed, totalSetsInWorkout: total,
+            restSeconds: exercise.restSeconds, restEndsAt: restEndsAt,
+            canCompleteSet: false, updatedAt: Date()
+        )
+    }
+
+    private func syncLiveActivity(startIfNeeded: Bool = false) {
+        guard let state = liveActivityState() else { return }
+        if startIfNeeded {
+            StrengthLiveActivityController.shared.start(
+                workoutID: workoutID, routineName: routine.name, startedAt: startedAt, state: state
+            )
+        } else {
+            StrengthLiveActivityController.shared.update(workoutID: workoutID, state: state)
+        }
+    }
+
+    /// Reconciliación idempotente de las acciones ejecutadas desde la pantalla
+    /// bloqueada. La extensión persiste primero el comando; si iOS suspende la
+    /// app, se aplica al reanudar sin perder ni duplicar la serie.
+    private func processLiveActivityCommands() {
+        let commands = StrengthLiveActivityCommandStore.pending(for: workoutID)
+        guard !commands.isEmpty else { return }
+        var consumed: Set<UUID> = []
+        for command in commands {
+            switch command.action {
+            case .completeSet:
+                guard let setID = command.setID, let uuid = UUID(uuidString: setID) else {
+                    consumed.insert(command.id); continue
+                }
+                if let exerciseIndex = exercises.firstIndex(where: { $0.sets.contains(where: { $0.id == uuid }) }),
+                   let setIndex = exercises[exerciseIndex].sets.firstIndex(where: { $0.id == uuid }) {
+                    if !exercises[exerciseIndex].sets[setIndex].completed {
+                        exercises[exerciseIndex].sets[setIndex].completed = true
+                        restEndsAt = Date().addingTimeInterval(TimeInterval(max(15, command.value)))
+                    }
+                }
+            case .adjustRest:
+                adjustRest(bySeconds: command.value)
+            case .skipRest:
+                restEndsAt = nil
+            case .adjustRIR:
+                guard let setID = command.setID, let uuid = UUID(uuidString: setID),
+                      let exerciseIndex = exercises.firstIndex(where: { $0.sets.contains(where: { $0.id == uuid }) }),
+                      let setIndex = exercises[exerciseIndex].sets.firstIndex(where: { $0.id == uuid }) else {
+                    consumed.insert(command.id); continue
+                }
+                let target = exercises[exerciseIndex].targetRIR.map { Int($0.rounded()) } ?? 2
+                let current = exercises[exerciseIndex].sets[setIndex].actualRIR ?? target
+                exercises[exerciseIndex].sets[setIndex].actualRIR = min(5, max(0, current + command.value))
+            }
+            consumed.insert(command.id)
+        }
+        StrengthLiveActivityCommandStore.consume(consumed)
+        syncWorkoutContext()
     }
 
     private func syncWorkoutContext() {
         let completed = exercises.flatMap(\.sets).filter(\.completed)
         let volume = completed.reduce(0) { $0 + $1.weight * Double($1.reps) }
         WatchMetricsStore.shared.updateWorkoutContext(routine: routine.name,
-                                          workoutID: "\(routine.name)|\(startedAt.timeIntervalSince1970)", workoutDate: startedAt,
+                                          workoutID: workoutID, workoutDate: startedAt,
                                           completedSets: completed.count, totalVolume: volume, restEndsAt: restEndsAt)
+        syncLiveActivity()
     }
 
     // Mirrors Hevy's ±15s rest-adjust buttons, drivable from either the
@@ -2281,6 +2372,7 @@ struct LiveStrengthWorkoutView: View {
             return
         }
         hasCompleted = true
+        StrengthLiveActivityController.shared.end(workoutID: workoutID, finalState: liveActivityState())
         let endedAt = Date()
         let completedWorkout = ImportedWorkout(title: routine.name, start: startedAt, end: endedAt,
                                                exercises: saved, muscleSets: [:])
@@ -2323,9 +2415,10 @@ struct LiveStrengthWorkoutView: View {
         // lo ignora. No condicionarlo a isRunning evita que el reloj se quede
         // con una sesión abierta cuando el iPhone no había registrado el estado.
         if notifyWatch {
-            WatchMetricsStore.shared.discard(workoutID: "\(routine.name)|\(startedAt.timeIntervalSince1970)")
+            WatchMetricsStore.shared.discard(workoutID: workoutID)
         }
         restEndsAt = nil
+        StrengthLiveActivityController.shared.end(workoutID: workoutID, finalState: liveActivityState())
         dismiss()
     }
 

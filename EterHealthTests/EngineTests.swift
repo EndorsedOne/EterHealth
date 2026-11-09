@@ -7007,4 +7007,87 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(merged.first?.date, history.first?.date)
     }
 
+    func testThreeRecentDrinksForceRecoveryInsteadOfLongRun() throws {
+        let now = Date()
+        let event = LifestyleEvent(
+            id: UUID(), date: now.addingTimeInterval(-2 * 3_600), alcoholDrinks: 3,
+            saunaMinutes: 0, saunaTemperatureC: 80, coldMinutes: 0, coldTemperatureC: 12,
+            timeZoneDifference: 0, travelDirection: .east, caffeineMg: 0, caffeineDate: nil,
+            foodQuality: .notRecorded, fastingHours: 0, trainedFasted: false,
+            lateDinner: false, heavyDinner: false, hydration: .notRecorded,
+            electrolytes: false, digestiveSymptoms: [], supplements: [], note: ""
+        )
+        let ceiling = try XCTUnwrap(SessionIntensityCeiling.fromAlcohol([event], now: now))
+
+        XCTAssertTrue(ceiling.excludes(.longRun))
+        XCTAssertTrue(ceiling.excludes(.strength))
+        XCTAssertEqual(ceiling.substitute, .recovery)
+        XCTAssertTrue(ceiling.capsStrengthIntensity)
+        XCTAssertEqual(ceiling.readinessCap, 44)
+    }
+
+    func testOldAlcoholDoesNotRestrictCurrentTraining() {
+        let now = Date()
+        let event = LifestyleEvent(
+            id: UUID(), date: now.addingTimeInterval(-13 * 3_600), alcoholDrinks: 6,
+            saunaMinutes: 0, saunaTemperatureC: 80, coldMinutes: 0, coldTemperatureC: 12,
+            timeZoneDifference: 0, travelDirection: .east, caffeineMg: 0, caffeineDate: nil,
+            foodQuality: .notRecorded, fastingHours: 0, trainedFasted: false,
+            lateDinner: false, heavyDinner: false, hydration: .notRecorded,
+            electrolytes: false, digestiveSymptoms: [], supplements: [], note: ""
+        )
+        XCTAssertNil(SessionIntensityCeiling.fromAlcohol([event], now: now))
+    }
+
+    func testCalorieTimelinePrefersAppleBasalAndKeepsActiveSeparate() {
+        let day = Calendar.current.startOfDay(for: Date())
+        func point(_ hour: Double, _ value: Double) -> TrendPoint {
+            TrendPoint(date: day.addingTimeInterval(hour * 3_600), value: value)
+        }
+        let result = EnergyTimelineEngine.calorieTimeline(
+            activeSamples: [point(8.1, 20), point(9.1, 30)],
+            basalSamples: [point(8.1, 40), point(9.1, 40)],
+            fallbackDailyBasal: 2_400, day: day, through: 10
+        )
+
+        XCTAssertEqual(result.bins.last?.cumulativeActive, 50)
+        XCTAssertEqual(result.bins.last?.cumulativeTotal, 130)
+        XCTAssertTrue(result.source.contains("Apple Salud"))
+    }
+
+    func testAcuteAlcoholDrainStartsAtTheDrinkAndThenRecovers() {
+        let wake = Date(timeIntervalSince1970: 1_800_000_000)
+        let drinkDate = wake.addingTimeInterval(10 * 3_600)
+        let event = LifestyleEvent(
+            id: UUID(), date: drinkDate, alcoholDrinks: 3,
+            saunaMinutes: 0, saunaTemperatureC: 80, coldMinutes: 0, coldTemperatureC: 12,
+            timeZoneDifference: 0, travelDirection: .east, caffeineMg: 0, caffeineDate: nil,
+            foodQuality: .notRecorded, fastingHours: 0, trainedFasted: false,
+            lateDinner: false, heavyDinner: false, hydration: .notRecorded,
+            electrolytes: false, digestiveSymptoms: [], supplements: [], note: ""
+        )
+
+        XCTAssertEqual(EnergyTimelineEngine.acuteAlcoholPenalty(
+            lifestyle: [event], at: drinkDate.addingTimeInterval(-60), after: wake
+        ), 0, "El alcohol no puede alterar retrospectivamente la curva anterior a la toma.")
+        let peak = EnergyTimelineEngine.acuteAlcoholPenalty(
+            lifestyle: [event], at: drinkDate.addingTimeInterval(2 * 3_600), after: wake
+        )
+        let recovering = EnergyTimelineEngine.acuteAlcoholPenalty(
+            lifestyle: [event], at: drinkDate.addingTimeInterval(10 * 3_600), after: wake
+        )
+        XCTAssertEqual(peak, 15, accuracy: 0.001)
+        XCTAssertGreaterThan(recovering, 0)
+        XCTAssertLessThan(recovering, peak)
+        XCTAssertEqual(EnergyTimelineEngine.acuteAlcoholPenalty(
+            lifestyle: [event], at: drinkDate.addingTimeInterval(19 * 3_600), after: wake
+        ), 0)
+    }
+
+    func testDiurnalDrainPreventsAnUnobservedDayFromEndingNearFull() {
+        XCTAssertEqual(EnergyTimelineEngine.diurnalDrain(awakeHours: 0), 0, accuracy: 0.001)
+        XCTAssertEqual(EnergyTimelineEngine.diurnalDrain(awakeHours: 10), 9, accuracy: 0.001)
+        XCTAssertEqual(EnergyTimelineEngine.diurnalDrain(awakeHours: 16), 18.6, accuracy: 0.001)
+    }
+
 }

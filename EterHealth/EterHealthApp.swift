@@ -54,6 +54,9 @@ struct EterHealthApp: App {
                         guard let health, let imports, let checkIns, let lifestyle,
                               let workoutReviews, let goals, let injuries,
                               let twinStates, let travel else { return }
+                        // HRV y pulso no necesitan esperar a la reconstrucción
+                        // completa del gemelo para llegar al widget.
+                        WidgetSnapshotStore.updateVitals(health: health)
                         let context = TwinContext(
                             profile: goals.profile, events: lifestyle.events,
                             reviews: workoutReviews.reviews, activeInjuries: injuries.active,

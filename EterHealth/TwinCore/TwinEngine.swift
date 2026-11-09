@@ -423,6 +423,23 @@ enum TwinEngine {
             }
         }
 
+        // Una ingesta aguda no puede quedar anulada visualmente por un HRV
+        // favorable. El ajuste gradual de arriba sigue describiendo la carga
+        // fisiológica; este techo expresa la decisión de seguridad que el plan
+        // ya aplica y evita el absurdo de “Preparado 81” junto a “descansa”.
+        let safetyCeiling = SessionIntensityCeiling.resolve(
+            alert: physiologicalAlert, travel: travelImpact,
+            lifestyle: events, now: now
+        )
+        if let cap = safetyCeiling?.readinessCap, score > cap {
+            let impact = cap - score
+            score = cap
+            signals.append(TwinSignal(
+                name: "Límite de seguridad", value: "Alcohol reciente", impact: impact,
+                detail: safetyCeiling?.explanation ?? "La intensidad queda limitada hasta una nueva valoración."
+            ))
+        }
+
         let plan = TrainingPlanEngine.status(health: health, imports: imports, readiness: score, muscles: muscleReadiness, checkIn: checkIn,
                                              context: context, physiologicalAlert: physiologicalAlert,
                                              travel: travelImpact, now: now)

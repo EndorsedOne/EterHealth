@@ -57,6 +57,8 @@ struct PhysiologicalAlertCard: View {
 struct ReadinessCard: View {
     let assessment: TwinAssessment
     let currentEnergy: Int?
+    let acuteTrainingRestriction: String?
+    let acuteRecoveryOnly: Bool
     let trust: DataTrust
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -152,7 +154,11 @@ struct ReadinessCard: View {
     }
 
     private func trainingNowGuidance(energy: Int) -> some View {
-        let guidance = TrainingNowGuidance.evaluate(readiness: assessment.score, energy: energy)
+        let guidance = TrainingNowGuidance.evaluate(
+            readiness: assessment.score, energy: energy,
+            acuteRestriction: acuteTrainingRestriction,
+            recoveryOnly: acuteRecoveryOnly
+        )
         return HStack(alignment: .top, spacing: 10) {
             Image(systemName: guidance.systemImage)
                 .font(.subheadline.bold())
@@ -243,7 +249,17 @@ struct TrainingNowGuidance: Equatable {
     let systemImage: String
     let level: Level
 
-    nonisolated static func evaluate(readiness: Int, energy: Int) -> Self {
+    nonisolated static func evaluate(readiness: Int, energy: Int,
+                                     acuteRestriction: String? = nil,
+                                     recoveryOnly: Bool = false) -> Self {
+        if let acuteRestriction {
+            return Self(
+                title: recoveryOnly ? "Hoy prioriza recuperación" : "Entrena solo con margen",
+                detail: acuteRestriction,
+                systemImage: "wineglass.fill",
+                level: recoveryOnly ? .recover : .adjust
+            )
+        }
         if readiness < 55 {
             if energy >= 55 {
                 return Self(

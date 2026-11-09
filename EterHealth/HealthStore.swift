@@ -71,6 +71,10 @@ final class HealthStore: ObservableObject {
     @Published var todayHeartRateSamples: [TrendPoint] = []
     @Published var todayStepSamples: [TrendPoint] = []
     @Published var todayActiveEnergySamples: [TrendPoint] = []
+    /// Energía basal intradía que Apple Salud atribuye al organismo en reposo.
+    /// Se mantiene separada de la activa: la UI puede sumar ambas sin
+    /// confundir movimiento con gasto fisiológico de base.
+    @Published var todayBasalEnergySamples: [TrendPoint] = []
     @Published private(set) var isHistoryLoading = false
     @Published private(set) var hasLoadedHistory = false
     // Fin de la FASE 1 de loadExtendedHistory: ya están las líneas base que el
@@ -127,6 +131,7 @@ final class HealthStore: ObservableObject {
             HKQuantityType.quantityType(forIdentifier: .heartRateVariabilitySDNN),
             HKQuantityType.quantityType(forIdentifier: .vo2Max),
             HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned),
+            HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned),
             HKQuantityType.quantityType(forIdentifier: .appleExerciseTime),
             HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning),
             // HealthKit tracks distance separately per discipline — a
@@ -191,6 +196,7 @@ final class HealthStore: ObservableObject {
             HKQuantityType.quantityType(forIdentifier: .heartRate),
             HKQuantityType.quantityType(forIdentifier: .stepCount),
             HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned),
+            HKQuantityType.quantityType(forIdentifier: .basalEnergyBurned),
             HKQuantityType.quantityType(forIdentifier: .restingHeartRate),
             HKQuantityType.quantityType(forIdentifier: .heartRateVariabilitySDNN),
             HKQuantityType.quantityType(forIdentifier: .vo2Max),
@@ -273,6 +279,7 @@ final class HealthStore: ObservableObject {
         async let todayHeartRate = intradaySamples(.heartRate, unit: HKUnit.count().unitDivided(by: .minute()))
         async let todaySteps = intradaySamples(.stepCount, unit: .count())
         async let todayActiveEnergy = intradaySamples(.activeEnergyBurned, unit: .kilocalorie())
+        async let todayBasalEnergy = intradaySamples(.basalEnergyBurned, unit: .kilocalorie())
 
         let resolvedSleep = await sleep
         let resolvedHeartRate = await heartRate
@@ -309,6 +316,7 @@ final class HealthStore: ObservableObject {
         todayHeartRateSamples = await todayHeartRate
         todayStepSamples = await todaySteps
         todayActiveEnergySamples = await todayActiveEnergy
+        todayBasalEnergySamples = await todayBasalEnergy
         recentWorkouts = await initialWorkouts
         // `workoutHistory` es la fuente que consumen forecast y plan. Tras la
         // carga inicial de 365 días no podemos sustituirla por sólo 30 días,

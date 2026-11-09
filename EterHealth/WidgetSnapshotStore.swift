@@ -52,6 +52,9 @@ struct EterWidgetSnapshot: Codable, Sendable {
     var caffeineNowMg: Double?
     var caffeineBedtimeMg: Double?
     var caffeineBedtimeHour: Double?
+    var heartRatePoints: [EterWidgetHeartRatePoint]?
+    var restorativeWindows: [EterWidgetTimeWindow]?
+    var strainWindows: [EterWidgetTimeWindow]?
     // Compact muscle matrix. Optional so snapshots written by older builds
     // remain decodable until the app produces the first refreshed snapshot.
     var muscleCurrent: [Double]?
@@ -85,10 +88,68 @@ struct EterWidgetCaffeinePoint: Codable, Sendable {
     let remainingMg: Double
 }
 
+struct EterWidgetHeartRatePoint: Codable, Sendable {
+    let hour: Double
+    let bpm: Double
+    let segment: Int
+}
+
+struct EterWidgetTimeWindow: Codable, Sendable {
+    let startHour: Double
+    let endHour: Double
+}
+
+/// Canal pequeño y barato para las señales que cambian durante el día. No debe
+/// esperar a que se reconstruyan plan, carga y distribución muscular para que
+/// el widget deje de mostrar una medición fisiológica anterior.
+private struct EterWidgetVitalsSnapshot: Codable {
+    let updatedAt: Date
+    let hrv: Int
+    let restingHeartRate: Int
+    let heartRatePoints: [EterWidgetHeartRatePoint]
+}
+
 @MainActor
 enum WidgetSnapshotStore {
     static let suiteName = "group.com.angelmartinez.eterhealth"
     private static let key = "eter.widget.snapshot.v1"
+    private static let vitalsKey = "eter.widget.vitals.v1"
+
+    static func updateVitals(health: HealthStore, now: Date = Date()) {
+        let currentHour = EnergyTimelineEngine.hour(of: now, on: now)
+        updateVitals(
+            hrv: health.snapshot.hrv,
+            restingHeartRate: health.snapshot.restingHeartRate,
+            heartRatePoints: EnergyTimelineEngine.heartRatePoints(
+                samples: health.todayHeartRateSamples, day: now, through: currentHour
+            ).map { EterWidgetHeartRatePoint(hour: $0.hour, bpm: $0.bpm, segment: $0.segment) },
+            now: now
+        )
+    }
+
+    static func updateVitals(hrv: Int?, restingHeartRate: Int?,
+                             heartRatePoints: [EterWidgetHeartRatePoint],
+                             now: Date = Date()) {
+        let defaults = UserDefaults(suiteName: suiteName)
+        let previous = defaults?.data(forKey: vitalsKey)
+            .flatMap { try? JSONDecoder().decode(EterWidgetVitalsSnapshot.self, from: $0) }
+        let sameDay = previous.map { Calendar.current.isDate($0.updatedAt, inSameDayAs: now) } ?? false
+        let resolvedHRV = (hrv ?? 0) > 0 ? hrv! : (sameDay ? previous?.hrv ?? 0 : 0)
+        let resolvedResting = (restingHeartRate ?? 0) > 0
+            ? restingHeartRate! : (previous?.restingHeartRate ?? 0)
+        let resolvedPulse = !heartRatePoints.isEmpty
+            ? heartRatePoints : (sameDay ? previous?.heartRatePoints ?? [] : [])
+        guard resolvedHRV > 0 || resolvedResting > 0 || !resolvedPulse.isEmpty else { return }
+        let vitals = EterWidgetVitalsSnapshot(
+            updatedAt: now, hrv: resolvedHRV,
+            restingHeartRate: resolvedResting, heartRatePoints: resolvedPulse
+        )
+        guard let data = try? JSONEncoder().encode(vitals) else { return }
+        defaults?.set(data, forKey: vitalsKey)
+        defaults?.synchronize()
+        WidgetCenter.shared.reloadTimelines(ofKind: "EterDecisionWidget")
+        WidgetCenter.shared.reloadTimelines(ofKind: "EterEnergyWidget")
+    }
 
     static func update(assessment: TwinAssessment, health: HealthStore, imports: ImportStore,
                        checkIn: DailyCheckIn?, lifestyle: LifestyleFactorStore,
@@ -178,13 +239,32 @@ enum WidgetSnapshotStore {
             restingHeartRateBaseline: baseline.restingHeartRate.expected,
             caffeineCurve: caffeine.points, caffeineNowMg: caffeine.currentMg,
             caffeineBedtimeMg: caffeine.bedtimeMg, caffeineBedtimeHour: caffeine.bedtimeHour,
+            heartRatePoints: EnergyTimelineEngine.heartRatePoints(
+                samples: health.todayHeartRateSamples, day: now, through: currentHour
+            ).map { EterWidgetHeartRatePoint(hour: $0.hour, bpm: $0.bpm, segment: $0.segment) },
+            restorativeWindows: model.restWindows.map {
+                EterWidgetTimeWindow(startHour: $0.startHour, endHour: $0.endHour)
+            },
+            strainWindows: model.autonomicStrainWindows.map {
+                EterWidgetTimeWindow(startHour: $0.startHour, endHour: $0.endHour)
+            },
             muscleCurrent: muscleAxes.map { muscleCurrent[$0] ?? 0 },
             musclePrevious: muscleAxes.map { musclePrevious[$0] ?? 0 },
             muscleCardio: muscleAxes.map { muscleCardio[$0] ?? 0 },
             muscleTargets: muscleAxes.map { muscleTargets[$0] ?? 1 }
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        UserDefaults(suiteName: suiteName)?.set(data, forKey: key)
-        WidgetCenter.shared.reloadAllTimelines()
+        // El widget vive en otro proceso. Si pedimos la recarga justo después
+        // de `set`, WidgetKit puede abrir su proceso antes de que cfprefsd haya
+        // propagado el nuevo valor del App Group y construir otra timeline con
+        // la instantánea anterior (se veía, por ejemplo, HRV 30 en el widget y
+        // 55 en la app). Forzamos primero la entrega al contenedor compartido y
+        // recargamos explícitamente cada kind que consume esta instantánea.
+        let defaults = UserDefaults(suiteName: suiteName)
+        defaults?.set(data, forKey: key)
+        defaults?.synchronize()
+        for kind in ["EterDecisionWidget", "EterEnergyWidget", "EterLoadWidget", "EterMuscleMatrixWidget"] {
+            WidgetCenter.shared.reloadTimelines(ofKind: kind)
+        }
     }
 }
