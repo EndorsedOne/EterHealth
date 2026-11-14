@@ -18,6 +18,9 @@ struct TodayTrendsCardView: View {
     }
 
     private var caffeinePeak: Double { max(1, result.caffeine.points.map(\.remainingMg).max() ?? 1) }
+    private var pulseTrendPoints: [EnergyTimelineEngine.HeartRatePoint] {
+        EnergyTimelineEngine.smoothedHeartRatePoints(result.heartRatePoints)
+    }
 
     private let energyGradient = LinearGradient(
         colors: [Color(red: 0.90, green: 0.55, blue: 0.30), Color(red: 0.50, green: 0.78, blue: 0.39)],
@@ -246,15 +249,15 @@ struct TodayTrendsCardView: View {
                     .foregroundStyle(LinearGradient(colors: [energyColor.opacity(0.28), .clear], startPoint: .top, endPoint: .bottom))
                     .interpolationMethod(.catmullRom)
             }
-            ForEach(result.heartRatePoints) { point in
+            ForEach(pulseTrendPoints) { point in
                 LineMark(
                     x: .value("Hora pulso", point.hour),
                     y: .value("Pulso", pulseChartValue(point.bpm)),
                     series: .value("Tramo pulso", point.segment)
                 )
                     .foregroundStyle(Color.red.opacity(0.72))
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.catmullRom)
+                    .lineStyle(StrokeStyle(lineWidth: 1.45, lineCap: .round, lineJoin: .round))
             }
             ForEach(curvePoints) { point in
                 LineMark(x: .value("Hora", point.hour), y: .value("Energía", point.value))

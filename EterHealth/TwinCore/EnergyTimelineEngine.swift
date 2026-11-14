@@ -125,6 +125,32 @@ enum EnergyTimelineEngine {
         }
     }
 
+    /// Tendencia visual, no dato clínico nuevo. Mantiene la hora y los cortes
+    /// reales de HealthKit y aplica una media triangular de hasta cinco
+    /// lecturas dentro de cada tramo. Un pico sigue siendo visible, pero una
+    /// sucesión ruidosa deja de parecer una señal de ECG.
+    nonisolated static func smoothedHeartRatePoints(_ points: [HeartRatePoint], radius: Int = 2) -> [HeartRatePoint] {
+        let ordered = points.sorted { $0.date < $1.date }
+        guard radius > 0, ordered.count >= 3 else { return ordered }
+        return ordered.indices.map { index in
+            let point = ordered[index]
+            let lower = max(0, index - radius)
+            let upper = min(ordered.count - 1, index + radius)
+            var weighted = 0.0
+            var weights = 0.0
+            for neighbor in lower...upper where ordered[neighbor].segment == point.segment {
+                let weight = Double(radius + 1 - abs(neighbor - index))
+                weighted += ordered[neighbor].bpm * weight
+                weights += weight
+            }
+            return HeartRatePoint(
+                date: point.date, hour: point.hour,
+                bpm: weights > 0 ? weighted / weights : point.bpm,
+                segment: point.segment
+            )
+        }
+    }
+
     struct CalorieTimelineResult {
         let bins: [CalorieBin]
         let source: String

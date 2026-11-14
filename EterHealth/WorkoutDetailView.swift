@@ -346,12 +346,18 @@ private struct WorkoutTimelineCard: View {
                 if let structure = timeline?.structure {
                     Label(structureText(structure), systemImage: "waveform.path.ecg.rectangle")
                         .font(.caption.bold())
+                    if structure.kind != .repeatedIntervals {
+                        Text(mechanicalStructureDetail(structure))
+                            .font(.caption2.bold())
+                            .foregroundStyle(.secondary)
+                    }
                     Text("\(structure.evidence). La clasificación usa la estructura medida, no el promedio diluido por las recuperaciones.")
                         .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                 } else {
                     Text("No se detectó un patrón repetido con evidencia suficiente. La curva se muestra como contexto, sin inventar intervalos.")
                         .font(.caption2).foregroundStyle(.secondary).lineSpacing(2)
                 }
+                physiologicalInterpretation
             }
         }
         .cardStyle()
@@ -360,6 +366,51 @@ private struct WorkoutTimelineCard: View {
             timeline = await health.workoutTimeline(for: workout)
             if !availableMetrics.contains(metric), let first = availableMetrics.first { metric = first }
         }
+    }
+
+    @ViewBuilder private var physiologicalInterpretation: some View {
+        if let timeline {
+            let heart = timeline.heartRate.map { RunningSignalPoint(date: $0.date, value: $0.value) }
+            let peak = RunningSessionStructureEngine.assessHeartRatePeak(heart, structure: timeline.structure)
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Respuesta fisiológica").font(.caption.bold())
+                if let peak {
+                    Label("Máximo observado: \(Int(peak.bpm.rounded())) ppm · plausibilidad \(trustText(peak.plausibility))",
+                          systemImage: "heart.fill")
+                        .font(.caption2.bold())
+                        .foregroundStyle(peak.plausibility == .low ? EterTheme.warning : EterTheme.positive)
+                    Text(peak.evidence.capitalized + ". Una sesión aislada no cambia automáticamente tu FC máxima.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if zonesMayNeedReview(peak) {
+                        Label("Tus zonas configuradas pueden estar desactualizadas respecto a esta respuesta. Conviene recalibrarlas si vuelve a repetirse.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2).foregroundStyle(EterTheme.warning)
+                    }
+                }
+                if workout.isIndoor == true && timeline.speedMetersPerSecond.isEmpty {
+                    Label("Ritmo y distancia indoor: confianza limitada. Sin velocidad de cinta o sensor externo, no dominan la clasificación.",
+                          systemImage: "gauge.with.dots.needle.33percent")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if timeline.structure?.kind == .repeatedIntervals {
+                    Text("El pulso confirma respuestas repetidas, pero sus barras señalan ondas fisiológicas: no pretende conocer con exactitud cuándo cambiaste la velocidad de la cinta.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func trustText(_ trust: TrustLevel) -> String {
+        switch trust { case .high: return "alta"; case .medium: return "media"; case .low: return "baja" }
+    }
+
+    private func zonesMayNeedReview(_ peak: RunningHeartRatePeakAssessment) -> Bool {
+        guard peak.plausibility != .low else { return false }
+        if let configured = goals.profile.maximumHeartRate, peak.bpm >= Double(configured + 3) { return true }
+        if let manual = goals.profile.manualHeartRateZones,
+           peak.bpm >= Double(manual.z4z5 + 20) { return true }
+        return false
     }
 
     private var timelineChart: some View {
@@ -413,11 +464,31 @@ private struct WorkoutTimelineCard: View {
         switch structure.kind {
         case .strides: title = "Progresivos detectados"
         case .sprintIntervals: title = "Sprints detectados"
+        case .shortIntervals: title = "Intervalos cortos detectados"
         case .repeatedIntervals: title = "Intervalos detectados"
         case .vo2Intervals: title = "Intervalos VO₂ detectados"
+        case .longIntervals: title = "Intervalos largos detectados"
         case .thresholdIntervals: title = "Bloques de umbral detectados"
         }
         return "\(title) · \(structure.repetitions) repeticiones"
+    }
+
+    /// Only mechanical/explicit segmentation may present these durations as
+    /// actual workload. In the HR fallback they describe delayed response
+    /// waves, not the treadmill's external work and recovery boundaries.
+    private func mechanicalStructureDetail(_ structure: RunningSessionStructure) -> String {
+        let work = durationText(structure.workSeconds)
+        guard let recovery = structure.recoverySeconds else { return "Trabajo detectado: \(work)" }
+        return "Trabajo detectado: \(work) · recuperación típica: \(durationText(recovery))"
+    }
+
+    private func durationText(_ seconds: Double) -> String {
+        let rounded = max(0, Int(seconds.rounded()))
+        let minutes = rounded / 60
+        let remainder = rounded % 60
+        if minutes == 0 { return "\(remainder) s" }
+        if remainder == 0 { return "\(minutes) min" }
+        return "\(minutes) min \(remainder) s"
     }
 }
 

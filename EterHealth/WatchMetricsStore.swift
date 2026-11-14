@@ -37,6 +37,7 @@ private struct WatchMetricsPayload: Sendable {
 
 enum WatchTerminalOutcome: String, Sendable {
     case savedByWatch
+    case discardedByWatch
     case noActiveSession
     case watchSaveFailed
     case expiredAndDiscarded
@@ -142,13 +143,25 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         resendLastSummary()
         return nil
     }
-    func discard(workoutID: String) {
+    func discardAndAwait(workoutID: String, timeout: TimeInterval = 5) async -> WatchTerminalOutcome? {
+        terminalOutcome = nil
+        terminalWorkoutID = nil
         sendTerminal(command: "discard", workoutID: workoutID)
-        clearActiveWorkoutContext()
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            self?.resendLastSummary()
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if terminalWorkoutID == workoutID, let terminalOutcome {
+                clearActiveWorkoutContext()
+                resendLastSummary()
+                return terminalOutcome
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        // Igual que al guardar: el timeout termina la espera, pero la orden
+        // fiable sigue encolada y puede llegar después. Limpiamos el contexto
+        // sólo cuando ya no vamos a pisar inmediatamente la orden terminal.
+        clearActiveWorkoutContext()
+        resendLastSummary()
+        return nil
     }
 
     // Último resumen enviado, para reenviarlo cuando el reloj aparezca.

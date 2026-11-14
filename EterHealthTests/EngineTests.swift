@@ -5655,6 +5655,132 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(verdict.trust, .medium)
     }
 
+    /// Physiological fixture: HR climbs through each work block and decays
+    /// through active recovery. `drift` raises both peaks and troughs, while
+    /// `recoveryLoss` makes later recoveries progressively less complete.
+    private func intervalHeartFixture(work: [Int], recovery: [Int],
+                                      drift: Double = 1.5, recoveryLoss: Double = 0.5,
+                                      sampleSeconds: Int = 5) -> [RunningSignalPoint] {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var result: [RunningSignalPoint] = []
+        var elapsed = 0
+        // Stable warm-up prevents the first response from borrowing an
+        // implausibly low initial HR as its only evidence.
+        for second in stride(from: 0, to: 8 * 60, by: sampleSeconds) {
+            result.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                                value: 132 + Double(second) / 120))
+        }
+        elapsed += 8 * 60
+        for index in work.indices {
+            let floor = 138 + Double(index) * drift
+            let peak = 174 + Double(index) * 2.2
+            for second in stride(from: 0, to: work[index], by: sampleSeconds) {
+                let progress = Double(second) / Double(max(1, work[index]))
+                result.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                                    value: floor + (peak - floor) * min(1, progress * 1.18)))
+            }
+            elapsed += work[index]
+            let recoverySeconds = recovery[min(index, recovery.count - 1)]
+            let recovered = floor + 2 + Double(index) * recoveryLoss
+            for second in stride(from: 0, to: recoverySeconds, by: sampleSeconds) {
+                let progress = Double(second) / Double(max(1, recoverySeconds))
+                result.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                                    value: peak - (peak - recovered) * min(1, progress * 1.25)))
+            }
+            elapsed += recoverySeconds
+        }
+        // Give the final peak a real falling limb.
+        let cooldownStart = result.last?.value ?? 150
+        for second in stride(from: 0, to: 3 * 60, by: sampleSeconds) {
+            result.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                                value: cooldownStart - Double(second) * 0.05))
+        }
+        return result
+    }
+
+    func testSixByThreeMinutesSurvivesRisingHeartRateDrift() {
+        let heart = intervalHeartFixture(work: Array(repeating: 180, count: 6),
+                                         recovery: Array(repeating: 120, count: 6),
+                                         drift: 2.4, recoveryLoss: 1.2)
+        let structure = RunningSessionStructureEngine.detect(speed: [], heartRate: heart)
+        XCTAssertEqual(structure?.repetitions, 6)
+        XCTAssertEqual(structure?.kind, .repeatedIntervals)
+        XCTAssertEqual(structure?.confidence, .medium)
+    }
+
+    func testLateIntervalsRemainSeparateWhenRecoveryStartsHigh() {
+        let heart = intervalHeartFixture(work: Array(repeating: 180, count: 6),
+                                         recovery: Array(repeating: 120, count: 6),
+                                         drift: 3.0, recoveryLoss: 1.8)
+        XCTAssertEqual(RunningSessionStructureEngine.detect(speed: [], heartRate: heart)?.repetitions, 6)
+    }
+
+    func testTenByOneMinuteHeartPatternCountsTen() {
+        let heart = intervalHeartFixture(work: Array(repeating: 60, count: 10),
+                                         recovery: Array(repeating: 60, count: 10), drift: 0.8)
+        XCTAssertEqual(RunningSessionStructureEngine.detect(speed: [], heartRate: heart)?.repetitions, 10)
+    }
+
+    func testFourByFiveMinutesHeartPatternCountsFour() {
+        let heart = intervalHeartFixture(work: Array(repeating: 300, count: 4),
+                                         recovery: Array(repeating: 120, count: 4), drift: 2.0)
+        XCTAssertEqual(RunningSessionStructureEngine.detect(speed: [], heartRate: heart)?.repetitions, 4)
+    }
+
+    func testIrregularFartlekRetainsRealBlocksWithoutInventingPeriodicity() {
+        let heart = intervalHeartFixture(work: [60, 150, 90, 240, 75],
+                                         recovery: [60, 100, 80, 150, 90], drift: 1.0)
+        let structure = RunningSessionStructureEngine.detect(speed: [], heartRate: heart)
+        XCTAssertEqual(structure?.repetitions, 5)
+        XCTAssertEqual(structure?.kind, .repeatedIntervals)
+    }
+
+    func testProgressiveContinuousRunDoesNotBecomeIntervals() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let heart = (0..<600).map { index in
+            RunningSignalPoint(date: start.addingTimeInterval(Double(index * 5)),
+                               value: 118 + Double(index) * 0.095 + sin(Double(index) / 28) * 0.7)
+        }
+        XCTAssertNil(RunningSessionStructureEngine.detect(speed: [], heartRate: heart))
+    }
+
+    func testIsolatedHeartRateSpikesDoNotCreateIntervals() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var heart = (0..<360).map { index in
+            RunningSignalPoint(date: start.addingTimeInterval(Double(index * 5)), value: 142)
+        }
+        for index in [70, 170, 270] {
+            heart[index] = .init(date: heart[index].date, value: 205)
+        }
+        XCTAssertNil(RunningSessionStructureEngine.detect(speed: [], heartRate: heart))
+        XCTAssertEqual(RunningSessionStructureEngine.assessHeartRatePeak(heart, structure: nil)?.plausibility, .low)
+    }
+
+    func testExplicitIndoorBlocksAndMechanicalSignalOutrankBadAveragePace() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var speed: [RunningSignalPoint] = []
+        var bounds: [DateInterval] = []
+        for repetition in 0..<6 {
+            let workStart = start.addingTimeInterval(Double(repetition * 300))
+            let work = DateInterval(start: workStart, duration: 180)
+            let recovery = DateInterval(start: work.end, duration: 120)
+            bounds.append(contentsOf: [work, recovery])
+            for second in stride(from: 0, to: 180, by: 5) {
+                speed.append(.init(date: workStart.addingTimeInterval(Double(second)), value: 4.0 + Double(repetition) * 0.04))
+            }
+            for second in stride(from: 0, to: 120, by: 5) {
+                speed.append(.init(date: work.end.addingTimeInterval(Double(second)), value: 2.2))
+            }
+        }
+        let structure = RunningSessionStructureEngine.detect(
+            speed: speed, heartRate: [], markedIntervals: bounds.count, markedIntervalBounds: bounds
+        )
+        XCTAssertEqual(structure?.repetitions, 6)
+        XCTAssertEqual(structure?.kind, .vo2Intervals)
+        XCTAssertEqual(structure?.confidence, .high)
+        XCTAssertTrue(structure?.evidence.contains("explícitos") == true)
+    }
+
     func testOrdinaryHeartRateDriftDoesNotBecomeIntervals() {
         let start = Date(timeIntervalSince1970: 1_700_000_000)
         let heart = (0..<180).map { index in
@@ -7088,6 +7214,24 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(EnergyTimelineEngine.diurnalDrain(awakeHours: 0), 0, accuracy: 0.001)
         XCTAssertEqual(EnergyTimelineEngine.diurnalDrain(awakeHours: 10), 9, accuracy: 0.001)
         XCTAssertEqual(EnergyTimelineEngine.diurnalDrain(awakeHours: 16), 18.6, accuracy: 0.001)
+    }
+
+    func testHeartRateTrendSmoothsNoiseWithoutJoiningMissingSegments() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let raw = [50.0, 52, 92, 54, 56].enumerated().map { index, bpm in
+            EnergyTimelineEngine.HeartRatePoint(
+                date: start.addingTimeInterval(Double(index) * 60),
+                hour: 8 + Double(index) / 60, bpm: bpm, segment: 0
+            )
+        } + [EnergyTimelineEngine.HeartRatePoint(
+            date: start.addingTimeInterval(40 * 60), hour: 8.67, bpm: 140, segment: 1
+        )]
+        let trend = EnergyTimelineEngine.smoothedHeartRatePoints(raw)
+
+        XCTAssertLessThan(trend[2].bpm, 92)
+        XCTAssertGreaterThan(trend[2].bpm, 54)
+        XCTAssertEqual(try XCTUnwrap(trend.last).bpm, 140, accuracy: 0.001)
+        XCTAssertEqual(trend.last?.segment, 1)
     }
 
 }

@@ -2415,7 +2415,14 @@ struct LiveStrengthWorkoutView: View {
         // lo ignora. No condicionarlo a isRunning evita que el reloj se quede
         // con una sesión abierta cuando el iPhone no había registrado el estado.
         if notifyWatch {
-            WatchMetricsStore.shared.discard(workoutID: workoutID)
+            let targetWorkoutID = workoutID
+            // No retenemos la pantalla durante la confirmación, pero tampoco
+            // desmontamos el contrato de conectividad: el singleton conserva
+            // la orden/contexto hasta que el Watch confirma el descarte o vence
+            // el mismo timeout acotado que usa Guardar.
+            Task {
+                _ = await WatchMetricsStore.shared.discardAndAwait(workoutID: targetWorkoutID)
+            }
         }
         restEndsAt = nil
         StrengthLiveActivityController.shared.end(workoutID: workoutID, finalState: liveActivityState())

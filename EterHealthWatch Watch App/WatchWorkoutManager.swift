@@ -307,15 +307,26 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
 
     func dismissSummary() { completedSummary = nil }
 
-    func discard() {
-        guard let session, let builder else { return }
+    func discard(requestedWorkoutID: String? = nil, notifyPhoneAction: Bool = true) {
+        guard let session, let builder else {
+            sendMetrics(terminalAction: notifyPhoneAction ? "discard" : nil,
+                        terminalOutcome: "noActiveSession",
+                        terminalWorkoutID: requestedWorkoutID ?? workoutID)
+            return
+        }
+        let confirmedWorkoutID = requestedWorkoutID ?? workoutID
         session.end()
         builder.discardWorkout()
         timer?.invalidate()
         timer = nil
         isRunning = false
         isPaused = false
-        sendMetrics(terminalAction: "discard")
+        // Una cancelación iniciada en el iPhone necesita una confirmación
+        // dirigida, igual que Guardar. Sin workoutID/outcome el teléfono
+        // desmontaba su vista sin poder saber si el Watch había obedecido.
+        sendMetrics(terminalAction: notifyPhoneAction ? "discard" : nil,
+                    terminalOutcome: "discardedByWatch",
+                    terminalWorkoutID: confirmedWorkoutID)
         self.session = nil
         self.builder = nil
         startedAt = nil
@@ -569,7 +580,7 @@ extension WatchWorkoutManager: WCSessionDelegate {
         guard let command = message["command"] as? String else { return }
         Task { @MainActor in
             if command == "finish" || command == "discard" {
-                if let issuedAt = message["issuedAt"] as? Double,
+                if let issuedAt = watchDouble(message["issuedAt"]),
                    Date().timeIntervalSince1970 - issuedAt > 300 { return }
                 // Las órdenes terminales fiables llevan siempre la identidad
                 // de la sesión. Exigir coincidencia evita que una copia
@@ -583,7 +594,7 @@ extension WatchWorkoutManager: WCSessionDelegate {
                         // que aún podemos identificar la sesión sin aceptar
                         // una orden destinada a otro entrenamiento.
                         let targetStart = targetWorkoutID.split(separator: "|").last.flatMap { Double($0) }
-                        let issuedAt = (message["issuedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+                        let issuedAt = watchDouble(message["issuedAt"]).map(Date.init(timeIntervalSince1970:))
                         // Si el contexto se perdió, la orden aún puede
                         // identificarse temporalmente: la sesión del Watch
                         // comenzó después que la del iPhone y antes que la
@@ -612,7 +623,9 @@ extension WatchWorkoutManager: WCSessionDelegate {
                 // a la sesión solicitada, siempre se intenta guardar: un plazo
                 // del iPhone sólo limita su espera, nunca autoriza a descartar.
                 await finish(requestedWorkoutID: target)
-            case "discard": discard()
+            case "discard":
+                discard(requestedWorkoutID: message["workoutID"] as? String,
+                        notifyPhoneAction: false)
             default: break
             }
         }

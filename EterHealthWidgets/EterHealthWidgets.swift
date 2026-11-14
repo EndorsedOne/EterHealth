@@ -558,8 +558,8 @@ private struct PulseTimeline: Shape {
         var path = Path()
         let headroom: CGFloat = 10
         let energyHeight = max(1, rect.height - headroom)
-        var previousSegment: Int?
-        for point in points.sorted(by: { $0.hour < $1.hour }) {
+        var previousPoint: (segment: Int, position: CGPoint)?
+        for point in smoothedPoints {
             let x = rect.width * CGFloat(min(24, max(0, point.hour)) / 24)
             let y: CGFloat
             if point.bpm <= 100 {
@@ -568,11 +568,40 @@ private struct PulseTimeline: Shape {
                 y = headroom * (1 - CGFloat(min(1, (point.bpm - 100) / 80)))
             }
             let position = CGPoint(x: x, y: y)
-            if previousSegment == point.segment { path.addLine(to: position) }
-            else { path.move(to: position) }
-            previousSegment = point.segment
+            if let previousPoint, previousPoint.segment == point.segment {
+                let middleX = (previousPoint.position.x + position.x) / 2
+                path.addCurve(
+                    to: position,
+                    control1: CGPoint(x: middleX, y: previousPoint.position.y),
+                    control2: CGPoint(x: middleX, y: position.y)
+                )
+            } else { path.move(to: position) }
+            previousPoint = (point.segment, position)
         }
         return path
+    }
+
+    private var smoothedPoints: [HeartRatePoint] {
+        let ordered = points.sorted { $0.hour < $1.hour }
+        guard ordered.count >= 3 else { return ordered }
+        let radius = 2
+        return ordered.indices.map { index in
+            let point = ordered[index]
+            let lower = max(0, index - radius)
+            let upper = min(ordered.count - 1, index + radius)
+            var weighted = 0.0
+            var weights = 0.0
+            for neighbor in lower...upper where ordered[neighbor].segment == point.segment {
+                let weight = Double(radius + 1 - abs(neighbor - index))
+                weighted += ordered[neighbor].bpm * weight
+                weights += weight
+            }
+            return HeartRatePoint(
+                hour: point.hour,
+                bpm: weights > 0 ? weighted / weights : point.bpm,
+                segment: point.segment
+            )
+        }
     }
 }
 

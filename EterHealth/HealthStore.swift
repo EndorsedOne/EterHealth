@@ -1289,11 +1289,15 @@ final class HealthStore: ObservableObject {
                 let markerCount = (raw.workoutEvents ?? []).filter { event in
                     event.type == .lap || event.type == .segment
                 }.count
+                let markerBounds = (raw.workoutEvents ?? []).filter {
+                    $0.type == .lap || $0.type == .segment
+                }.map(\.dateInterval)
                 let structure = RunningSessionStructureEngine.detect(
                     speed: points(speeds, unit: speedUnit),
                     power: points(powers, unit: .watt()),
                     heartRate: points(hearts, unit: heartUnit),
-                    markedIntervals: markerCount
+                    markedIntervals: markerCount,
+                    markedIntervalBounds: markerBounds
                 )
                 mapped[index].runningStructure = structure
                 runningStructureKnowledge.save(workoutID: raw.uuid, endDate: raw.endDate, structure: structure)
@@ -1607,7 +1611,10 @@ final class HealthStore: ObservableObject {
             speed: speed.map { RunningSignalPoint(date: $0.date, value: $0.value) },
             power: power.map { RunningSignalPoint(date: $0.date, value: $0.value) },
             heartRate: heart.map { RunningSignalPoint(date: $0.date, value: $0.value) },
-            markedIntervals: (raw.workoutEvents ?? []).filter { $0.type == .lap || $0.type == .segment }.count
+            markedIntervals: (raw.workoutEvents ?? []).filter { $0.type == .lap || $0.type == .segment }.count,
+            markedIntervalBounds: (raw.workoutEvents ?? []).filter {
+                $0.type == .lap || $0.type == .segment
+            }.map(\.dateInterval)
         )
     }
 
