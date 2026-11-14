@@ -14,10 +14,10 @@ struct RunningStructureKnowledge: Codable, Identifiable, Equatable {
 @MainActor
 final class RunningStructureStore {
     static let shared = RunningStructureStore()
-    // v3 also recognises rounded HR crests over a local window. Positive older
-    // knowledge must be recomputed: v2 could merge a real 6x3'/2' session into
-    // three ~10-minute cycles by rejecting alternate crests.
-    static let currentDetectorVersion = 3
+    // v4 recovers lower-amplitude edge responses from the cadence learned in
+    // the central set and rejects off-cadence cooldown bumps. Positive older
+    // knowledge must be recomputed so the real session moves from 5 to 6.
+    static let currentDetectorVersion = 4
 
     private(set) var records: [RunningStructureKnowledge] = []
     private let url: URL

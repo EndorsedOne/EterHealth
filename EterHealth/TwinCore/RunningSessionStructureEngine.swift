@@ -202,8 +202,10 @@ enum RunningSessionStructureEngine {
         // irregular fartlek, while rejecting a few unrelated undulations in a
         // steady/progressive run. We never require recovery to return to one
         // absolute bpm threshold.
-        let sequence = dominantPeakSequence(peaks)
+        var sequence = dominantPeakSequence(peaks)
         guard sequence.count >= Policy.minimumRepeatedBouts else { return nil }
+        sequence = recoverPeriodicEdgePeaks(sequence, in: smoothed,
+                                            requiredProminence: requiredProminence)
         let bouts = responseBouts(for: sequence, in: smoothed)
         guard bouts.count == sequence.count else { return nil }
         let cycleDurations = zip(sequence, sequence.dropFirst()).map {
@@ -324,6 +326,26 @@ enum RunningSessionStructureEngine {
             .filter { $0 >= Policy.minimumCycleSeconds && $0 <= Policy.maximumCycleSeconds }
             .sorted()
         guard let medianGap = percentile(gaps, 0.5) else { return [] }
+
+        // Prefer the longest genuinely periodic chain. A late cooldown bump
+        // can be prominent enough to be a valid physiological peak, but it
+        // must not join a 5-minute interval set when it arrives well outside
+        // that cadence. Irregular fartlek falls through to the broad sequence
+        // below instead of being forced into a periodic template.
+        var periodicBest: [HeartPeak] = []
+        var periodicCurrent: [HeartPeak] = [peaks[0]]
+        for peak in peaks.dropFirst() {
+            let gap = peak.point.date.timeIntervalSince(periodicCurrent.last!.point.date)
+            if gap >= medianGap * 0.72 && gap <= medianGap * 1.28 {
+                periodicCurrent.append(peak)
+            } else {
+                if periodicCurrent.count > periodicBest.count { periodicBest = periodicCurrent }
+                periodicCurrent = [peak]
+            }
+        }
+        if periodicCurrent.count > periodicBest.count { periodicBest = periodicCurrent }
+        if periodicBest.count >= 4 { return periodicBest }
+
         let minimumGap = max(Policy.minimumCycleSeconds, medianGap * 0.35)
         let maximumGap = min(Policy.maximumCycleSeconds, medianGap * 2.8)
         var best: [HeartPeak] = []
@@ -339,6 +361,67 @@ enum RunningSessionStructureEngine {
         }
         if current.count > best.count { best = current }
         return best
+    }
+
+    /// Optical HR often under-expresses the first one or two repetitions while
+    /// the cardiovascular response catches up. Once a stable cadence is
+    /// established, recover only edge crests located where the cadence predicts
+    /// them and supported by a real local rise and fall. This is not a 3'/2'
+    /// special case: the cycle is learned from the session itself.
+    private static func recoverPeriodicEdgePeaks(_ sequence: [HeartPeak],
+                                                 in points: [RunningSignalPoint],
+                                                 requiredProminence: Double) -> [HeartPeak] {
+        guard sequence.count >= 4 else { return sequence }
+        let gaps = zip(sequence, sequence.dropFirst()).map {
+            $1.point.date.timeIntervalSince($0.point.date)
+        }.sorted()
+        guard let cycle = percentile(gaps, 0.5), cycle >= Policy.minimumCycleSeconds else { return sequence }
+        let deviations = gaps.map { abs($0 - cycle) / cycle }
+        guard (deviations.max() ?? 1) <= 0.22 else { return sequence }
+
+        var result = sequence
+        let relaxedProminence = max(3.5, requiredProminence * 0.55)
+        for _ in 0..<3 {
+            guard let first = result.first,
+                  let recovered = periodicPeak(near: first.point.date.addingTimeInterval(-cycle),
+                                               cycle: cycle, in: points,
+                                               requiredProminence: relaxedProminence),
+                  first.point.date.timeIntervalSince(recovered.point.date) >= cycle * 0.65 else { break }
+            result.insert(recovered, at: 0)
+        }
+        for _ in 0..<2 {
+            guard let last = result.last,
+                  let recovered = periodicPeak(near: last.point.date.addingTimeInterval(cycle),
+                                               cycle: cycle, in: points,
+                                               requiredProminence: relaxedProminence),
+                  recovered.point.date.timeIntervalSince(last.point.date) >= cycle * 0.65 else { break }
+            result.append(recovered)
+        }
+        return result
+    }
+
+    private static func periodicPeak(near expected: Date, cycle: TimeInterval,
+                                     in points: [RunningSignalPoint],
+                                     requiredProminence: Double) -> HeartPeak? {
+        let tolerance = cycle * 0.24
+        let candidates = points.indices.filter {
+            abs(points[$0].date.timeIntervalSince(expected)) <= tolerance
+        }
+        guard let index = candidates.max(by: { points[$0].value < points[$1].value }) else { return nil }
+        let context = min(cycle * 0.48, Policy.maximumPeakContext)
+        let before = points.indices.filter {
+            let delta = points[index].date.timeIntervalSince(points[$0].date)
+            return delta > 0 && delta <= context
+        }
+        let after = points.indices.filter {
+            let delta = points[$0].date.timeIntervalSince(points[index].date)
+            return delta > 0 && delta <= context
+        }
+        guard let priorFloor = before.map({ points[$0].value }).min(),
+              let followingFloor = after.map({ points[$0].value }).min() else { return nil }
+        let prominence = min(points[index].value - priorFloor, points[index].value - followingFloor)
+        guard prominence >= requiredProminence else { return nil }
+        return HeartPeak(index: index, point: points[index], prominence: prominence)
     }
 
     /// The interval is explicitly a response wave (preceding local trough to
