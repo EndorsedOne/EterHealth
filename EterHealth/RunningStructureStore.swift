@@ -14,10 +14,10 @@ struct RunningStructureKnowledge: Codable, Identifiable, Equatable {
 @MainActor
 final class RunningStructureStore {
     static let shared = RunningStructureStore()
-    // v2 replaces the global HR enter/leave threshold with local peak/trough
-    // segmentation. Positive v1 knowledge must be recomputed too: otherwise
-    // the real 3-repetition misclassification would remain cached forever.
-    static let currentDetectorVersion = 2
+    // v3 also recognises rounded HR crests over a local window. Positive older
+    // knowledge must be recomputed: v2 could merge a real 6x3'/2' session into
+    // three ~10-minute cycles by rejecting alternate crests.
+    static let currentDetectorVersion = 3
 
     private(set) var records: [RunningStructureKnowledge] = []
     private let url: URL

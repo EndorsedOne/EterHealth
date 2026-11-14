@@ -5715,6 +5715,44 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(RunningSessionStructureEngine.detect(speed: [], heartRate: heart)?.repetitions, 6)
     }
 
+    func testSixRoundedCrestsDoNotCollapseIntoThreeTenMinuteCycles() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var heart: [RunningSignalPoint] = []
+        var elapsed = 0
+        for second in stride(from: 0, to: 10 * 60, by: 5) {
+            heart.append(.init(date: start.addingTimeInterval(Double(second)),
+                               value: 120 + Double(second) * 0.035))
+        }
+        elapsed = 10 * 60
+        for repetition in 0..<6 {
+            let floor = 148.0 + Double(repetition) * 2.5
+            let peak = 170.0 + Double(repetition) * 4.0
+            for second in stride(from: 0, to: 180, by: 5) {
+                let progress = min(1, Double(second) / 115)
+                // Alternate broad and narrow rounded crests, matching the
+                // optical-HR shape that made v2 retain only every other wave.
+                let plateau = repetition.isMultiple(of: 2) && second >= 115 ? -Double(second - 115) * 0.006 : 0
+                heart.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                                   value: floor + (peak - floor) * sin(progress * .pi / 2) + plateau))
+            }
+            elapsed += 180
+            for second in stride(from: 0, to: 120, by: 5) {
+                let progress = Double(second) / 120
+                heart.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                                   value: peak - (peak - floor) * progress))
+            }
+            elapsed += 120
+        }
+        for second in stride(from: 0, to: 3 * 60, by: 5) {
+            heart.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                               value: 160 - Double(second) * 0.08))
+        }
+
+        let structure = RunningSessionStructureEngine.detect(speed: [], heartRate: heart)
+        XCTAssertEqual(structure?.repetitions, 6)
+        XCTAssertTrue(structure?.evidence.contains("ciclo ~") == true)
+    }
+
     func testTenByOneMinuteHeartPatternCountsTen() {
         let heart = intervalHeartFixture(work: Array(repeating: 60, count: 10),
                                          recovery: Array(repeating: 60, count: 10), drift: 0.8)

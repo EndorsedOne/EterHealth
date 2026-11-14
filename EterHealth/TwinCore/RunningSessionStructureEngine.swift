@@ -263,22 +263,33 @@ enum RunningSessionStructureEngine {
             let date = points[index].date
             let before = points.indices.filter {
                 let delta = date.timeIntervalSince(points[$0].date)
-                return delta >= Policy.heartSlopeHorizon && delta <= Policy.maximumPeakContext
+                return delta > 0 && delta <= Policy.maximumPeakContext
             }
             let after = points.indices.filter {
                 let delta = points[$0].date.timeIntervalSince(date)
-                return delta >= Policy.heartSlopeHorizon && delta <= Policy.maximumPeakContext
+                return delta > 0 && delta <= Policy.maximumPeakContext
             }
-            guard let recentIndex = before.last,
-                  let followingIndex = after.first else { continue }
-            let rising = points[index].value - points[recentIndex].value
-            let falling = points[index].value - points[followingIndex].value
-            guard rising >= 1.5, falling >= 1.5 else { continue }
+            guard !before.isEmpty, !after.isEmpty else { continue }
 
-            let priorFloor = before.map { points[$0].value }.min() ?? points[recentIndex].value
-            let followingFloor = after.map { points[$0].value }.min() ?? points[followingIndex].value
-            let prominence = min(points[index].value - priorFloor,
-                                 points[index].value - followingFloor)
+            // The old implementation sampled the curve exactly 35 seconds
+            // before and after the candidate. On rounded optical-HR crests the
+            // trace may still be climbing or remain on a plateau at that exact
+            // instant, so alternate 5-minute waves were discarded and a real
+            // 6x3'/2' became three ~10-minute cycles. Establish the crest
+            // locally, then measure its prominence against the recovery
+            // valleys available in the wider context instead.
+            let local = points.indices.filter {
+                abs(points[$0].date.timeIntervalSince(date)) <= Policy.heartSlopeHorizon
+            }
+            guard let localMaximum = local.map({ points[$0].value }).max(),
+                  points[index].value >= localMaximum - 0.15 else { continue }
+
+            guard let priorFloor = before.map({ points[$0].value }).min(),
+                  let followingFloor = after.map({ points[$0].value }).min() else { continue }
+            let rising = points[index].value - priorFloor
+            let falling = points[index].value - followingFloor
+            guard rising >= requiredProminence, falling >= requiredProminence else { continue }
+            let prominence = min(rising, falling)
             guard prominence >= requiredProminence else { continue }
             result.append(.init(index: index, point: points[index], prominence: prominence))
         }
@@ -286,15 +297,24 @@ enum RunningSessionStructureEngine {
     }
 
     private static func suppressNearbyPeaks(_ peaks: [HeartPeak], minimumSeparation: TimeInterval) -> [HeartPeak] {
+        let sorted = peaks.sorted(by: { $0.point.date < $1.point.date })
+        guard var clusterBest = sorted.first else { return [] }
+        var clusterLastDate = clusterBest.point.date
         var accepted: [HeartPeak] = []
-        for candidate in peaks.sorted(by: { $0.point.date < $1.point.date }) {
-            if let last = accepted.last,
-               candidate.point.date.timeIntervalSince(last.point.date) < minimumSeparation {
-                if candidate.prominence > last.prominence { accepted[accepted.count - 1] = candidate }
+        for candidate in sorted.dropFirst() {
+            // Cluster by the distance from the previous candidate, not from
+            // the current best. Otherwise a long rounded crest can be split
+            // into two candidates merely because its tail lies >40 s after
+            // the best point, corrupting the estimated cycle.
+            if candidate.point.date.timeIntervalSince(clusterLastDate) < minimumSeparation {
+                if candidate.prominence > clusterBest.prominence { clusterBest = candidate }
             } else {
-                accepted.append(candidate)
+                accepted.append(clusterBest)
+                clusterBest = candidate
             }
+            clusterLastDate = candidate.point.date
         }
+        accepted.append(clusterBest)
         return accepted
     }
 
