@@ -376,7 +376,7 @@ private struct WorkoutTimelineCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Respuesta fisiológica").font(.caption.bold())
                 if let peak {
-                    Label("Máximo observado: \(Int(peak.bpm.rounded())) ppm · plausibilidad \(trustText(peak.plausibility))",
+                    Label("Máximo observado: \(Int(peak.bpm.rounded())) ppm · fiabilidad de la lectura \(trustText(peak.plausibility))",
                           systemImage: "heart.fill")
                         .font(.caption2.bold())
                         .foregroundStyle(peak.plausibility == .low ? EterTheme.warning : EterTheme.positive)

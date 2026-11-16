@@ -55,6 +55,10 @@ enum RunningSessionStructureEngine {
         static let heartSlopeHorizon = 35.0
         static let minimumHeartProminence = 4.5
         static let relativeHeartProminence = 0.11
+        // A repeated crest is not an interval unless the valley between it
+        // and the next crest represents a genuine local recovery. This keeps
+        // normal Z2 noise and cardiac drift from becoming invented reps.
+        static let minimumLocalRecoveryDepth = 6.0
         static let minimumPeakSeparation = 40.0
         static let maximumPeakContext = 8.0 * 60
         static let minimumCycleSeconds = 45.0
@@ -206,6 +210,8 @@ enum RunningSessionStructureEngine {
         guard sequence.count >= Policy.minimumRepeatedBouts else { return nil }
         sequence = recoverPeriodicEdgePeaks(sequence, in: smoothed,
                                             requiredProminence: requiredProminence)
+        sequence = sequenceWithLocalRecoveries(sequence, in: smoothed)
+        guard sequence.count >= Policy.minimumRepeatedBouts else { return nil }
         let bouts = responseBouts(for: sequence, in: smoothed)
         guard bouts.count == sequence.count else { return nil }
         let cycleDurations = zip(sequence, sequence.dropFirst()).map {
@@ -398,6 +404,39 @@ enum RunningSessionStructureEngine {
             result.append(recovered)
         }
         return result
+    }
+
+    /// Keeps the longest chain whose consecutive crests are separated by a
+    /// real local recovery. Peak prominence alone is insufficient because a
+    /// distant warm-up or cooldown minimum can make tiny steady-state Z2
+    /// oscillations look prominent. The valley must exist *between* the two
+    /// responses that it supposedly separates.
+    private static func sequenceWithLocalRecoveries(_ sequence: [HeartPeak],
+                                                    in points: [RunningSignalPoint]) -> [HeartPeak] {
+        guard sequence.count >= Policy.minimumRepeatedBouts else { return [] }
+        var best: [HeartPeak] = []
+        var current: [HeartPeak] = [sequence[0]]
+        for next in sequence.dropFirst() {
+            guard let previous = current.last else { continue }
+            let lower = min(previous.index, next.index)
+            let upper = max(previous.index, next.index)
+            guard lower < upper,
+                  let valley = points[lower...upper].map(\.value).min() else {
+                if current.count > best.count { best = current }
+                current = [next]
+                continue
+            }
+            let recoveryDepth = min(previous.point.value - valley,
+                                    next.point.value - valley)
+            if recoveryDepth >= Policy.minimumLocalRecoveryDepth {
+                current.append(next)
+            } else {
+                if current.count > best.count { best = current }
+                current = [next]
+            }
+        }
+        if current.count > best.count { best = current }
+        return best
     }
 
     private static func periodicPeak(near expected: Date, cycle: TimeInterval,

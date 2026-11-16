@@ -5782,6 +5782,34 @@ final class EngineTests: XCTestCase {
         XCTAssertNil(RunningSessionStructureEngine.detect(speed: [], heartRate: heart))
     }
 
+    func testSteadyZoneTwoWithDriftAndCooldownDoesNotBecomeIntervals() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        var heart: [RunningSignalPoint] = []
+        var elapsed = 0
+        // Optical lock-on plus gradual warm-up, similar to a treadmill Z2 run.
+        for second in stride(from: 0, to: 10 * 60, by: 5) {
+            let progress = Double(second) / 600
+            heart.append(.init(date: start.addingTimeInterval(Double(second)),
+                               value: 72 + 52 * min(1, progress * 2.2)))
+        }
+        elapsed = 10 * 60
+        // Thirty minutes of continuous aerobic work: gentle drift and small
+        // quasi-periodic fluctuations, but no meaningful recovery valleys.
+        for second in stride(from: 0, to: 30 * 60, by: 5) {
+            let drift = Double(second) / 1_800 * 8
+            let oscillation = sin(Double(second) / 410 * 2 * .pi) * 2.8
+            heart.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                               value: 125 + drift + oscillation))
+        }
+        elapsed += 30 * 60
+        for second in stride(from: 0, to: 3 * 60, by: 5) {
+            heart.append(.init(date: start.addingTimeInterval(Double(elapsed + second)),
+                               value: 133 - Double(second) * 0.16))
+        }
+
+        XCTAssertNil(RunningSessionStructureEngine.detect(speed: [], heartRate: heart))
+    }
+
     func testIsolatedHeartRateSpikesDoNotCreateIntervals() {
         let start = Date(timeIntervalSince1970: 1_700_000_000)
         var heart = (0..<360).map { index in

@@ -14,10 +14,9 @@ struct RunningStructureKnowledge: Codable, Identifiable, Equatable {
 @MainActor
 final class RunningStructureStore {
     static let shared = RunningStructureStore()
-    // v4 recovers lower-amplitude edge responses from the cadence learned in
-    // the central set and rejects off-cadence cooldown bumps. Positive older
-    // knowledge must be recomputed so the real session moves from 5 to 6.
-    static let currentDetectorVersion = 4
+    // v5 additionally requires a genuine local recovery between consecutive
+    // crests, preventing steady Z2 drift/noise from becoming false intervals.
+    static let currentDetectorVersion = 5
 
     private(set) var records: [RunningStructureKnowledge] = []
     private let url: URL
