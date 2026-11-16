@@ -55,6 +55,10 @@ enum RunningSessionStructureEngine {
         static let heartSlopeHorizon = 35.0
         static let minimumHeartProminence = 4.5
         static let relativeHeartProminence = 0.11
+        // HR-only interval inference also needs a meaningful upper excursion
+        // above the session's typical level. A steady Z2 plateau can contain
+        // several 4-8 bpm wiggles, but those are not repeated hard efforts.
+        static let minimumRepeatedUpperAmplitude = 10.0
         // A repeated crest is not an interval unless the valley between it
         // and the next crest represents a genuine local recovery. This keeps
         // normal Z2 noise and cardiac drift from becoming invented reps.
@@ -193,8 +197,11 @@ enum RunningSessionStructureEngine {
         guard points.count >= Policy.minimumHeartSamples else { return nil }
         let smoothed = timeSmoothed(points, radius: Policy.heartSmoothingRadius)
         let sortedValues = smoothed.map(\.value).sorted()
-        guard let low = percentile(sortedValues, 0.15), let high = percentile(sortedValues, 0.95),
-              high - low >= 14 else { return nil }
+        guard let low = percentile(sortedValues, 0.15),
+              let median = percentile(sortedValues, 0.50),
+              let high = percentile(sortedValues, 0.95),
+              high - low >= 14,
+              high - median >= Policy.minimumRepeatedUpperAmplitude else { return nil }
 
         let requiredProminence = max(Policy.minimumHeartProminence,
                                      (high - low) * Policy.relativeHeartProminence)

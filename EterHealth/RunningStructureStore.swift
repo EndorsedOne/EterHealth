@@ -14,9 +14,9 @@ struct RunningStructureKnowledge: Codable, Identifiable, Equatable {
 @MainActor
 final class RunningStructureStore {
     static let shared = RunningStructureStore()
-    // v5 additionally requires a genuine local recovery between consecutive
-    // crests, preventing steady Z2 drift/noise from becoming false intervals.
-    static let currentDetectorVersion = 5
+    // v6 also requires the repeated upper responses to rise meaningfully above
+    // the session median. This rejects steady Z2 plateaus with small wiggles.
+    static let currentDetectorVersion = 6
 
     private(set) var records: [RunningStructureKnowledge] = []
     private let url: URL
