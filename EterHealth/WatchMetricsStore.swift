@@ -274,7 +274,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     /// construye con una función pura y probada para que ese contrato no vuelva
     /// a arrastrar campos sin consumidor.
     func updateWorkoutContext(routine: String, workoutID: String, workoutDate: Date,
-                              completedSets: Int, totalVolume: Double, restEndsAt: Date?) {
+                              completedSets: Int, totalVolume: Double, restEndsAt: Date?,
+                              forceDelivery: Bool = false) {
         let payload = Self.workoutContextPayload(
             routine: routine, workoutID: workoutID, workoutDate: workoutDate,
             completedSets: completedSets, totalVolume: totalVolume, restEndsAt: restEndsAt
@@ -291,7 +292,11 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         // nadie iba a leer nunca.
         let signature = payload.keys.filter { $0 != "contextIssuedAt" && $0 != "workoutContextID" }.sorted()
             .map { "\($0)=\(payload[$0] ?? "")" }.joined(separator: "&")
-        guard signature != lastWorkoutContextSignature else { return }
+        // `requestContext` llega DESPUÉS de que el Watch haya creado su
+        // HKWorkoutSession. Aunque el contenido coincida con el que enviamos
+        // antes de lanzar el reloj, hay que repetirlo: el manager del Watch
+        // reinicia identidad/descanso al comenzar una sesión nueva.
+        guard forceDelivery || signature != lastWorkoutContextSignature else { return }
         lastWorkoutContextSignature = signature
         lastWorkoutPayload = payload
         if completedSets == 0 && restEndsAt == nil { observedRunningWatchSession = false }

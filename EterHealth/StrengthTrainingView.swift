@@ -1751,7 +1751,7 @@ struct LiveStrengthWorkoutView: View {
                             // cierra la carrera en la que el contexto inicial
                             // llegaba antes del arranque y luego se perdía al
                             // inicializar el manager del reloj.
-                            syncWorkoutContext()
+                            syncWorkoutContext(forceDelivery: true)
                         }
                     }
                 )
@@ -2305,12 +2305,13 @@ struct LiveStrengthWorkoutView: View {
         syncWorkoutContext()
     }
 
-    private func syncWorkoutContext() {
+    private func syncWorkoutContext(forceDelivery: Bool = false) {
         let completed = exercises.flatMap(\.sets).filter(\.completed)
         let volume = completed.reduce(0) { $0 + $1.weight * Double($1.reps) }
         WatchMetricsStore.shared.updateWorkoutContext(routine: routine.name,
                                           workoutID: workoutID, workoutDate: startedAt,
-                                          completedSets: completed.count, totalVolume: volume, restEndsAt: restEndsAt)
+                                          completedSets: completed.count, totalVolume: volume,
+                                          restEndsAt: restEndsAt, forceDelivery: forceDelivery)
         syncLiveActivity()
     }
 
