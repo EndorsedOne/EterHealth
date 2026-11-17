@@ -18,19 +18,25 @@ private struct WatchMetricsPayload: Sendable {
     let workoutContextAckID: String?
 
     nonisolated init(_ message: [String: Any]) {
-        heartRate = message["heartRate"] as? Double
-        activeEnergy = message["activeEnergy"] as? Double
-        elapsed = message["elapsed"] as? Double
+        func number(_ key: String) -> Double? {
+            if let value = message[key] as? Double { return value }
+            if let value = message[key] as? NSNumber { return value.doubleValue }
+            if let value = message[key] as? Int { return Double(value) }
+            return nil
+        }
+        heartRate = number("heartRate")
+        activeEnergy = number("activeEnergy")
+        elapsed = number("elapsed")
         isRunning = message["running"] as? Bool
         isPaused = message["paused"] as? Bool
         terminalAction = message["terminalAction"] as? String
         terminalOutcome = message["terminalOutcome"] as? String
         terminalWorkoutID = message["terminalWorkoutID"] as? String
         workoutCommand = message["workoutCommand"] as? String
-        reviewEffort = message["reviewEffort"] as? Int
+        reviewEffort = (message["reviewEffort"] as? NSNumber)?.intValue ?? message["reviewEffort"] as? Int
         reviewPain = message["reviewPain"] as? Bool
         reviewWorkoutID = message["reviewWorkoutID"] as? String
-        reviewWorkoutDate = (message["reviewWorkoutDate"] as? Double).map(Date.init(timeIntervalSince1970:))
+        reviewWorkoutDate = number("reviewWorkoutDate").map(Date.init(timeIntervalSince1970:))
         workoutContextAckID = message["workoutContextAckID"] as? String
     }
 }
@@ -72,6 +78,8 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     private(set) var terminalOutcome: WatchTerminalOutcome?
     private(set) var terminalWorkoutID: String?
     private(set) var observedRunningWatchSession = false
+    private var pendingTerminalPayload: [String: Any]?
+    private var terminalRetryTask: Task<Void, Never>?
 
     override init() {
         super.init()
@@ -95,6 +103,9 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         if let outcome = payload.terminalOutcome.flatMap(WatchTerminalOutcome.init(rawValue:)) {
             terminalOutcome = outcome
             terminalWorkoutID = payload.terminalWorkoutID
+            if payload.terminalWorkoutID == pendingTerminalPayload?["workoutID"] as? String {
+                completeTerminalDelivery()
+            }
         }
         if let command = payload.workoutCommand { workoutCommand = command }
         if let ack = payload.workoutContextAckID,
@@ -139,8 +150,10 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        clearActiveWorkoutContext()
-        resendLastSummary()
+        // Un timeout sólo termina la espera de la pantalla. La orden sigue
+        // siendo el estado prioritario hasta que el Watch confirme el cierre;
+        // sustituirla aquí por el resumen del gemelo era precisamente lo que
+        // dejaba una sesión grabando en el reloj.
         return nil
     }
     func discardAndAwait(workoutID: String, timeout: TimeInterval = 5) async -> WatchTerminalOutcome? {
@@ -157,10 +170,7 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         // Igual que al guardar: el timeout termina la espera, pero la orden
-        // fiable sigue encolada y puede llegar después. Limpiamos el contexto
-        // sólo cuando ya no vamos a pisar inmediatamente la orden terminal.
-        clearActiveWorkoutContext()
-        resendLastSummary()
+        // fiable conserva la prioridad y puede llegar después.
         return nil
     }
 
@@ -202,12 +212,15 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     /// Reenvía el último resumen conocido. Si no hay ninguno todavía no se
     /// inventa uno: el iPhone lo produce en cuanto ContentView sincroniza.
     func resendLastSummary() {
+        guard pendingTerminalPayload == nil, lastWorkoutPayload == nil else { return }
         guard let lastTwinPayload else { return }
         send(lastTwinPayload)
     }
 
     private func resendCurrentContext() {
-        if let lastWorkoutPayload {
+        if let pendingTerminalPayload {
+            deliverTerminalPayload(pendingTerminalPayload, enqueueReliably: false)
+        } else if let lastWorkoutPayload {
             deliverWorkoutPayload(lastWorkoutPayload, enqueueReliably: false)
         } else {
             resendLastSummary()
@@ -246,7 +259,12 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         // un reloj que arranca después de que el iPhone enviara su último
         // contexto se quedaba en "Esperando datos" sin nada que pedirle.
         lastTwinPayload = completedPayload
-        send(completedPayload)
+        // WCSession conserva un único applicationContext. Durante una sesión
+        // el descanso/identidad (o su orden terminal) son más importantes que
+        // el resumen del gemelo, que queda cacheado para después.
+        if lastWorkoutPayload == nil, pendingTerminalPayload == nil {
+            send(completedPayload)
+        }
     }
 
     /// El reloj solo consume del contexto el descanso, el resumen (series
@@ -376,6 +394,12 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         let payload = Self.terminalCommandPayload(
             command: command, workoutID: workoutID, issuedAt: Date()
         )
+        pendingTerminalPayload = payload
+        deliverTerminalPayload(payload, enqueueReliably: true)
+        scheduleTerminalRetries(for: payload)
+    }
+
+    private func deliverTerminalPayload(_ payload: [String: Any], enqueueReliably: Bool) {
         let session = WCSession.default
         // Tres vías con la misma commandID. El Watch deduplica la orden:
         // - sendMessage: latencia mínima cuando está visible.
@@ -388,11 +412,44 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         } catch {
             print("[éter/watch] orden terminal persistente falló: \(error)")
         }
-        session.transferUserInfo(payload)
+        if enqueueReliably { session.transferUserInfo(payload) }
         if session.isReachable {
             session.sendMessage(payload, replyHandler: nil) { error in
                 print("[éter/watch] orden terminal inmediata falló: \(error)")
             }
+        }
+    }
+
+    private func scheduleTerminalRetries(for payload: [String: Any]) {
+        guard let commandID = payload["commandID"] as? String else { return }
+        terminalRetryTask?.cancel()
+        terminalRetryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for delay in [0.5, 1.5, 3.0, 6.0, 12.0, 25.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled,
+                      self.pendingTerminalPayload?["commandID"] as? String == commandID else { return }
+                self.deliverTerminalPayload(payload, enqueueReliably: false)
+            }
+        }
+    }
+
+    private func completeTerminalDelivery() {
+        pendingTerminalPayload = nil
+        terminalRetryTask?.cancel()
+        terminalRetryTask = nil
+        clearActiveWorkoutContext()
+        resendLastSummary()
+    }
+
+    nonisolated static func shouldSaveStrengthWorkoutOnPhone(
+        outcome: WatchTerminalOutcome?, observedRunningWatchSession: Bool
+    ) -> Bool {
+        switch outcome {
+        case .savedByWatch: false
+        case .noActiveSession, .watchSaveFailed, .expiredAndDiscarded: true
+        case .discardedByWatch: false
+        case nil: !observedRunningWatchSession
         }
     }
 

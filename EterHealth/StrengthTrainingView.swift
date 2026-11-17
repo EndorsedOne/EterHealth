@@ -2387,8 +2387,12 @@ struct LiveStrengthWorkoutView: View {
             let sessionEnd = endedAt
             let workoutID = "\(routine.name)|\(sessionStart.timeIntervalSince1970)"
             Task {
-                let outcome = await WatchMetricsStore.shared.finishAndAwait(workoutID: workoutID)
-                if outcome == .savedByWatch { return }
+                let watchStore = WatchMetricsStore.shared
+                let watchWasRunning = watchStore.observedRunningWatchSession
+                let outcome = await watchStore.finishAndAwait(workoutID: workoutID)
+                guard WatchMetricsStore.shouldSaveStrengthWorkoutOnPhone(
+                    outcome: outcome, observedRunningWatchSession: watchWasRunning
+                ) else { return }
                 // `noActiveSession`, fallo o timeout: antes de usar el iPhone
                 // como respaldo se mira HealthKit directamente. Puede que la
                 // confirmación WCSession se haya perdido aunque el Watch sí
@@ -2396,9 +2400,10 @@ struct LiveStrengthWorkoutView: View {
                 if !(await health.containsEquivalentStrengthWorkout(start: sessionStart, end: sessionEnd)) {
                     await health.saveStrengthWorkout(start: sessionStart, end: sessionEnd)
                 }
-                // La observación previa del Watch no prueba que su builder se
-                // guardase. Ante timeout o fallo, HealthKit decide: si no existe
-                // un equivalente, el iPhone crea exactamente un respaldo.
+                // Si el Watch estaba grabando y sólo se perdió su confirmación,
+                // NO escribe el iPhone: la orden permanece pendiente y el Watch
+                // conserva la única autoría de HealthKit. Así un guardado manual
+                // posterior nunca crea una segunda sesión.
             }
         }
         completionSummary = StrengthSessionSummary.make(for: completedWorkout,

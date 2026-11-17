@@ -498,7 +498,6 @@ extension WatchWorkoutManager: WCSessionDelegate {
     }
 
     private func apply(_ payload: WatchActivePayload) {
-        acknowledgeWorkoutContext(payload.contextID)
         if let issuedAt = payload.issuedAt,
            let lastAppliedWorkoutContextAt,
            issuedAt < lastAppliedWorkoutContextAt { return }
@@ -519,6 +518,10 @@ extension WatchWorkoutManager: WCSessionDelegate {
         workoutID = payload.workoutID ?? workoutID
         workoutDate = payload.workoutDate ?? workoutDate
         totalVolume = payload.totalVolume ?? totalVolume
+        // El ACK significa "aplicado", no sólo "recibido". Antes un contexto
+        // antiguo podía confirmarse y hacer que el iPhone dejara de reenviar el
+        // descanso vigente aunque el Watch lo hubiese descartado.
+        acknowledgeWorkoutContext(payload.contextID)
     }
 
     private func acknowledgeWorkoutContext(_ contextID: String?) {
@@ -587,7 +590,10 @@ extension WatchWorkoutManager: WCSessionDelegate {
                 // diferida cierre un entrenamiento posterior.
                 if let targetWorkoutID = message["workoutID"] as? String {
                     if let workoutID {
-                        guard targetWorkoutID == workoutID else { return }
+                        if targetWorkoutID != workoutID {
+                            guard terminalTargetIsCurrent(targetWorkoutID, message: message) else { return }
+                            self.workoutID = targetWorkoutID
+                        }
                     } else if isRunning, let startedAt {
                         // El contexto puede llegar unas décimas después del
                         // arranque. El ID contiene el mismo `startedAt`, así
@@ -629,5 +635,15 @@ extension WatchWorkoutManager: WCSessionDelegate {
             default: break
             }
         }
+    }
+
+    private func terminalTargetIsCurrent(_ targetWorkoutID: String, message: [String: Any]) -> Bool {
+        guard isRunning, let startedAt,
+              let targetStart = targetWorkoutID.split(separator: "|").last.flatMap({ Double($0) }),
+              let issuedTimestamp = watchDouble(message["issuedAt"]) else { return false }
+        let issuedAt = Date(timeIntervalSince1970: issuedTimestamp)
+        return targetStart <= startedAt.timeIntervalSince1970 + 2
+            && startedAt <= issuedAt.addingTimeInterval(2)
+            && startedAt.timeIntervalSince1970 - targetStart < 120
     }
 }

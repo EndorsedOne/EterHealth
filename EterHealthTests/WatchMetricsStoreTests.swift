@@ -70,4 +70,25 @@ final class WatchMetricsStoreTests: XCTestCase {
         )
         XCTAssertNil(payload["fallbackDeadline"])
     }
+
+    func testPhoneDoesNotWriteHealthKitAfterAmbiguousWatchTimeout() {
+        XCTAssertFalse(WatchMetricsStore.shouldSaveStrengthWorkoutOnPhone(
+            outcome: nil, observedRunningWatchSession: true
+        ))
+        XCTAssertTrue(WatchMetricsStore.shouldSaveStrengthWorkoutOnPhone(
+            outcome: nil, observedRunningWatchSession: false
+        ))
+    }
+
+    func testPhoneOnlyFallsBackAfterDefinitiveWatchFailure() {
+        XCTAssertFalse(WatchMetricsStore.shouldSaveStrengthWorkoutOnPhone(
+            outcome: .savedByWatch, observedRunningWatchSession: true
+        ))
+        XCTAssertTrue(WatchMetricsStore.shouldSaveStrengthWorkoutOnPhone(
+            outcome: .noActiveSession, observedRunningWatchSession: true
+        ))
+        XCTAssertTrue(WatchMetricsStore.shouldSaveStrengthWorkoutOnPhone(
+            outcome: .watchSaveFailed, observedRunningWatchSession: true
+        ))
+    }
 }
