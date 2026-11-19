@@ -342,9 +342,11 @@ final class WatchMetricsStore: NSObject, ObservableObject {
             print("[éter/watch] workoutContext persistente falló: \(error)")
         }
         if session.isReachable {
-            session.sendMessage(payload, replyHandler: nil) { error in
-                print("[éter/watch] workoutContext inmediato falló: \(error)")
-            }
+            // WatchConnectivity invoca este callback en su NSOperationQueue,
+            // no en MainActor. Pasar un closure creado dentro de este store
+            // @MainActor provoca un SIGTRAP de aislamiento estricto.
+            session.sendMessage(payload, replyHandler: nil,
+                                errorHandler: Self.logWorkoutContextDeliveryError)
         }
         // El canal inmediato puede fallar aun cuando isReachable acababa de
         // devolver true. La cola fiable cubre esa carrera; contextIssuedAt hace
@@ -419,10 +421,20 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         }
         if enqueueReliably { session.transferUserInfo(payload) }
         if session.isReachable {
-            session.sendMessage(payload, replyHandler: nil) { error in
-                print("[éter/watch] orden terminal inmediata falló: \(error)")
-            }
+            session.sendMessage(payload, replyHandler: nil,
+                                errorHandler: Self.logTerminalDeliveryError)
         }
+    }
+
+    /// Estos callbacks deben permanecer explícitamente fuera de MainActor:
+    /// WCSession los ejecuta en una cola de utilidad propia. Son `internal`
+    /// para que el test de regresión pueda invocarlos desde una cola de fondo.
+    nonisolated static func logWorkoutContextDeliveryError(_ error: Error) {
+        print("[éter/watch] workoutContext inmediato falló: \(error)")
+    }
+
+    nonisolated static func logTerminalDeliveryError(_ error: Error) {
+        print("[éter/watch] orden terminal inmediata falló: \(error)")
     }
 
     private func scheduleTerminalRetries(for payload: [String: Any]) {

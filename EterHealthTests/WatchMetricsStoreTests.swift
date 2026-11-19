@@ -91,4 +91,15 @@ final class WatchMetricsStoreTests: XCTestCase {
             outcome: .watchSaveFailed, observedRunningWatchSession: true
         ))
     }
+
+    func testWatchConnectivityErrorCallbacksRunOffMainActor() async {
+        let error = NSError(domain: "WatchMetricsStoreTests", code: 1)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                WatchMetricsStore.logWorkoutContextDeliveryError(error)
+                WatchMetricsStore.logTerminalDeliveryError(error)
+                continuation.resume()
+            }
+        }
+    }
 }
