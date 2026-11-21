@@ -58,7 +58,12 @@ final class DashboardViewModel: ObservableObject {
             deepShare: SleepArchitectureEngine.dailyDeepShareSeries(health.sleepStagesHistory),
             remShare: SleepArchitectureEngine.dailyRemShareSeries(health.sleepStagesHistory),
             sleepSchedule: health.sleepScheduleHistory, travelEpisodes: travelHistory)
-        habitTodayMessage = HabitAssociationEngine.todayMessage(associations: associations, events: events)
+        let habitNow = Date()
+        let caffeineExposures = HabitAssociationEngine.caffeineOccurrences(
+            events: events.filter { ($0.caffeineDate ?? $0.date) <= habitNow },
+            sleepSchedule: health.sleepScheduleHistory)
+        habitTodayMessage = HabitAssociationEngine.todayMessage(
+            associations: associations, events: events, caffeineExposures: caffeineExposures, now: habitNow)
         // Hoy must not depend on having visited Rendimiento first. Resolve
         // the same forecast inputs as TrainingPlanEngine, outside View.body.
         if health.recentWorkouts.contains(where: { $0.activity == "Carrera" && Calendar.current.isDateInToday($0.date) }) {

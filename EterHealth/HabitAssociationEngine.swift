@@ -122,6 +122,7 @@ struct HabitAssociation: Identifiable {
 
 enum HabitAssociationEngine {
     nonisolated static func todayMessage(associations: [HabitAssociation], events: [LifestyleEvent],
+                                         caffeineExposures: [HabitOccurrence] = [],
                                          now: Date = Date()) -> HabitTodayMessage? {
         let eligible = associations.filter {
             $0.confidence.level != .low && $0.samples > 0 && $0.direction == .adverse
@@ -130,6 +131,18 @@ enum HabitAssociationEngine {
                 ? $0.kind.rawValue < $1.kind.rawValue : $0.confidence.score > $1.confidence.score
         }
         for association in eligible {
+            if association.kind == .lateCaffeine {
+                // The exposure is the existing pharmacokinetic estimate at
+                // bedtime, not an arbitrary intake-hour cutoff. Only a past
+                // exposure day can be linked to today's morning.
+                let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now
+                guard let exposure = caffeineExposures.first(where: {
+                    $0.kind == .lateCaffeine && $0.date <= now &&
+                    Calendar.current.isDate($0.date, inSameDayAs: yesterday) &&
+                    ($0.exposureLevel ?? 0) >= 1
+                }) else { continue }
+                return makeTodayMessage(association, date: exposure.date)
+            }
             guard let event = events.filter({ event in
                 let age = now.timeIntervalSince(event.date)
                 guard age >= 0 else { return false }
@@ -142,10 +155,21 @@ enum HabitAssociationEngine {
                 default: return false
                 }
             }).max(by: { $0.date < $1.date }) else { continue }
-            return HabitTodayMessage(kind: association.kind, recordedAt: event.date,
-                text: "\(association.kind.title) reciente: en tus datos se asocia con mañanas menos favorables. Hoy no añadas intensidad para compensar; respeta el ajuste del plan y tus sensaciones. Es una asociación, no una causa demostrada.")
+            return makeTodayMessage(association, date: event.date)
         }
         return nil
+    }
+
+    private nonisolated static func makeTodayMessage(_ association: HabitAssociation, date: Date) -> HabitTodayMessage {
+        // Do not turn favorable-oriented metric percentages (notably pulse)
+        // into raw physiological deltas. Reuse the engine's own explanation.
+        let evidence = association.confidence.level == .high && !association.effects.isEmpty
+            ? association.headline
+            : "En tus datos se asocia con mañanas menos favorables."
+        let context = association.kind == .lateCaffeine
+            ? "Cafeína estimada al acostarte ayer" : "\(association.kind.title) reciente"
+        return HabitTodayMessage(kind: association.kind, recordedAt: date,
+            text: "\(context). \(evidence) Hoy no añadas intensidad para compensar; sigue el plan y tus sensaciones. Asociación personal, no causalidad demostrada.")
     }
     nonisolated static func readinessImpact(_ association: HabitAssociation) -> Int {
         guard association.confidence.level != .low,
@@ -346,7 +370,7 @@ enum HabitAssociationEngine {
     /// presentes al acostarse. Usa la hora real de esa noche cuando existe;
     /// si falta, recurre a la mediana personal y finalmente a las 23:00.
     /// No existe ya ningún corte arbitrario de las 14:00.
-    @MainActor private static func caffeineOccurrences(
+    @MainActor static func caffeineOccurrences(
         events: [LifestyleEvent], sleepSchedule: [NightlySleepSchedule]
     ) -> [HabitOccurrence] {
         let calendar = Calendar.current
