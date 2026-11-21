@@ -121,6 +121,32 @@ struct HabitAssociation: Identifiable {
 }
 
 enum HabitAssociationEngine {
+    nonisolated static func todayMessage(associations: [HabitAssociation], events: [LifestyleEvent],
+                                         now: Date = Date()) -> HabitTodayMessage? {
+        let eligible = associations.filter {
+            $0.confidence.level != .low && $0.samples > 0 && $0.direction == .adverse
+        }.sorted {
+            $0.confidence.score == $1.confidence.score
+                ? $0.kind.rawValue < $1.kind.rawValue : $0.confidence.score > $1.confidence.score
+        }
+        for association in eligible {
+            guard let event = events.filter({ event in
+                let age = now.timeIntervalSince(event.date)
+                guard age >= 0 else { return false }
+                switch association.kind {
+                case .alcohol: return age <= 36 * 3600 && event.alcoholDrinks > 0
+                case .sauna: return age <= 36 * 3600 && event.saunaMinutes > 0
+                case .cold: return age <= 36 * 3600 && event.coldMinutes > 0
+                case .fasting: return age <= 24 * 3600 && event.fastingHours >= 12
+                case .fastedTraining: return age <= 24 * 3600 && event.trainedFasted
+                default: return false
+                }
+            }).max(by: { $0.date < $1.date }) else { continue }
+            return HabitTodayMessage(kind: association.kind, recordedAt: event.date,
+                text: "\(association.kind.title) reciente: en tus datos se asocia con mañanas menos favorables. Hoy no añadas intensidad para compensar; respeta el ajuste del plan y tus sensaciones. Es una asociación, no una causa demostrada.")
+        }
+        return nil
+    }
     nonisolated static func readinessImpact(_ association: HabitAssociation) -> Int {
         guard association.confidence.level != .low,
               association.direction != .neutral else { return 0 }
@@ -468,4 +494,10 @@ enum HabitAssociationEngine {
         return sorted.count.isMultiple(of: 2)
             ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
     }
+}
+
+struct HabitTodayMessage: Equatable {
+    let kind: HabitKind
+    let recordedAt: Date
+    let text: String
 }

@@ -435,6 +435,14 @@ struct ContentView: View {
                 todayTrendsCard
                 todayCompletedTraining
                 currentPlanCard
+                if let message = dashboard.habitTodayMessage {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Tu aprendizaje, hoy", systemImage: message.kind.icon).font(.subheadline.bold())
+                        Text(message.text).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .cardStyle()
+                }
                 // "Entrenamiento propuesto" se retira de Hoy: la sesión (cardio o
                 // fuerza) vive en la pestaña Entrenamiento, que ya la muestra con
                 // su detalle. Hoy = estado + semana + simular.

@@ -38,6 +38,7 @@ final class DashboardViewModel: ObservableObject {
     // into one TwinContext (PR1.5) and reused for every TwinCore call below
     // instead of repeating the same six labels three times.
     @Published private(set) var postSessionThresholdPace: Double?
+    @Published private(set) var habitTodayMessage: HabitTodayMessage?
 
     func refresh(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                 profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
@@ -49,6 +50,15 @@ final class DashboardViewModel: ObservableObject {
                                   personalAnchor: personalAnchor, travel: travel, travelHistory: travelHistory)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context)
         self.assessment = assessment
+        let associations = HabitAssociationEngine.analyze(
+            events: events, alcohol: health.alcoholHistory,
+            hrv: health.hrvHistory, restingHeartRate: health.restingHeartRateHistory,
+            sleep: health.sleepHistory,
+            respiratoryRate: health.respiratoryRateHistory, wristTemperature: health.wristTemperatureHistory,
+            deepShare: SleepArchitectureEngine.dailyDeepShareSeries(health.sleepStagesHistory),
+            remShare: SleepArchitectureEngine.dailyRemShareSeries(health.sleepStagesHistory),
+            sleepSchedule: health.sleepScheduleHistory, travelEpisodes: travelHistory)
+        habitTodayMessage = HabitAssociationEngine.todayMessage(associations: associations, events: events)
         // Hoy must not depend on having visited Rendimiento first. Resolve
         // the same forecast inputs as TrainingPlanEngine, outside View.body.
         if health.recentWorkouts.contains(where: { $0.activity == "Carrera" && Calendar.current.isDateInToday($0.date) }) {
