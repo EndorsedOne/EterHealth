@@ -273,6 +273,11 @@ struct GoalTrainingFocus {
 
 @MainActor
 enum TrainingPlanEngine {
+    nonisolated static func isInsideCoverageWindow(_ sessionDate: Date, at date: Date,
+                                                   calendar: Calendar = .current) -> Bool {
+        let start = calendar.date(byAdding: .day, value: -7, to: date) ?? date
+        return sessionDate >= start && sessionDate <= date
+    }
     private static func strengthVolumeTargets(
         workout: ProposedWorkout?, muscles: [MuscleReadiness], goals: [TrainingGoal],
         landmarks: VolumeLandmarkContext, volumeFactor: Double, isLight: Bool
@@ -1525,14 +1530,8 @@ enum TrainingPlanEngine {
     // entrenar mañana, pasado, etc." something the model actually assumes,
     // instead of a projection that quietly treats every future day as rest.
     //
-    // Two known simplifications, both erring toward *fewer* forced changes
-    // rather than more: the weekly session targets and per-muscle readiness
-    // are held at today's values across the whole window (they move slowly
-    // day to day in practice), and the rolling 7-day completed-session
-    // counters only ever increase during the simulation, even though a
-    // session from today's real count would eventually roll out of a live
-    // 7-day window — so by day 6 this can slightly overstate how "covered"
-    // the week already is, never understate it.
+    // Session and muscle-volume coverage rolls forward by date. Historical
+    // work expires from the quota without erasing its decaying fatigue.
     // TwinCore: same required-injection reasoning as status()/assess()
     // above — every value here used to come from a singleton instance
     // read somewhere inside this function's own call chain (directly, or
@@ -1689,14 +1688,39 @@ enum TrainingPlanEngine {
         // seeded from, then accumulated forward as applyStrengthLoad below
         // proposes real exercises — so a simulated day's own choice moves
         // the NEXT simulated day's volume urgency, the same way it already
-        // moves muscleFatigue. One known imprecision, deliberately
-        // accepted: the real seed itself never rolls off its own 7-day
-        // window as simulated days pass (a set logged 6 real days ago is
-        // still counted on simulated day+6, when it's actually 12 days
-        // old by then) — the same "held at today's value across the whole
-        // window" simplification this function already applies to
-        // readiness and hoursSince*, not a new one invented for this fix.
+        // moves muscleFatigue. refreshCoverage below rebuilds this volume
+        // from dated real and projected sessions before each future decision.
         var simulatedSets = Dictionary(uniqueKeysWithValues: assessment.muscles.map { ($0.name, $0.recentSets) })
+        // Coverage has an expiry date; fatigue has its own decay. Never keep
+        // today's completed quota frozen throughout the forecast.
+        let realHealthCoverage = health.recentWorkouts.filter {
+            $0.date <= now && !$0.source.localizedCaseInsensitiveContains("hevy") && !imports.isHealthKitMirror($0)
+        }
+        var projectedCoverage: [(date: Date, kind: PlannedSessionKind)] = []
+        var projectedMuscleSets: [(date: Date, sets: [String: Int])] = []
+        var coverageDate = today
+        let projectsToday = real.completedSessionsToday.isEmpty || override != nil
+        if projectsToday { projectedCoverage.append((today, todayKind)) }
+
+        func refreshCoverage(at date: Date) {
+            let realHealth = realHealthCoverage.filter { isInsideCoverageWindow($0.date, at: date, calendar: calendar) }
+            let realStrength = imports.workouts.filter { isInsideCoverageWindow($0.start, at: date, calendar: calendar) }
+            let projected = projectedCoverage.filter { isInsideCoverageWindow($0.date, at: date, calendar: calendar) }
+            state.strength = realStrength.count + realHealth.filter { isStrengthWorkout($0) }.count + projected.filter { $0.kind == .strength }.count
+            state.runs = realHealth.filter { $0.activity == "Carrera" }.count + projected.filter { [.easyRun, .qualityRun, .longRun].contains($0.kind) }.count
+            state.quality = realHealth.filter { $0.activity == "Carrera" && isQualityRun($0) }.count + projected.filter { $0.kind == .qualityRun }.count
+            state.swim = realHealth.filter { $0.activity == "Natación" }.count + projected.filter { $0.kind == .swim }.count
+            state.bike = realHealth.filter { $0.activity == "Ciclismo" }.count + projected.filter { $0.kind == .bike }.count
+            simulatedSets = [:]
+            for workout in realStrength {
+                for (muscle, sets) in workout.effectiveMuscleSets {
+                    simulatedSets[muscle, default: 0] += Int(sets.rounded())
+                }
+            }
+            for entry in projectedMuscleSets where isInsideCoverageWindow(entry.date, at: date, calendar: calendar) {
+                for (muscle, sets) in entry.sets { simulatedSets[muscle, default: 0] += sets }
+            }
+        }
         func simulatedMuscles() -> [MuscleReadiness] {
             muscleFatigue.map { MuscleReadiness(name: $0.key, readiness: min(100, max(0, Int((100 - $0.value).rounded()))), lastTrained: nil, recentSets: simulatedSets[$0.key] ?? 0) }
         }
@@ -1709,6 +1733,7 @@ enum TrainingPlanEngine {
         // "4 sets to every muscle in the pattern" that had no idea which
         // exercises, or how many sets each, the day would actually contain.
         func applyStrengthLoad(avoidLegs: Bool = false, volumeFactor: Double = 1) {
+            var sessionSets: [String: Int] = [:]
             let muscles = simulatedMuscles()
             let pattern = bestStrengthPattern(muscles, avoidLegs: avoidLegs, landmarkContext: landmarkContext)
             let goals = profile.goals
@@ -1725,7 +1750,11 @@ enum TrainingPlanEngine {
                     // per workout — just without the 5.2 fatigue scaling,
                     // which only belongs on the fatigue side.
                     simulatedSets[muscle, default: 0] += Int((effectiveSets * weight).rounded())
+                    sessionSets[muscle, default: 0] += Int((effectiveSets * weight).rounded())
                 }
+            }
+            if coverageDate != today || projectsToday {
+                projectedMuscleSets.append((coverageDate, sessionSets))
             }
         }
         // Real duration/elevation when a matching session already
@@ -1819,6 +1848,8 @@ enum TrainingPlanEngine {
 
         for offset in 1..<days {
             guard let date = calendar.date(byAdding: .day, value: offset, to: today) else { break }
+            coverageDate = date
+            refreshCoverage(at: date)
             // One day's worth of decay on whatever fatigue the previous
             // simulated (or today's real) session left behind, before this
             // day's own session — if any — adds fresh load on top.
@@ -1982,6 +2013,7 @@ enum TrainingPlanEngine {
                 aerobic: unscaledForecastLoad.aerobic,
                 strength: unscaledForecastLoad.strength * forecastStrengthFactor)
             state.apply(kind, on: date, load: forecastLoad, muscleFatigue: muscleFatigue)
+            projectedCoverage.append((date, kind))
             // Same informed-not-hidden disclosure status() applies to
             // today — a simulated day this far ahead can equally be one
             // Agresivo's extra margin (over 1.55) is what actually let
