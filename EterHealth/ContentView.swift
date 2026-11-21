@@ -553,13 +553,33 @@ struct ContentView: View {
 
             if let importedID = session.importedWorkoutID,
                let workout = imports.workouts.first(where: { $0.id == importedID }) {
+                if let closure = PostSessionClosure.strength(workout.effectiveMuscleSets) {
+                    postSessionClosure(closure)
+                }
                 todayStrengthImpact(workout)
             } else if let healthID = session.healthWorkoutID,
                       let workout = health.recentWorkouts.first(where: { $0.id == healthID }) {
+                if workout.activity == "Carrera",
+                   let closure = PostSessionClosure.cardio(verdict: SessionClassification.runQuality(
+                    workout,
+                    review: workoutReviews.reviews.first { $0.workoutID == "health-\(workout.id.uuidString)" },
+                    thresholdPace: nil,
+                    thresholdHeartRate: health.currentHeartRateZoneBoundaries(profile: goals.profile).map { Double($0.z3z4) }
+                   )) {
+                    postSessionClosure(closure)
+                }
                 TodayCardioSnapshotView(workout: workout)
             }
         }
         .contentShape(Rectangle())
+    }
+
+    private func postSessionClosure(_ summary: PostSessionClosure) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(summary.counted).font(.caption.bold())
+            Text(summary.tomorrow).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func todayStrengthImpact(_ workout: ImportedWorkout) -> some View {

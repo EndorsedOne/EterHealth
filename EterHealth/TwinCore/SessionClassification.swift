@@ -1,5 +1,35 @@
 import Foundation
 
+/// Presentation only: never writes load or changes tomorrow's prescription.
+struct PostSessionClosure: Equatable {
+    let counted: String
+    let tomorrow: String
+
+    static func strength(_ stimulus: [String: Double]) -> Self? {
+        let muscles = stimulus.filter { $0.value.isFinite && $0.value > 0.05 }
+            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+        guard !muscles.isEmpty else { return nil }
+        let detail = muscles.prefix(2).map {
+            "\($0.key): \($0.value.formatted(.number.precision(.fractionLength(0...1)))) series efectivas"
+        }.joined(separator: " · ")
+        return Self(counted: detail,
+                    tomorrow: "Mañana: el plan tendrá en cuenta la recuperación de estas zonas; no implica repetirlas.")
+    }
+
+    static func cardio(verdict: RunQualityVerdict) -> Self? {
+        // Calories alone cannot justify a confident user-facing conclusion.
+        guard verdict.basis != .insufficient, verdict.basis != .legacyCalories else { return nil }
+        return Self(
+            counted: verdict.isQuality
+                ? (verdict.basis == .detectedStructure ? "Intervalos detectados: cuenta como sesión de calidad." : "Cuenta como sesión de calidad según la evidencia disponible.")
+                : "No cuenta como sesión de calidad según la evidencia disponible.",
+            tomorrow: verdict.isQuality
+                ? "Mañana: el plan tendrá en cuenta la ventana de recuperación tras calidad."
+                : "Mañana: esto no añade una penalización por calidad; la carga y tu recuperación siguen contando."
+        )
+    }
+}
+
 // PR4. Había DOS definiciones de "esto fue una sesión de calidad":
 // TrainingPlanEngine.isQualityRun y una copia inline dentro de
 // RunningPerformanceEngine.summarize (con un umbral de RPE distinto, 8 en vez
