@@ -563,7 +563,7 @@ struct ContentView: View {
                    let closure = PostSessionClosure.cardio(verdict: SessionClassification.runQuality(
                     workout,
                     review: workoutReviews.reviews.first { $0.workoutID == "health-\(workout.id.uuidString)" },
-                    thresholdPace: nil,
+                    thresholdPace: dashboard.postSessionThresholdPace,
                     thresholdHeartRate: health.currentHeartRateZoneBoundaries(profile: goals.profile).map { Double($0.z3z4) }
                    )) {
                     postSessionClosure(closure)

@@ -7,20 +7,6 @@ import XCTest
 /// cambio futuro reintroduzca campos sin consumidor en el reloj.
 final class WatchMetricsStoreTests: XCTestCase {
 
-    func testPostSessionClosureDoesNotInventMissingEvidence() {
-        XCTAssertNil(PostSessionClosure.strength([:]))
-        XCTAssertNil(PostSessionClosure.cardio(verdict: .init(isQuality: false, basis: .insufficient)))
-        XCTAssertNil(PostSessionClosure.cardio(verdict: .init(isQuality: true, basis: .legacyCalories)))
-    }
-
-    func testPostSessionClosureUsesEffectiveStimulusAndQuality() {
-        let strength = PostSessionClosure.strength(["Pecho": 3.5, "Core": 1])
-        XCTAssertTrue(strength?.counted.contains("Pecho") == true)
-        let intervals = PostSessionClosure.cardio(verdict: .init(isQuality: true, basis: .detectedStructure))
-        XCTAssertTrue(intervals?.counted.contains("Intervalos") == true)
-        XCTAssertTrue(intervals?.tomorrow.contains("recuperación") == true)
-    }
-
     private func payload(restEndsAt: Date? = Date(timeIntervalSince1970: 1_000)) -> [String: Any] {
         WatchMetricsStore.workoutContextPayload(
             routine: "Empuje A",

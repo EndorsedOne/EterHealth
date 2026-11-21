@@ -37,6 +37,8 @@ final class DashboardViewModel: ObservableObject {
     // all read by ContentView (the caller) from their real stores. Bundled
     // into one TwinContext (PR1.5) and reused for every TwinCore call below
     // instead of repeating the same six labels three times.
+    @Published private(set) var postSessionThresholdPace: Double?
+
     func refresh(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                 profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],
                 activeInjuries: [InjuryRecord], calibration: TwinCalibration, personalAnchor: PersonalReadinessAnchor,
@@ -47,6 +49,16 @@ final class DashboardViewModel: ObservableObject {
                                   personalAnchor: personalAnchor, travel: travel, travelHistory: travelHistory)
         let assessment = TwinEngine.assess(health: health, imports: imports, checkIn: checkIn, context: context)
         self.assessment = assessment
+        // Hoy must not depend on having visited Rendimiento first. Resolve
+        // the same forecast inputs as TrainingPlanEngine, outside View.body.
+        if health.recentWorkouts.contains(where: { $0.activity == "Carrera" && Calendar.current.isDateInToday($0.date) }) {
+            let summary = RunningPerformanceEngine.summarize(
+                workouts: health.workoutHistory, zones: health.runningHeartRateZones, reviews: reviews)
+            postSessionThresholdPace = SessionClassification.thresholdPaceSecondsPerKm(
+                fiveK: summary.fiveK, tenK: summary.tenK)
+        } else {
+            postSessionThresholdPace = nil
+        }
         energyTimeline = EnergyTimelineEngine.build(
             assessment: assessment, health: health, imports: imports,
             checkIn: checkIn, lifestyle: events, travel: travel,
