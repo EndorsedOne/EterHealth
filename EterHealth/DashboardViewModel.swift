@@ -39,6 +39,26 @@ final class DashboardViewModel: ObservableObject {
     // instead of repeating the same six labels three times.
     @Published private(set) var postSessionThresholdPace: Double?
     @Published private(set) var habitTodayMessage: HabitTodayMessage?
+    @Published private(set) var mesocycleReview: MesocycleReview?
+
+    func refreshMesocycle(snapshots: [PlanSnapshot], workouts: [ImportedWorkout],
+                          profile: AthletePlanProfile, now: Date = Date()) {
+        let terms = profile.goals.filter(\.isActive).flatMap { goal -> [String] in
+            switch goal.kind {
+            case .benchPress: return ["bench press (barbell)", "press banca"]
+            case .squat: return ["squat (barbell)", "sentadilla"]
+            case .deadlift: return ["deadlift (barbell)", "peso muerto"]
+            default: return []
+            }
+        }
+        let progress = StrengthProgressEngine.summarize(workouts.filter { $0.start <= now }, now: now)
+        let keyLifts = progress.exercises.filter { exercise in
+            terms.contains { exercise.name.localizedCaseInsensitiveContains($0) }
+        }
+        mesocycleReview = MesocycleReviewEngine.review(
+            anchor: snapshots.filter { $0.sessionKind != nil }.map(\.date).min(), now: now,
+            exercises: keyLifts, deloadActive: plan?.isDeload == true)
+    }
 
     func refresh(health: HealthStore, imports: ImportStore, checkIn: DailyCheckIn?,
                 profile: AthletePlanProfile, events: [LifestyleEvent], reviews: [WorkoutReview],

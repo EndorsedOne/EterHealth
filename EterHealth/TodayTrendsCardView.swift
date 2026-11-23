@@ -8,6 +8,13 @@ struct TodayTrendsCardView: View {
     let result: EnergyTimelineEngine.Result
 
     private struct CurvePoint: Identifiable { let id: Int; let hour: Double; let value: Double }
+    private var visibleStartHour: Double {
+        guard let wake = result.sleepEndHour, wake >= 0, wake < result.currentHour else { return 0 }
+        return wake
+    }
+    private var visibleDomain: ClosedRange<Double> {
+        visibleStartHour...max(visibleStartHour + 0.1, result.currentHour)
+    }
 
     // Mismo mapeo índice→hora que EnergyTimelineEngine.energyModel (pasos de
     // media hora, tope en la hora actual).
@@ -51,18 +58,12 @@ struct TodayTrendsCardView: View {
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Image(systemName: "flame.fill").foregroundStyle(.orange)
-                Text("Calorías gastadas").font(.caption.bold())
+                Text("Calorías activas").font(.caption.bold())
                 Spacer()
-                Text("\(Int(total.rounded())) total · \(Int(active.rounded())) activas")
+                Text("\(Int(active.rounded())) activas · \(Int(total.rounded())) total")
                     .font(.caption.bold()).fontDesign(.rounded)
             }
             Chart(result.calorieBins) { bin in
-                BarMark(
-                    x: .value("Hora", bin.startHour + 0.25),
-                    y: .value("Total", bin.cumulativeTotal), width: .fixed(7)
-                )
-                .foregroundStyle(Color.orange.opacity(0.25))
-                .cornerRadius(2)
                 BarMark(
                     x: .value("Hora", bin.startHour + 0.25),
                     y: .value("Activas", bin.cumulativeActive), width: .fixed(4)
@@ -86,7 +87,6 @@ struct TodayTrendsCardView: View {
             }
             .frame(height: 78)
             HStack(spacing: 14) {
-                Label("Total acumulado", systemImage: "square.fill").foregroundStyle(Color.orange.opacity(0.45))
                 Label("Activas acumuladas", systemImage: "square.fill").foregroundStyle(.orange)
                 Spacer()
             }
@@ -110,7 +110,7 @@ struct TodayTrendsCardView: View {
                     .font(.caption.bold()).fontDesign(.rounded)
             }
             HStack(alignment: .bottom, spacing: 2) {
-                ForEach(Array(result.caffeine.points.enumerated()), id: \.offset) { _, point in
+                ForEach(Array(result.caffeine.points.filter { $0.hour >= visibleStartHour }.enumerated()), id: \.offset) { _, point in
                     Capsule()
                         .fill(Color.brown.opacity(point.hour <= result.currentHour ? 0.82 : 0.34))
                         .frame(maxWidth: .infinity)
@@ -119,10 +119,10 @@ struct TodayTrendsCardView: View {
             }
             .frame(height: 24, alignment: .bottom)
             HStack {
-                Text("00")
-                Spacer(); Text("06")
-                Spacer(); Text("12")
-                Spacer(); Text("18")
+                Text(formattedHour(visibleStartHour))
+                Spacer()
+                Text("Incluye cafeína residual previa")
+                Spacer()
                 Spacer(); Text("24")
             }
             .font(.system(size: 9)).foregroundStyle(.secondary)
@@ -271,12 +271,13 @@ struct TodayTrendsCardView: View {
                     .symbolSize(90)
             }
         }
-        .chartXScale(domain: 0...24)
+        .chartXScale(domain: visibleDomain)
+        .chartPlotStyle { plot in plot.clipped() }
         .chartYScale(domain: 0...pulseChartCeiling)
         .chartXAxis {
-            AxisMarks(values: [0, 6, 12, 18, 24]) { value in
+            AxisMarks(values: .automatic(desiredCount: 5)) { value in
                 AxisGridLine().foregroundStyle(Color.primary.opacity(0.08))
-                AxisValueLabel { if let hour = value.as(Int.self) { Text(String(format: "%02d", hour)) } }
+                AxisValueLabel { if let hour = value.as(Double.self) { Text(formattedHour(hour)) } }
             }
         }
         .chartYAxis {
@@ -291,11 +292,11 @@ struct TodayTrendsCardView: View {
                     let rect = geometry[plotFrame]
                     // Entrenamientos arriba, inputs de estilo de vida abajo, para
                     // que no se pisen y se lean como dos capas distintas.
-                    ForEach(Array(result.events.enumerated()), id: \.offset) { index, event in
+                    ForEach(Array(result.events.filter { ($0.startHour + $0.endHour) / 2 >= visibleStartHour && ($0.startHour + $0.endHour) / 2 <= result.currentHour }.enumerated()), id: \.offset) { index, event in
                         marker(proxy: proxy, rect: rect, hour: (event.startHour + event.endHour) / 2,
                                symbol: event.symbol, color: .orange, y: rect.minY + 10 + CGFloat(index % 2) * 22)
                     }
-                    ForEach(Array(result.inputMarkers.filter { $0.kind != "coffee" }.enumerated()), id: \.offset) { index, input in
+                    ForEach(Array(result.inputMarkers.filter { $0.kind != "coffee" && $0.hour >= visibleStartHour && $0.hour <= result.currentHour }.enumerated()), id: \.offset) { index, input in
                         marker(proxy: proxy, rect: rect, hour: input.hour,
                                symbol: input.symbol, color: inputColor(input.kind),
                                y: rect.maxY - 10 - CGFloat(index % 2) * 22)
@@ -322,8 +323,8 @@ struct TodayTrendsCardView: View {
     private var legend: some View {
         HStack(spacing: 14) {
             Label("Energía ahora", systemImage: "bolt.fill").foregroundStyle(energyColor)
-            if let pulse = result.heartRatePoints.last?.bpm {
-                Label("Pulso \(Int(pulse.rounded())) ppm", systemImage: "waveform.path.ecg").foregroundStyle(.red)
+            if let pulse = pulseTrendPoints.last(where: { $0.hour >= visibleStartHour && $0.hour <= result.currentHour })?.bpm {
+                Label("Pulso suavizado \(Int(pulse.rounded())) ppm", systemImage: "waveform.path.ecg").foregroundStyle(.red)
             }
             if !result.inputMarkers.isEmpty { Label("Contexto", systemImage: "circle.fill").foregroundStyle(.teal) }
             if !result.events.isEmpty { Label("Ejercicio", systemImage: "circle.fill").foregroundStyle(.orange) }

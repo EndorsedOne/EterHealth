@@ -292,6 +292,7 @@ extension PerformanceEngine {
         var sessions: [Date: Int] = [:]
         var aerobic: [Date: Double] = [:]
         var strength: [Date: Double] = [:]
+        let reviews = WorkoutReviewStore.shared.reviews
 
         // Hevy es fuerza por definición: son series, no minutos.
         for workout in imports.workouts where workout.start >= start && workout.start <= now {
@@ -309,7 +310,10 @@ extension PerformanceEngine {
             // series que contar) sigue valorándose por minutos, pero cae en
             // el canal de fuerza, no en el aeróbico.
             if TrainingPlanEngine.isStrengthWorkout(workout) { strength[day, default: 0] += load }
-            else { aerobic[day, default: 0] += load }
+            else {
+                let review = reviews.first { $0.workoutID == "health-\(workout.id.uuidString)" }
+                aerobic[day, default: 0] += load * structuredQualityLoadMultiplier(workout, review: review)
+            }
         }
 
         let today = calendar.startOfDay(for: now)
@@ -327,6 +331,22 @@ extension PerformanceEngine {
     nonisolated static func workoutEffortMultiplier(_ effort: Double?) -> Double {
         guard let effort, effort.isFinite else { return 1 }
         return min(1.25, max(0.80, 0.75 + min(10, max(1, effort)) * 0.05))
+    }
+
+    /// Conservative model policy, NOT measured fatigue: recognized quality
+    /// costs 20% more than equal-duration easy running. No repetition-count
+    /// scaling (a detected HR wave is not an exact external work interval).
+    /// Independent from Apple's effort enrichment; maximum combined factor
+    /// is 1.20 × 1.25 = 1.50. Applied once to aerobic load, never strength.
+    /// Both acute and habitual EWMA consume the same corrected history.
+    nonisolated static func structuredQualityLoadMultiplier(_ workout: HealthWorkout,
+                                                            review: WorkoutReview? = nil) -> Double {
+        guard workout.activity == "Carrera" else { return 1 }
+        let verdict = SessionClassification.runQuality(workout, review: review,
+                                                       thresholdPace: nil, thresholdHeartRate: nil)
+        guard verdict.isQuality, verdict.trust != .low,
+              verdict.basis == .detectedStructure || verdict.basis == .review else { return 1 }
+        return 1.20
     }
 
     @MainActor static func dualSummary(history: [DailyDualTraining]) -> DualLoadSummary {

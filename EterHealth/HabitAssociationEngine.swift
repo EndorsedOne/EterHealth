@@ -125,9 +125,10 @@ enum HabitAssociationEngine {
                                          caffeineExposures: [HabitOccurrence] = [],
                                          now: Date = Date()) -> HabitTodayMessage? {
         let eligible = associations.filter {
-            $0.confidence.level != .low && $0.samples > 0 && $0.direction == .adverse
+            $0.confidence.level != .low && $0.samples > 0 && $0.direction != .neutral
         }.sorted {
-            $0.confidence.score == $1.confidence.score
+            if $0.direction != $1.direction { return $0.direction == .adverse }
+            return $0.confidence.score == $1.confidence.score
                 ? $0.kind.rawValue < $1.kind.rawValue : $0.confidence.score > $1.confidence.score
         }
         for association in eligible {
@@ -152,6 +153,10 @@ enum HabitAssociationEngine {
                 case .cold: return age <= 36 * 3600 && event.coldMinutes > 0
                 case .fasting: return age <= 24 * 3600 && event.fastingHours >= 12
                 case .fastedTraining: return age <= 24 * 3600 && event.trainedFasted
+                case .lowHydration: return age <= 24 * 3600 && event.hydration == .low
+                case .lateOrHeavyDinner: return age <= 24 * 3600 && (event.lateDinner || event.heavyDinner)
+                case .healthyFood: return age <= 24 * 3600 && event.foodQuality == .healthy
+                case .indulgentFood: return age <= 24 * 3600 && event.foodQuality == .indulgent
                 default: return false
                 }
             }).max(by: { $0.date < $1.date }) else { continue }
@@ -165,11 +170,16 @@ enum HabitAssociationEngine {
         // into raw physiological deltas. Reuse the engine's own explanation.
         let evidence = association.confidence.level == .high && !association.effects.isEmpty
             ? association.headline
-            : "En tus datos se asocia con mañanas menos favorables."
+            : (association.direction == .favorable
+               ? "En tus datos se asocia con mañanas más favorables."
+               : "En tus datos se asocia con mañanas menos favorables.")
         let context = association.kind == .lateCaffeine
             ? "Cafeína estimada al acostarte ayer" : "\(association.kind.title) reciente"
+        let action = association.direction == .favorable
+            ? "Mantén el plan: esta asociación no justifica añadir intensidad."
+            : "Hoy no añadas intensidad para compensar; sigue el plan y tus sensaciones."
         return HabitTodayMessage(kind: association.kind, recordedAt: date,
-            text: "\(context). \(evidence) Hoy no añadas intensidad para compensar; sigue el plan y tus sensaciones. Asociación personal, no causalidad demostrada.")
+            text: "\(context). \(evidence) \(action) Asociación personal, no causalidad demostrada.")
     }
     nonisolated static func readinessImpact(_ association: HabitAssociation) -> Int {
         guard association.confidence.level != .low,

@@ -5,6 +5,51 @@ struct PlanSnapshot: Codable, Identifiable {
     let date: Date
     let recommendation: String
     let rationale: String
+    var sessionKind: PlannedSessionKind? = nil
+}
+
+struct BlockAdherenceSummary {
+    let observedDays: Int
+    let matchedDays: Int
+    let plannedStrengthDays: Int
+    let completedStrengthDays: Int
+}
+
+enum BlockAdherenceEngine {
+    /// Compare only observed prescriptions preceding work. Missing snapshots
+    /// are unknown, never missed workouts. Categories deliberately do not claim
+    /// to measure quality, volume, RIR or compliance with an entire session.
+    static func summarize(snapshots: [PlanSnapshot], strengthDates: [Date],
+                          aerobicDates: [Date], days: Int = 28,
+                          now: Date = Date(), calendar: Calendar = .current) -> BlockAdherenceSummary {
+        let today = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -days, to: today) ?? today
+        var matched = 0, strengthPlanned = 0, strengthDone = 0, observed = 0
+        var seen: Set<Date> = []
+        for snapshot in snapshots.sorted(by: { $0.date < $1.date }) {
+            let day = calendar.startOfDay(for: snapshot.date)
+            guard day >= start, day < today, seen.insert(day).inserted,
+                  let kind = snapshot.sessionKind else { continue }
+            let lifts = strengthDates.filter { calendar.isDate($0, inSameDayAs: day) }
+            let cardio = aerobicDates.filter { calendar.isDate($0, inSameDayAs: day) }
+            guard !(lifts + cardio).contains(where: { $0 < snapshot.date }) else { continue }
+            let didLift = !lifts.isEmpty, didCardio = !cardio.isEmpty
+            switch kind {
+            case .strength:
+                observed += 1; strengthPlanned += 1
+                if didLift { matched += 1; strengthDone += 1 }
+            case .easyRun, .qualityRun, .longRun, .swim, .bike:
+                observed += 1
+                if didCardio { matched += 1 }
+            case .recovery:
+                observed += 1
+                if !didLift && !didCardio { matched += 1 }
+            default: break // No invented equivalence for hybrid/race/brick.
+            }
+        }
+        return BlockAdherenceSummary(observedDays: observed, matchedDays: matched,
+            plannedStrengthDays: strengthPlanned, completedStrengthDays: strengthDone)
+    }
 }
 
 @MainActor
@@ -26,7 +71,8 @@ final class PlanHistoryStore: ObservableObject {
             calendar.isDate($0.date, inSameDayAs: now) && $0.date.addingTimeInterval($0.durationMinutes * 60) <= now
         }
         guard !alreadyTrained else { return }
-        snapshots.append(PlanSnapshot(id: UUID(), date: now, recommendation: plan.nextSession.rawValue, rationale: plan.rationale))
+        snapshots.append(PlanSnapshot(id: UUID(), date: now, recommendation: plan.nextSession.rawValue,
+                                      rationale: plan.rationale, sessionKind: plan.nextSession))
         snapshots.sort { $0.date > $1.date }; persist()
     }
 

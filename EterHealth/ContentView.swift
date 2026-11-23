@@ -358,6 +358,8 @@ struct ContentView: View {
                          personalAnchor: twinStates.personalAnchor(),
                          travel: travel.episodeForEvaluation(), travelHistory: travel.episodes,
                          basalMetabolicRateKcal: inBody.latest?.basalMetabolicRateKcal)
+        dashboard.refreshMesocycle(snapshots: planHistory.snapshots, workouts: imports.workouts,
+                                   profile: goals.profile)
     }
 
     private func scheduleDashboardRefresh(includeBackup: Bool = false) {
@@ -435,6 +437,18 @@ struct ContentView: View {
                 todayTrendsCard
                 todayCompletedTraining
                 currentPlanCard
+                blockAdherenceCard
+                if let review = dashboard.mesocycleReview {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(review.title).font(.subheadline.bold())
+                        Text(review.detail).font(.caption)
+                        ForEach(review.lifts, id: \.self) { Text($0).font(.caption) }
+                        if review.lifts.isEmpty {
+                            Text("Lifts clave: faltan dos sesiones por mitad del bloque para comparar. No se infiere progresión.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }.cardStyle()
+                }
                 if let message = dashboard.habitTodayMessage {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Tu aprendizaje, hoy", systemImage: message.kind.icon).font(.subheadline.bold())
@@ -471,6 +485,23 @@ struct ContentView: View {
                 // entrenamientos" (Rendimiento), su casa canónica.
                 updateControl
             }
+        }
+    }
+
+    @ViewBuilder private var blockAdherenceCard: some View {
+        let healthSessions = health.workoutHistory.filter { !imports.isHealthKitMirror($0) && !$0.source.localizedCaseInsensitiveContains("hevy") }
+        let summary = BlockAdherenceEngine.summarize(
+            snapshots: planHistory.snapshots,
+            strengthDates: imports.workouts.map(\.start) + healthSessions.filter { TrainingPlanEngine.isStrengthWorkout($0) }.map(\.date),
+            aerobicDates: healthSessions.filter { !TrainingPlanEngine.isStrengthWorkout($0) }.map(\.date))
+        if summary.observedDays > 0 {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Plan frente a realizado · 28 días").font(.subheadline.bold())
+                Text("\(summary.matchedDays)/\(summary.observedDays) días evaluables coinciden en categoría o descanso.")
+                Text("Fuerza: \(summary.completedStrengthDays)/\(summary.plannedStrengthDays) días prescritos realizados.")
+                Text("Solo planes guardados antes de entrenar y días completos. No evalúa volumen ni intensidad; los días sin plan no se consideran incumplidos.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }.font(.caption).cardStyle()
         }
     }
 
