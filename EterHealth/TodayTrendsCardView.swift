@@ -6,6 +6,7 @@ import Charts
 /// batería: se muestran contra la línea base personal y no contaminan el chart.
 struct TodayTrendsCardView: View {
     let result: EnergyTimelineEngine.Result
+    @State private var selectedHour: Double?
 
     private struct CurvePoint: Identifiable { let id: Int; let hour: Double; let value: Double }
     private var visibleStartHour: Double {
@@ -39,6 +40,12 @@ struct TodayTrendsCardView: View {
             header
             physiologicalContext
             chart.frame(height: 235)
+            if let selectedHour {
+                selectionReadout(at: min(result.currentHour, max(visibleStartHour, selectedHour)))
+            } else {
+                Text("Mantén pulsado y arrastra para consultar una hora")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             legend
             if !result.calorieBins.isEmpty {
                 calorieRail
@@ -270,8 +277,14 @@ struct TodayTrendsCardView: View {
                     .foregroundStyle(energyColor)
                     .symbolSize(90)
             }
+            if let selectedHour, visibleDomain.contains(selectedHour) {
+                RuleMark(x: .value("Hora consultada", selectedHour))
+                    .foregroundStyle(Color.primary.opacity(0.35))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
         }
         .chartXScale(domain: visibleDomain)
+        .chartXSelection(value: $selectedHour)
         .chartPlotStyle { plot in plot.clipped() }
         .chartYScale(domain: 0...pulseChartCeiling)
         .chartXAxis {
@@ -307,6 +320,26 @@ struct TodayTrendsCardView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Tendencias de hoy")
         .accessibilityValue(accessibilitySummary)
+    }
+
+    @ViewBuilder
+    private func selectionReadout(at hour: Double) -> some View {
+        let energy = curvePoints.min { abs($0.hour - hour) < abs($1.hour - hour) }
+        let pulse = pulseTrendPoints.min { abs($0.hour - hour) < abs($1.hour - hour) }
+        let caffeine = result.caffeine.points.min { abs($0.hour - hour) < abs($1.hour - hour) }
+        let calories = result.calorieBins.last { min($0.startHour + 0.5, result.currentHour) <= hour }
+        VStack(alignment: .leading, spacing: 4) {
+            Text(formattedHour(hour)).font(.caption.bold())
+            Text("Energía estimada: \(energy.map { Int($0.value.rounded()).formatted() } ?? "sin dato")/100")
+            Text("Pulso suavizado: \(pulse.flatMap { abs($0.hour - hour) <= 5.0 / 60 ? Int($0.bpm.rounded()).formatted() + " ppm" : nil } ?? "sin dato cercano")")
+            Text("Cafeína estimada: \(caffeine.map { "~" + Int($0.remainingMg.rounded()).formatted() + " mg" } ?? "sin dato")")
+            Text("Activas acumuladas: \(calories.map { Int($0.cumulativeActive.rounded()).formatted() + " kcal" } ?? "sin dato previo")")
+        }
+        .font(.caption2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9)
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

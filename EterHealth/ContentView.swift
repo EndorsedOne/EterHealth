@@ -432,12 +432,19 @@ struct ContentView: View {
                 dailyCheckInCard
                 lifestyleFactorCard
                 physiologicalAlertCard
+                if let message = dashboard.habitTodayMessage {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Contexto de hoy", systemImage: message.kind.icon).font(.subheadline.bold())
+                        Text(message.text).font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading).cardStyle()
+                }
                 twinCard
                 todayTravelStatusCard
-                todayTrendsCard
                 todayCompletedTraining
+                todayTrendsCard
                 currentPlanCard
                 trainingDecisionInsights
+                DisclosureGroup("Seguimiento del bloque y adherencia") {
                 blockAdherenceCard
                 if let review = dashboard.mesocycleReview {
                     VStack(alignment: .leading, spacing: 6) {
@@ -450,14 +457,7 @@ struct ContentView: View {
                         }
                     }.cardStyle()
                 }
-                if let message = dashboard.habitTodayMessage {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Tu aprendizaje, hoy", systemImage: message.kind.icon).font(.subheadline.bold())
-                        Text(message.text).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .cardStyle()
-                }
+                }.font(.subheadline)
                 // "Entrenamiento propuesto" se retira de Hoy: la sesión (cardio o
                 // fuerza) vive en la pestaña Entrenamiento, que ya la muestra con
                 // su detalle. Hoy = estado + semana + simular.
@@ -490,7 +490,7 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var trainingDecisionInsights: some View {
-        if !dashboard.anchorLiftTrends.isEmpty || (dashboard.recentAdherence?.observedDays ?? 0) > 0 {
+        if !dashboard.anchorLiftTrends.isEmpty || dashboard.softerWeekSuggestion != nil {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Para interpretar tu plan").font(.subheadline.bold())
                 ForEach(dashboard.anchorLiftTrends) { lift in
@@ -500,10 +500,6 @@ struct ContentView: View {
                 if !dashboard.anchorLiftTrends.isEmpty {
                     Text("Últimos 28 días, por mitades. La flecha no prescribe subir peso; respeta el RIR objetivo.")
                         .font(.caption2).foregroundStyle(.secondary)
-                }
-                if let recent = dashboard.recentAdherence, recent.observedDays > 0 {
-                    Text("Últimos 7 días: \(recent.observedDays - recent.matchedDays) desajustes de categoría/descanso en \(recent.observedDays) días evaluables; \(recent.restDaysWithTraining) descansos previstos con entrenamiento registrado.")
-                        .font(.caption)
                 }
                 if let suggestion = dashboard.softerWeekSuggestion {
                     Text(suggestion).font(.caption).foregroundStyle(.orange)
@@ -523,6 +519,9 @@ struct ContentView: View {
                 Text("Plan frente a realizado · 28 días").font(.subheadline.bold())
                 Text("\(summary.matchedDays)/\(summary.observedDays) días evaluables coinciden en categoría o descanso.")
                 Text("Fuerza: \(summary.completedStrengthDays)/\(summary.plannedStrengthDays) días prescritos realizados.")
+                if let recent = dashboard.recentAdherence, recent.observedDays > 0 {
+                    Text("Últimos 7 días: \(recent.observedDays - recent.matchedDays) desajustes en \(recent.observedDays) días evaluables; \(recent.restDaysWithTraining) descansos previstos con entrenamiento registrado.")
+                }
                 Text("Solo planes guardados antes de entrenar y días completos. No evalúa volumen ni intensidad; los días sin plan no se consideran incumplidos.")
                     .font(.caption2).foregroundStyle(.secondary)
             }.font(.caption).cardStyle()
