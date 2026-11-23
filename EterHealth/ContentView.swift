@@ -429,8 +429,13 @@ struct ContentView: View {
         } else {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Hoy", title: "Tu estado real")
+                todayDecisionHero
+                todayCompactMetrics
+                DisclosureGroup("Cómo estás · check-in y factores") {
                 dailyCheckInCard
                 lifestyleFactorCard
+                }
+                Text("Contexto de hoy").font(.headline).padding(.top, 10)
                 physiologicalAlertCard
                 if let message = dashboard.habitTodayMessage {
                     VStack(alignment: .leading, spacing: 6) {
@@ -438,11 +443,14 @@ struct ContentView: View {
                         Text(message.text).font(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).cardStyle()
                 }
-                twinCard
                 todayTravelStatusCard
+                DisclosureGroup("Preparación · señales y explicación") { twinCard }
                 todayCompletedTraining
+                Text("Tu día").font(.headline).padding(.top, 10)
                 todayTrendsCard
+                DisclosureGroup("Plan del día · detalle y objetivos") {
                 currentPlanCard
+                }
                 trainingDecisionInsights
                 DisclosureGroup("Seguimiento del bloque y adherencia") {
                 blockAdherenceCard
@@ -489,6 +497,63 @@ struct ContentView: View {
         }
     }
 
+    private var todayDecisionColor: Color {
+        guard let assessment = dashboard.assessment, let plan = dashboard.plan else { return .secondary }
+        if plan.nextSession == .recovery || assessment.physiologicalAlert?.severity == .recover {
+            return EterTheme.negative
+        }
+        if assessment.score < 62 || assessment.physiologicalAlert?.severity == .caution || plan.isDeload {
+            return EterTheme.warning
+        }
+        return EterTheme.positive
+    }
+
+    @ViewBuilder private var todayDecisionHero: some View {
+        if let assessment = dashboard.assessment, let plan = dashboard.plan {
+            let restriction = SessionIntensityCeiling.fromAlcohol(lifestyle.events, now: Date())
+            let reason = restriction?.explanation
+                ?? assessment.physiologicalAlert.map { $0.summary }
+                ?? plan.rationale
+            VStack(alignment: .leading, spacing: 10) {
+                Text("TU DECISIÓN DE HOY").font(.caption.bold()).tracking(1.5)
+                    .foregroundStyle(todayDecisionColor)
+                Text(plan.nextSession == .recovery ? "Recuperar" : assessment.state)
+                    .font(.largeTitle.bold()).foregroundStyle(todayDecisionColor)
+                    .accessibilityAddTraits(.isHeader)
+                Text(plan.nextSession.rawValue).font(.title2.bold())
+                if !reason.isEmpty {
+                    Text(reason).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(3)
+                } else {
+                    Text("Sin evidencia suficiente para explicar la propuesta.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Text("Estimación orientativa · detalle y limitaciones más abajo")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(todayDecisionColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 24))
+            .overlay(alignment: .leading) {
+                Capsule().fill(todayDecisionColor).frame(width: 4).padding(.vertical, 22)
+            }
+        }
+    }
+
+    private var todayCompactMetrics: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) { todayCompactMetricLabels }
+            VStack(alignment: .leading, spacing: 6) { todayCompactMetricLabels }
+        }
+        .font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private var todayCompactMetricLabels: some View {
+        Text(health.snapshot.sleepHours > 0 ? "Sueño \(health.snapshot.sleepHours.formatted(.number.precision(.fractionLength(1)))) h" : "Sueño —")
+        Text(health.snapshot.hrv > 0 ? "HRV \(health.snapshot.hrv.formatted()) ms" : "HRV —")
+        Text(health.snapshot.heartRate > 0 ? "Pulso \(health.snapshot.heartRate.formatted()) ppm" : "Pulso —")
+    }
+
     @ViewBuilder private var trainingDecisionInsights: some View {
         if !dashboard.anchorLiftTrends.isEmpty || dashboard.softerWeekSuggestion != nil {
             VStack(alignment: .leading, spacing: 8) {
@@ -517,7 +582,10 @@ struct ContentView: View {
         if summary.observedDays > 0 {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Plan frente a realizado · 28 días").font(.subheadline.bold())
-                Text("\(summary.matchedDays)/\(summary.observedDays) días evaluables coinciden en categoría o descanso.")
+                HStack(alignment: .firstTextBaseline) {
+                    Text("\(summary.matchedDays)/\(summary.observedDays)").font(.title2.monospacedDigit().bold())
+                    Text("días evaluables coinciden").font(.caption)
+                }
                 Text("Fuerza: \(summary.completedStrengthDays)/\(summary.plannedStrengthDays) días prescritos realizados.")
                 if let recent = dashboard.recentAdherence, recent.observedDays > 0 {
                     Text("Últimos 7 días: \(recent.observedDays - recent.matchedDays) desajustes en \(recent.observedDays) días evaluables; \(recent.restDaysWithTraining) descansos previstos con entrenamiento registrado.")

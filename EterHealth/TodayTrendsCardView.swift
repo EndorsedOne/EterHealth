@@ -40,9 +40,8 @@ struct TodayTrendsCardView: View {
             header
             physiologicalContext
             chart.frame(height: 235)
-            if let selectedHour {
-                selectionReadout(at: min(result.currentHour, max(visibleStartHour, selectedHour)))
-            } else {
+            selectionReadout(at: min(result.currentHour, max(visibleStartHour, selectedHour ?? result.currentHour)))
+            if selectedHour == nil {
                 Text("Mantén pulsado y arrastra para consultar una hora")
                     .font(.caption2).foregroundStyle(.secondary)
             }
