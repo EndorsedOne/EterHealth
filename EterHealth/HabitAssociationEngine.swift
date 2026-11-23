@@ -125,7 +125,7 @@ enum HabitAssociationEngine {
                                          caffeineExposures: [HabitOccurrence] = [],
                                          now: Date = Date()) -> HabitTodayMessage? {
         let eligible = associations.filter {
-            $0.confidence.level != .low && $0.samples > 0 && $0.direction != .neutral
+            $0.confidence.level != .low && $0.samples > 0 && $0.direction == .adverse
         }.sorted {
             if $0.direction != $1.direction { return $0.direction == .adverse }
             return $0.confidence.score == $1.confidence.score

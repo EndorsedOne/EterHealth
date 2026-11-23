@@ -344,6 +344,13 @@ extension PerformanceEngine {
         guard workout.activity == "Carrera" else { return 1 }
         let verdict = SessionClassification.runQuality(workout, review: review,
                                                        thresholdPace: nil, thresholdHeartRate: nil)
+        return structuredQualityLoadMultiplier(verdict: verdict)
+    }
+
+    /// Deliberately stricter than "counts as quality" in the plan: pace/HR
+    /// proxies may reserve recovery time but do not justify an extra load
+    /// multiplier. Shared with the post-session copy to prevent divergence.
+    nonisolated static func structuredQualityLoadMultiplier(verdict: RunQualityVerdict) -> Double {
         guard verdict.isQuality, verdict.trust != .low,
               verdict.basis == .detectedStructure || verdict.basis == .review else { return 1 }
         return 1.20

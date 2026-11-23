@@ -2,6 +2,11 @@ import XCTest
 @testable import EterHealth
 
 final class BlockAdherenceTests: XCTestCase {
+    func testNoPlanNeverCountsAsFailureEvenWithWorkouts() {
+        let result = BlockAdherenceEngine.summarize(snapshots: [], strengthDates: [Date()], aerobicDates: [])
+        XCTAssertEqual(result.observedDays, 0)
+        XCTAssertEqual(result.matchedDays, 0)
+    }
     func testMissingAndLegacyPlansAreUnknownNotMissed() {
         let now = Date()
         let yesterday = now.addingTimeInterval(-86400)

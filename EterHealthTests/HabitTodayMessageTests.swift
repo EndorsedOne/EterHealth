@@ -2,6 +2,28 @@ import XCTest
 @testable import EterHealth
 
 final class HabitTodayMessageTests: XCTestCase {
+    func testFavorableAssociationIsNotAnActionableWarning() {
+        let now = Date()
+        var event = LifestyleEvent.empty
+        event.date = now
+        event.saunaMinutes = 20
+        let learned = HabitAssociation(kind: .sauna, samples: 20, effects: [], compositeChange: 8,
+            direction: .favorable, confidence: .init(score: 80, level: .high, reason: "test"), headline: "favorable")
+        XCTAssertNil(HabitAssociationEngine.todayMessage(associations: [learned], events: [event], now: now))
+    }
+
+    func testMediumConfidenceDoesNotPresentHighConfidenceHeadline() {
+        let now = Date()
+        var event = LifestyleEvent.empty
+        event.date = now
+        event.saunaMinutes = 20
+        let learned = HabitAssociation(kind: .sauna, samples: 10,
+            effects: [.init(name: "HRV", changePercent: -8)], compositeChange: -8,
+            direction: .adverse, confidence: .init(score: 50, level: .medium, reason: "test"), headline: "headline exclusivo")
+        let message = HabitAssociationEngine.todayMessage(associations: [learned], events: [event], now: now)
+        XCTAssertNotNil(message)
+        XCTAssertFalse(message?.text.contains(learned.headline) == true)
+    }
     func testHighConfidenceNamesTheRealLearnedEffect() {
         let now = Date()
         var event = LifestyleEvent.empty

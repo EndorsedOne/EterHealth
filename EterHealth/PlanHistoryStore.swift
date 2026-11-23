@@ -13,6 +13,7 @@ struct BlockAdherenceSummary {
     let matchedDays: Int
     let plannedStrengthDays: Int
     let completedStrengthDays: Int
+    var restDaysWithTraining: Int = 0
 }
 
 enum BlockAdherenceEngine {
@@ -25,6 +26,7 @@ enum BlockAdherenceEngine {
         let today = calendar.startOfDay(for: now)
         let start = calendar.date(byAdding: .day, value: -days, to: today) ?? today
         var matched = 0, strengthPlanned = 0, strengthDone = 0, observed = 0
+        var restDaysWithTraining = 0
         var seen: Set<Date> = []
         for snapshot in snapshots.sorted(by: { $0.date < $1.date }) {
             let day = calendar.startOfDay(for: snapshot.date)
@@ -44,11 +46,13 @@ enum BlockAdherenceEngine {
             case .recovery:
                 observed += 1
                 if !didLift && !didCardio { matched += 1 }
+                else { restDaysWithTraining += 1 }
             default: break // No invented equivalence for hybrid/race/brick.
             }
         }
         return BlockAdherenceSummary(observedDays: observed, matchedDays: matched,
-            plannedStrengthDays: strengthPlanned, completedStrengthDays: strengthDone)
+            plannedStrengthDays: strengthPlanned, completedStrengthDays: strengthDone,
+            restDaysWithTraining: restDaysWithTraining)
     }
 }
 

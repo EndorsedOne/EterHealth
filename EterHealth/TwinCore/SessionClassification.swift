@@ -19,12 +19,15 @@ struct PostSessionClosure: Equatable {
     static func cardio(verdict: RunQualityVerdict) -> Self? {
         // Calories alone cannot justify a confident user-facing conclusion.
         guard verdict.basis != .insufficient, verdict.basis != .legacyCalories else { return nil }
+        let extraCost = PerformanceEngine.structuredQualityLoadMultiplier(verdict: verdict) > 1
+            ? " Calidad confirmada por estructura o valoración: mayor coste aeróbico de recuperación en el modelo (×1,20)."
+            : ""
         return Self(
             counted: verdict.isQuality
                 ? (verdict.basis == .detectedStructure ? "Intervalos detectados: cuenta como sesión de calidad." : "Cuenta como sesión de calidad según la evidencia disponible.")
                 : "No cuenta como sesión de calidad según la evidencia disponible.",
             tomorrow: verdict.isQuality
-                ? "Mañana: el plan tendrá en cuenta la ventana de recuperación tras calidad."
+                ? "Mañana: el plan tendrá en cuenta la ventana de recuperación tras calidad.\(extraCost)"
                 : "Mañana: esto no añade una penalización por calidad; la carga y tu recuperación siguen contando."
         )
     }

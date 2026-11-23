@@ -40,9 +40,13 @@ final class DashboardViewModel: ObservableObject {
     @Published private(set) var postSessionThresholdPace: Double?
     @Published private(set) var habitTodayMessage: HabitTodayMessage?
     @Published private(set) var mesocycleReview: MesocycleReview?
+    @Published private(set) var anchorLiftTrends: [AnchorLiftTrend] = []
+    @Published private(set) var softerWeekSuggestion: String?
+    @Published private(set) var recentAdherence: BlockAdherenceSummary?
 
     func refreshMesocycle(snapshots: [PlanSnapshot], workouts: [ImportedWorkout],
-                          profile: AthletePlanProfile, now: Date = Date()) {
+                          profile: AthletePlanProfile, health: HealthStore, imports: ImportStore,
+                          now: Date = Date()) {
         let terms = profile.goals.filter(\.isActive).flatMap { goal -> [String] in
             switch goal.kind {
             case .benchPress: return ["bench press (barbell)", "press banca"]
@@ -54,6 +58,21 @@ final class DashboardViewModel: ObservableObject {
         let progress = StrengthProgressEngine.summarize(workouts.filter { $0.start <= now }, now: now)
         let keyLifts = progress.exercises.filter { exercise in
             terms.contains { exercise.name.localizedCaseInsensitiveContains($0) }
+        }
+        anchorLiftTrends = TrainingDecisionInsights.trends(keyLifts, now: now)
+        let sessions = health.workoutHistory.filter {
+            !imports.isHealthKitMirror($0) && !$0.source.localizedCaseInsensitiveContains("hevy")
+        }
+        let adherence = BlockAdherenceEngine.summarize(snapshots: snapshots,
+            strengthDates: workouts.map(\.start) + sessions.filter { TrainingPlanEngine.isStrengthWorkout($0) }.map(\.date),
+            aerobicDates: sessions.filter { !TrainingPlanEngine.isStrengthWorkout($0) }.map(\.date), days: 7, now: now)
+        recentAdherence = adherence
+        softerWeekSuggestion = nil
+        if adherence.restDaysWithTraining >= 2 && anchorLiftTrends.compactMap(\.changePercent).count >= 2 {
+            let load = PerformanceEngine.summarize(health: health, imports: imports, now: now)
+            softerWeekSuggestion = TrainingDecisionInsights.softerWeekSuggestion(
+                ratio: load.dual.governingRatio, trends: anchorLiftTrends,
+                adherence: adherence, deloadActive: plan?.isDeload == true)
         }
         mesocycleReview = MesocycleReviewEngine.review(
             anchor: snapshots.filter { $0.sessionKind != nil }.map(\.date).min(), now: now,

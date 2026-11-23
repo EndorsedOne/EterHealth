@@ -359,7 +359,7 @@ struct ContentView: View {
                          travel: travel.episodeForEvaluation(), travelHistory: travel.episodes,
                          basalMetabolicRateKcal: inBody.latest?.basalMetabolicRateKcal)
         dashboard.refreshMesocycle(snapshots: planHistory.snapshots, workouts: imports.workouts,
-                                   profile: goals.profile)
+                                   profile: goals.profile, health: health, imports: imports)
     }
 
     private func scheduleDashboardRefresh(includeBackup: Bool = false) {
@@ -437,6 +437,7 @@ struct ContentView: View {
                 todayTrendsCard
                 todayCompletedTraining
                 currentPlanCard
+                trainingDecisionInsights
                 blockAdherenceCard
                 if let review = dashboard.mesocycleReview {
                     VStack(alignment: .leading, spacing: 6) {
@@ -485,6 +486,29 @@ struct ContentView: View {
                 // entrenamientos" (Rendimiento), su casa canónica.
                 updateControl
             }
+        }
+    }
+
+    @ViewBuilder private var trainingDecisionInsights: some View {
+        if !dashboard.anchorLiftTrends.isEmpty || (dashboard.recentAdherence?.observedDays ?? 0) > 0 {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Para interpretar tu plan").font(.subheadline.bold())
+                ForEach(dashboard.anchorLiftTrends) { lift in
+                    Text("\(lift.arrow) \(lift.name) · \(lift.changePercent.map { $0.formatted(.number.precision(.fractionLength(0...1))) + "% en 1RM estimado" } ?? "sin tendencia suficiente")")
+                        .font(.caption)
+                }
+                if !dashboard.anchorLiftTrends.isEmpty {
+                    Text("Últimos 28 días, por mitades. La flecha no prescribe subir peso; respeta el RIR objetivo.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if let recent = dashboard.recentAdherence, recent.observedDays > 0 {
+                    Text("Últimos 7 días: \(recent.observedDays - recent.matchedDays) desajustes de categoría/descanso en \(recent.observedDays) días evaluables; \(recent.restDaysWithTraining) descansos previstos con entrenamiento registrado.")
+                        .font(.caption)
+                }
+                if let suggestion = dashboard.softerWeekSuggestion {
+                    Text(suggestion).font(.caption).foregroundStyle(.orange)
+                }
+            }.cardStyle()
         }
     }
 

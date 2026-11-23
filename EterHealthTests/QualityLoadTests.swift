@@ -2,6 +2,18 @@ import XCTest
 @testable import EterHealth
 
 final class QualityLoadTests: XCTestCase {
+    func testPaceAndHeartRateQualityDoNotActivateStructuredLoadBonus() {
+        for basis: RunQualityBasis in [.pace, .heartRate] {
+            let verdict = RunQualityVerdict(isQuality: true, basis: basis)
+            XCTAssertEqual(PerformanceEngine.structuredQualityLoadMultiplier(verdict: verdict), 1)
+            XCTAssertFalse(PostSessionClosure.cardio(verdict: verdict)?.tomorrow.contains("×1,20") == true)
+        }
+        for basis: RunQualityBasis in [.detectedStructure, .review] {
+            let verdict = RunQualityVerdict(isQuality: true, basis: basis)
+            XCTAssertEqual(PerformanceEngine.structuredQualityLoadMultiplier(verdict: verdict), 1.20)
+            XCTAssertTrue(PostSessionClosure.cardio(verdict: verdict)?.tomorrow.contains("×1,20") == true)
+        }
+    }
     private func makeRun() -> HealthWorkout {
         HealthWorkout(id: UUID(), date: Date(), durationMinutes: 45, calories: nil,
                       distanceKilometers: nil, averageHeartRate: nil, elevationMeters: nil,
