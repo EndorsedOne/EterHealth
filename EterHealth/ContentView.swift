@@ -822,6 +822,14 @@ struct ContentView: View {
                 Spacer()
                 Image(systemName: "externaldrive.badge.icloud").font(.title2).foregroundStyle(.teal)
             }
+            if let last = EterBackupManager.automaticLastSuccess {
+                Label("Última copia automática: \(last.formatted(date: .abbreviated, time: .shortened))", systemImage: "checkmark.icloud")
+                    .font(.subheadline.bold())
+            } else {
+                Label("Aún no hay copia automática registrada", systemImage: "icloud.slash").font(.subheadline.bold())
+            }
+            Text(EterBackupManager.automaticBackupEnabled ? "Copia automática activada · se intenta al pasar a segundo plano si hay cambios." : "Copia automática desactivada · puedes exportar una copia manual.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Incluye entrenamientos importados, analíticas, check-ins, factores, valoraciones, historial del plan, estados diarios del gemelo y rutinas personalizadas.")
                 .font(.caption).foregroundStyle(.secondary).lineSpacing(3)
             HStack(spacing: 10) {
@@ -848,10 +856,6 @@ struct ContentView: View {
                     importerCompletion = { result in configureAutomaticBackup(result) }
                     activeImporter = .automaticBackupFolder
                 }.buttonStyle(.bordered)
-            }
-            if let last = EterBackupManager.automaticLastSuccess {
-                Label("Última copia: \(last.formatted(date: .abbreviated, time: .shortened))", systemImage: "checkmark.icloud.fill")
-                    .font(.caption2).foregroundStyle(EterTheme.positive)
             }
             if EterBackupManager.automaticBackupEnabled {
                 HStack {
@@ -981,8 +985,17 @@ struct ContentView: View {
     private var healthPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             EterPageHeader(eyebrow: "Salud", title: "Evolución fisiológica")
-            PhysiologicalHealthView()
+            Text("Señales para entrenar y recuperar").font(.headline)
+            Text("Tu referencia personal y tus tendencias. La decisión de entrenamiento sigue en Hoy.")
+                .font(.caption).foregroundStyle(.secondary)
+            physiologicalAlertCard
+            PhysiologicalHealthView(layer: .recovery)
             HabitInsightsCardView()
+            DisclosureGroup("Profundidad · archivo fisiológico") {
+            VStack(alignment: .leading, spacing: 18) {
+            Text("Mediciones, estimaciones e historial para explorar con contexto. No diagnostican ni sustituyen una valoración clínica; revisa la confianza y las limitaciones de cada dato.")
+                .font(.caption).foregroundStyle(.secondary)
+            PhysiologicalHealthView(layer: .archive)
             BodyCompositionCardView(
                 showBodyComposition: $showBodyComposition,
                 bodyMeasurementPendingEdit: $bodyMeasurementPendingEdit
@@ -992,6 +1005,8 @@ struct ContentView: View {
                 lifestyleFactorPendingEdit: $lifestyleFactorPendingEdit
             )
             ClinicalHealthSectionView()
+            }
+            }.font(.subheadline)
         }
     }
 
@@ -1000,8 +1015,15 @@ struct ContentView: View {
     private var dataPage: some View {
         VStack(alignment: .leading, spacing: 18) {
             EterPageHeader(eyebrow: "Datos", title: "Fuentes y configuración")
-            dataSources
+            VStack(alignment: .leading, spacing: 9) {
+                Text("Qué guarda cada sistema").font(.headline)
+                Label("Éter guarda tus registros, importaciones, planes y aprendizaje personal.", systemImage: "internaldrive")
+                Label("Apple Salud conserva las mediciones originales del reloj y otras apps.", systemImage: "heart.text.square")
+                Label("Éter lee esas mediciones mediante HealthKit, según tus permisos.", systemImage: "arrow.down.doc")
+                Label("La copia de Éter no sustituye la de Apple Salud; los originales se vuelven a leer desde HealthKit.", systemImage: "externaldrive")
+            }.font(.caption).cardStyle()
             backupCard
+            dataSources
             injuryCard
             travelCard
             // "Actualizar ahora" vive solo en Hoy (control canónico); aquí era un

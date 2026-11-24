@@ -2,6 +2,12 @@ import SwiftUI
 import Charts
 
 struct PhysiologicalHealthView: View {
+    enum Layer { case all, recovery, archive }
+    let layer: Layer
+    init(layer: Layer = .all) {
+        self.layer = layer
+        _selectedTrend = State(initialValue: layer == .archive ? .vo2 : .hrv)
+    }
     @EnvironmentObject private var health: HealthStore
     @EnvironmentObject private var imports: ImportStore
     @EnvironmentObject private var injuries: InjuryStore
@@ -14,13 +20,18 @@ struct PhysiologicalHealthView: View {
         case vo2 = "VO₂ máx.", hrv = "HRV", rhr = "Pulso reposo"
         var id: String { rawValue }
     }
-    @State private var selectedTrend: TrendMetric = .vo2
+    @State private var selectedTrend: TrendMetric
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if layer != .archive {
+                personalBaselineCard
+                sleepCard
+                trendCharts
+            }
+            if layer != .recovery {
             longevityIndexCard
             biologicalAgeCard
-            personalBaselineCard
             // "Contexto cardiovascular" retirado: LDL y su consejo ya están en
             // "Analíticas clínicas" (abajo), y la tensión, cuando exista, se lee en
             // Apple Salud. Evita duplicar la misma señal en dos sitios.
@@ -28,8 +39,8 @@ struct PhysiologicalHealthView: View {
             // La temperatura de muñeca ya es una fila de "Señales ampliadas" (con
             // su delta vs. línea base). Se retira la tarjeta dedicada para no tener
             // dos casas del mismo dato.
-            sleepCard
-            trendCharts
+            if layer == .archive { trendCharts }
+            }
         }
     }
 
@@ -659,7 +670,7 @@ struct PhysiologicalHealthView: View {
         VStack(alignment: .leading, spacing: 14) {
             EterSectionHeader("Evolución fisiológica")
             Picker("Señal fisiológica", selection: $selectedTrend) {
-                ForEach(TrendMetric.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(layer == .recovery ? [TrendMetric.hrv, .rhr] : layer == .archive ? [.vo2] : TrendMetric.allCases) { Text($0.rawValue).tag($0) }
             }.pickerStyle(.segmented)
             switch selectedTrend {
             case .vo2:
