@@ -48,7 +48,7 @@ private struct WatchTwinPayload: Sendable {
         reason = message["recommendationReason"] as? String
         activity = message["recommendedActivity"] as? String
         confidence = message["baselineConfidence"] as? Int
-        updatedAt = (message["summaryUpdatedAt"] as? Double).map(Date.init(timeIntervalSince1970:))
+        updatedAt = watchDouble(message["summaryUpdatedAt"]).map(Date.init(timeIntervalSince1970:))
         maximumHeartRate = message["maximumHeartRate"] as? Int
         hrv = message["hrv"] as? Int
         restingHeartRate = message["restingHeartRate"] as? Int
@@ -59,6 +59,11 @@ private struct WatchTwinPayload: Sendable {
         caffeineCurve = message["caffeineCurve"] as? [Double]
         caffeineNowMg = message["caffeineNowMg"] as? Double
         caffeineBedtimeMg = message["caffeineBedtimeMg"] as? Double
+    }
+
+    nonisolated func canReplaceSummary(updatedAt current: Date?) -> Bool {
+        guard let updatedAt, updatedAt.timeIntervalSince1970.isFinite else { return false }
+        return current.map { updatedAt >= $0 } ?? true
     }
 }
 
@@ -477,6 +482,9 @@ extension WatchWorkoutManager: WCSessionDelegate {
     }
 
     private func apply(_ payload: WatchTwinPayload) {
+        // Multiple WCSession transports can deliver an older summary last.
+        // Never roll back today's decision or re-date it with an undated payload.
+        guard payload.canReplaceSummary(updatedAt: summaryUpdatedAt) else { return }
         readiness = payload.readiness ?? readiness
         readinessState = payload.state ?? readinessState
         recommendation = payload.recommendation ?? recommendation
