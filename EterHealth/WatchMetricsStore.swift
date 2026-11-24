@@ -1,6 +1,13 @@
 import Foundation
 import WatchConnectivity
 
+// WCSession's legacy reply closure is not annotated Sendable. It is an
+// escaping, thread-safe transport callback, invoked once after MainActor
+// resolves the authoritative state; no UI state crosses back to its queue.
+private nonisolated struct WatchTransportReply: @unchecked Sendable {
+    let handler: ([String: Any]) -> Void
+}
+
 private struct WatchMetricsPayload: Sendable {
     let heartRate: Double?
     let activeEnergy: Double?
@@ -297,9 +304,16 @@ final class WatchMetricsStore: NSObject, ObservableObject {
         // antes de lanzar el reloj, hay que repetirlo: el manager del Watch
         // reinicia identidad/descanso al comenzar una sesión nueva.
         guard forceDelivery || signature != lastWorkoutContextSignature else { return }
+        if let previousID = lastWorkoutPayload?["workoutID"] as? String, previousID != workoutID {
+            pendingTerminalPayload = nil
+            terminalRetryTask?.cancel()
+        }
+        // A late UI refresh must never resurrect an already closing session.
+        guard pendingTerminalPayload?["workoutID"] as? String != workoutID else { return }
+        let isNewWorkout = lastWorkoutPayload?["workoutID"] as? String != workoutID
         lastWorkoutContextSignature = signature
         lastWorkoutPayload = payload
-        if completedSets == 0 && restEndsAt == nil { observedRunningWatchSession = false }
+        if isNewWorkout { observedRunningWatchSession = isRunning }
         deliverWorkoutPayload(payload, enqueueReliably: true)
         scheduleWorkoutContextRetries(for: payload)
     }
@@ -398,12 +412,23 @@ final class WatchMetricsStore: NSObject, ObservableObject {
     /// deduplica `commandID` y comprueba `workoutID`, por lo que una entrega
     /// tardía nunca puede cerrar el siguiente entrenamiento.
     private func sendTerminal(command: String, workoutID: String) {
+        workoutAckTask?.cancel()
         let payload = Self.terminalCommandPayload(
             command: command, workoutID: workoutID, issuedAt: Date()
         )
         pendingTerminalPayload = payload
         deliverTerminalPayload(payload, enqueueReliably: true)
         scheduleTerminalRetries(for: payload)
+    }
+
+    nonisolated static func authoritativeWorkoutReply(terminal: [String: Any]?,
+                                                       active: [String: Any]?) -> [String: Any] {
+        terminal ?? active ?? [:]
+    }
+
+    private func replyToMetrics(_ payload: WatchMetricsPayload, reply: @escaping ([String: Any]) -> Void) {
+        receive(payload)
+        reply(Self.authoritativeWorkoutReply(terminal: pendingTerminalPayload, active: lastWorkoutPayload))
     }
 
     private func deliverTerminalPayload(_ payload: [String: Any], enqueueReliably: Bool) {
@@ -482,6 +507,15 @@ final class WatchMetricsStore: NSObject, ObservableObject {
 }
 
 extension WatchMetricsStore: WCSessionDelegate {
+    // Pull/reconciliation channel: the Watch already reaches us for metrics.
+    // Return authoritative state on that same round trip, not a second push
+    // dependent on reachability/applicationContext delivery timing.
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any],
+                             replyHandler: @escaping ([String: Any]) -> Void) {
+        let payload = WatchMetricsPayload(message)
+        let reply = WatchTransportReply(handler: replyHandler)
+        Task { @MainActor in replyToMetrics(payload, reply: reply.handler) }
+    }
     // Estaba vacío: al activarse la sesión —lo que ocurre cuando el reloj
     // abre la app— el iPhone no enviaba nada, así que el reloj esperaba un
     // cambio en el iPhone que podía no llegar nunca.

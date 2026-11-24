@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<string>4</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>La app usa el Apple Watch para medir pulso y energía durante tus entrenamientos.</string>
 	<key>NSHealthUpdateUsageDescription</key>

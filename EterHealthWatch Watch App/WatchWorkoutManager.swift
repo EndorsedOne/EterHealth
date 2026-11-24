@@ -393,12 +393,19 @@ final class WatchWorkoutManager: NSObject, ObservableObject {
         if let terminalWorkoutID { payload["terminalWorkoutID"] = terminalWorkoutID }
         let connection = WCSession.default
         if connection.isReachable {
-            connection.sendMessage(payload, replyHandler: nil)
+            connection.sendMessage(payload, replyHandler: receiveAuthoritativeReply)
         } else if terminalAction != nil {
             // Terminal actions must survive a temporary iPhone/Watch disconnect.
             connection.transferUserInfo(payload)
         }
         try? connection.updateApplicationContext(payload)
+    }
+
+    // Explicitly nonisolated: WCSession callbacks run on its own queue, not
+    // MainActor. receive parses immutable payloads before hopping to the UI.
+    nonisolated private func receiveAuthoritativeReply(_ message: [String: Any]) {
+        guard !message.isEmpty else { return }
+        receive(message)
     }
 }
 
@@ -583,8 +590,9 @@ extension WatchWorkoutManager: WCSessionDelegate {
         guard let command = message["command"] as? String else { return }
         Task { @MainActor in
             if command == "finish" || command == "discard" {
-                if let issuedAt = watchDouble(message["issuedAt"]),
-                   Date().timeIntervalSince1970 - issuedAt > 300 { return }
+                // A delayed close for this exact session must not expire:
+                // connectivity can disappear for more than five minutes.
+                // Identity + temporal matching below protect newer sessions.
                 // Las órdenes terminales fiables llevan siempre la identidad
                 // de la sesión. Exigir coincidencia evita que una copia
                 // diferida cierre un entrenamiento posterior.

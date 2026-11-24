@@ -6,6 +6,16 @@ import XCTest
 /// detalle no debe volver a viajar por WCSession. Este test evita que un
 /// cambio futuro reintroduzca campos sin consumidor en el reloj.
 final class WatchMetricsStoreTests: XCTestCase {
+    func testMetricsReplyCarriesRestAndTerminalAlwaysWins() {
+        let active = payload()
+        let rest = WatchMetricsStore.authoritativeWorkoutReply(terminal: nil, active: active)
+        XCTAssertNotNil(rest["restEndsAt"])
+        let terminal = WatchMetricsStore.terminalCommandPayload(command: "finish", workoutID: "Empuje A|123", issuedAt: Date())
+        let reply = WatchMetricsStore.authoritativeWorkoutReply(terminal: terminal, active: active)
+        XCTAssertEqual(reply["command"] as? String, "finish")
+        XCTAssertNil(reply["restEndsAt"])
+        XCTAssertTrue(WatchMetricsStore.authoritativeWorkoutReply(terminal: nil, active: nil).isEmpty)
+    }
 
     private func payload(restEndsAt: Date? = Date(timeIntervalSince1970: 1_000)) -> [String: Any] {
         WatchMetricsStore.workoutContextPayload(
