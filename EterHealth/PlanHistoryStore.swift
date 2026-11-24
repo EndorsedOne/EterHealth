@@ -14,6 +14,14 @@ struct BlockAdherenceSummary {
     let plannedStrengthDays: Int
     let completedStrengthDays: Int
     var restDaysWithTraining: Int = 0
+    var days: [BlockAdherenceDay] = []
+}
+
+struct BlockAdherenceDay: Identifiable {
+    enum State { case matched, mismatch, unknown }
+    let date: Date
+    let state: State
+    var id: Date { date }
 }
 
 enum BlockAdherenceEngine {
@@ -28,6 +36,7 @@ enum BlockAdherenceEngine {
         var matched = 0, strengthPlanned = 0, strengthDone = 0, observed = 0
         var restDaysWithTraining = 0
         var seen: Set<Date> = []
+        var dayStates: [Date: BlockAdherenceDay.State] = [:]
         for snapshot in snapshots.sorted(by: { $0.date < $1.date }) {
             let day = calendar.startOfDay(for: snapshot.date)
             guard day >= start, day < today, seen.insert(day).inserted,
@@ -36,6 +45,8 @@ enum BlockAdherenceEngine {
             let cardio = aerobicDates.filter { calendar.isDate($0, inSameDayAs: day) }
             guard !(lifts + cardio).contains(where: { $0 < snapshot.date }) else { continue }
             let didLift = !lifts.isEmpty, didCardio = !cardio.isEmpty
+            let matchedBefore = matched
+            let observedBefore = observed
             switch kind {
             case .strength:
                 observed += 1; strengthPlanned += 1
@@ -49,10 +60,15 @@ enum BlockAdherenceEngine {
                 else { restDaysWithTraining += 1 }
             default: break // No invented equivalence for hybrid/race/brick.
             }
+            if observed > observedBefore { dayStates[day] = matched > matchedBefore ? .matched : .mismatch }
+        }
+        let timeline = (0..<max(0, days)).compactMap { offset -> BlockAdherenceDay? in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: start) else { return nil }
+            return BlockAdherenceDay(date: date, state: dayStates[date] ?? .unknown)
         }
         return BlockAdherenceSummary(observedDays: observed, matchedDays: matched,
             plannedStrengthDays: strengthPlanned, completedStrengthDays: strengthDone,
-            restDaysWithTraining: restDaysWithTraining)
+            restDaysWithTraining: restDaysWithTraining, days: timeline)
     }
 }
 

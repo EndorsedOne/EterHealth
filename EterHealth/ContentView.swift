@@ -873,6 +873,83 @@ struct ContentView: View {
     }
 
 
+    @ViewBuilder private var performanceBlockHero: some View {
+        if let performance = dashboard.performance, let plan = dashboard.plan {
+            let sessions = health.workoutHistory.filter {
+                !imports.isHealthKitMirror($0) && !$0.source.localizedCaseInsensitiveContains("hevy")
+            }
+            let adherence = BlockAdherenceEngine.summarize(snapshots: planHistory.snapshots,
+                strengthDates: imports.workouts.map(\.start) + sessions.filter { TrainingPlanEngine.isStrengthWorkout($0) }.map(\.date),
+                aerobicDates: sessions.filter { !TrainingPlanEngine.isStrengthWorkout($0) }.map(\.date))
+            let tone = dashboard.assessment.map { DecisionAppearance.color(assessment: $0, plan: plan) } ?? Color.secondary
+            VStack(alignment: .leading, spacing: 12) {
+                Text("TU BLOQUE").font(.caption.bold()).tracking(1.5).foregroundStyle(tone)
+                Text(plan.block.name).font(.title.bold()).accessibilityAddTraits(.isHeader)
+                Text(performance.loadState).font(.subheadline.bold()).foregroundStyle(tone)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 18) { performanceBlockKPIs(performance, plan: plan, adherence: adherence) }
+                    VStack(alignment: .leading, spacing: 10) { performanceBlockKPIs(performance, plan: plan, adherence: adherence) }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Plan frente a realizado · 28 días completos").font(.caption.bold())
+                    HStack(spacing: 3) {
+                        ForEach(adherence.days) { day in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(adherenceDayColor(day.state))
+                                .frame(maxWidth: .infinity).frame(height: 14)
+                                .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.secondary.opacity(0.3), lineWidth: day.state == .unknown ? 1 : 0))
+                                .accessibilityLabel("\(day.date.formatted(date: .abbreviated, time: .omitted)): \(adherenceDayLabel(day.state))")
+                        }
+                    }
+                    Text("Verde: coincide · naranja: desajuste · vacío: sin plan evaluable")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text("Solo planes previos al entrenamiento; compara categoría/descanso, no volumen ni intensidad.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(tone.opacity(0.08), in: RoundedRectangle(cornerRadius: 24))
+        }
+    }
+
+    @ViewBuilder private func performanceBlockKPIs(_ performance: PerformanceSummary, plan: WeeklyPlanStatus,
+                                                  adherence: BlockAdherenceSummary) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(performance.loadGuidance == .learning ? "—" : "×\(performance.loadRatio.formatted(.number.precision(.fractionLength(2))))")
+                .font(.title2.monospacedDigit().bold())
+            Text(performance.loadGuidance == .learning ? "Carga · sin base suficiente" : "Carga \(performance.loadChannel)")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        VStack(alignment: .leading, spacing: 3) {
+            Text(plan.targetQuality > 0 ? "\(plan.completedQuality)/\(plan.targetQuality)" : "\(plan.completedQuality)")
+                .font(.title2.monospacedDigit().bold())
+            Text(plan.targetQuality > 0 ? "Calidad · objetivo 7 días" : "Calidad · sin cuota actual")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        VStack(alignment: .leading, spacing: 3) {
+            Text(adherence.observedDays > 0 ? "\(adherence.matchedDays)/\(adherence.observedDays)" : "—")
+                .font(.title2.monospacedDigit().bold())
+            Text(adherence.observedDays > 0 ? "Adherencia · días evaluables" : "Sin planes evaluables")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func adherenceDayColor(_ state: BlockAdherenceDay.State) -> Color {
+        switch state {
+        case .matched: return EterTheme.positive
+        case .mismatch: return EterTheme.warning
+        case .unknown: return Color.clear
+        }
+    }
+
+    private func adherenceDayLabel(_ state: BlockAdherenceDay.State) -> String {
+        switch state {
+        case .matched: return "coincide"
+        case .mismatch: return "desajuste"
+        case .unknown: return "sin plan evaluable"
+        }
+    }
+
     @ViewBuilder private var performancePage: some View {
         // Nunca calculamos estos fallbacks dentro de body: TabView puede pedir
         // la vista antes de que el usuario pulse Rendimiento, justo el trabajo
@@ -882,6 +959,7 @@ struct ContentView: View {
            dashboard.performance != nil, dashboard.balance != nil {
             VStack(alignment: .leading, spacing: 18) {
                 EterPageHeader(eyebrow: "Rendimiento", title: "Objetivo híbrido")
+                performanceBlockHero
                 // "Distancia al objetivo" se retira de Rendimiento: "Performance
                 // forecast" (sección de running, abajo) ya muestra tiempo previsto,
                 // objetivo y cuánto falta por distancia y disciplina.
