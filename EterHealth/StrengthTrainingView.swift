@@ -209,12 +209,14 @@ private enum StrengthSheet: Identifiable {
     case liveWorkout(StrengthRoutine)
     case editRoutine(StrengthRoutine)
     case dayProposal
+    case cardio(TrainingPlanEngine.DayForecast)
 
     var id: String {
         switch self {
         case .liveWorkout(let routine): return "live-\(routine.id)"
         case .editRoutine(let routine): return "edit-\(routine.id)"
         case .dayProposal: return "dayProposal"
+            case .cardio: return "cardioToday"
         }
     }
 }
@@ -244,6 +246,8 @@ struct StrengthTrainingView: View {
     let plan: WeeklyPlanStatus
     let goalDistances: [GoalDistance]
     let performance: PerformanceSummary
+    var anchorLifts: [AnchorLiftTrend] = []
+    var mesocycleReview: MesocycleReview? = nil
 
     private var context: TwinContext {
         TwinContext(profile: goals.profile, events: LifestyleFactorStore.shared.events,
@@ -265,16 +269,23 @@ struct StrengthTrainingView: View {
         let nextTrainable = forecasts.first { $0.kind != .recovery && $0.kind != .raceDay }
         VStack(alignment: .leading, spacing: 18) {
             EterPageHeader(eyebrow: "Entrenamiento", title: "Entrena y progresa")
-
-            // Lo opcional para hoy va primero y visible: es lo que puedes hacer
-            // ahora mismo si te apetece y te encuentras bien. Debajo, tu próxima
-            // sesión calendarizada (distinta: la que el plan te tiene reservada).
-            OptionalTodaySection(assessment: assessment)
+            trainingHero(today: forecasts.first { Calendar.current.isDateInToday($0.date) })
+            if !anchorLifts.isEmpty || mesocycleReview != nil {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(anchorLifts.prefix(3)) { lift in
+                        Text("\(lift.arrow) \(lift.name)").font(.caption.bold())
+                    }
+                    if let mesocycleReview { Text(mesocycleReview.detail).font(.caption2).foregroundStyle(.secondary) }
+                    Text("Tendencia estimada, no una orden de subir peso. Empieza con la carga prescrita y ajusta al RIR objetivo.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
 
             recommendedStrengthSection(strengthForecasts: strengthForecasts, nextTrainable: nextTrainable,
                                        assessment: assessment, plan: plan)
 
             freeTrainingSection(assessment: assessment, plan: plan)
+            DisclosureGroup("Alternativas opcionales para hoy") { OptionalTodaySection(assessment: assessment) }
 
             strengthProgressSection
 
@@ -293,6 +304,14 @@ struct StrengthTrainingView: View {
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
+            case .cardio(let forecast):
+                NavigationStack {
+                    ScrollView { cardioSessionCard(forecast).padding() }
+                        .navigationTitle("Sesión de hoy")
+                        .toolbar { ToolbarItem(placement: .cancellationAction) {
+                            Button("Cerrar") { activeSheet = nil }
+                        } }
+                }
             case .liveWorkout(let routine):
                 LiveStrengthWorkoutView(routine: routine)
                     .environmentObject(imports)
@@ -310,6 +329,39 @@ struct StrengthTrainingView: View {
         }
         .onAppear { selectDefaultProgressExercise() }
         .onChange(of: imports.workoutCount) { _, _ in selectDefaultProgressExercise() }
+    }
+
+    private func trainingHero(today: TrainingPlanEngine.DayForecast?) -> some View {
+        let color = DecisionAppearance.color(assessment: assessment, plan: plan)
+        let restriction = SessionIntensityCeiling.fromAlcohol(LifestyleFactorStore.shared.events, now: Date())
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("TU SESIÓN DE HOY").font(.caption.bold()).tracking(1.5).foregroundStyle(color)
+            Text(plan.nextSession == .recovery ? "Recuperar" : assessment.state)
+                .font(.largeTitle.bold()).foregroundStyle(color).accessibilityAddTraits(.isHeader)
+            Text(plan.nextSession.rawValue).font(.title2.bold())
+            Text(restriction?.explanation ?? plan.rationale).font(.subheadline)
+                .foregroundStyle(.secondary).lineLimit(2)
+            if plan.nextSession == .strength, let today, today.kind == .strength {
+                let prescribed = routine(from: today, assessment: assessment)
+                if !prescribed.exercises.isEmpty {
+                    Button { activeSheet = .liveWorkout(prescribed) } label: {
+                        Label("Comenzar sesión de hoy", systemImage: "play.fill")
+                    }.buttonStyle(EterPrimaryButtonStyle())
+                } else {
+                    Text("No hay una prescripción de fuerza disponible para iniciar.").font(.caption)
+                }
+            } else if plan.nextSession == .recovery {
+                Text("Hoy no hay sesión de fuerza recomendada. Prioriza recuperar.").font(.caption.bold())
+            } else if let today, today.kind == plan.nextSession {
+                Button { activeSheet = .cardio(today) } label: {
+                    Label("Ver sesión de cardio", systemImage: "figure.run")
+                }.buttonStyle(EterPrimaryButtonStyle())
+            } else {
+                Text("La prescripción de hoy no está disponible para iniciar. Consulta el detalle del plan.").font(.caption)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(20)
+        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 24))
     }
 
     private func freeTrainingSection(assessment: TwinAssessment, plan: WeeklyPlanStatus) -> some View {
@@ -555,6 +607,7 @@ struct StrengthTrainingView: View {
                         .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
                 }
                 .accessibilityLabel("Revisar y editar \(routine.name)")
+                if !Calendar.current.isDateInToday(forecast.date) || plan.nextSession != .strength {
                 Button { activeSheet = .liveWorkout(routine) } label: {
                     HStack { Text("Comenzar").bold(); Spacer(); Image(systemName: "arrow.right") }
                         .padding(.horizontal, 14).frame(height: 44)
@@ -562,6 +615,9 @@ struct StrengthTrainingView: View {
                         .foregroundStyle(rank == 0 ? EterTheme.accentInk : .primary)
                         .clipShape(RoundedRectangle(cornerRadius: EterTheme.controlRadius))
                 }.disabled(routine.exercises.isEmpty)
+                } else {
+                    Text("Inicia esta sesión desde el botón superior.").font(.caption).foregroundStyle(.secondary)
+                }
             }
         }.cardStyle()
     }

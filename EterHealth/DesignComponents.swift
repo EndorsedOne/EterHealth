@@ -1,6 +1,14 @@
 import SwiftUI
 import UIKit
 
+enum DecisionAppearance {
+    static func color(assessment: TwinAssessment, plan: WeeklyPlanStatus) -> Color {
+        if plan.nextSession == .recovery || assessment.physiologicalAlert?.severity == .recover { return EterTheme.negative }
+        if assessment.score < 62 || assessment.physiologicalAlert?.severity == .caution || plan.isDeload { return EterTheme.warning }
+        return EterTheme.positive
+    }
+}
+
 enum EterTheme {
     static let canvas = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark

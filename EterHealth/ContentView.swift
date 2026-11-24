@@ -112,7 +112,8 @@ struct ContentView: View {
                    dashboard.running != nil {
                     StrengthTrainingView(
                         assessment: assessment, plan: plan,
-                        goalDistances: dashboard.goalDistances, performance: performance
+                        goalDistances: dashboard.goalDistances, performance: performance,
+                        anchorLifts: dashboard.anchorLiftTrends, mesocycleReview: dashboard.mesocycleReview
                     )
                 } else if selectedTab == 2 {
                     deferredTab(title: "Preparando entrenamiento", systemImage: "dumbbell.fill")
@@ -499,13 +500,7 @@ struct ContentView: View {
 
     private var todayDecisionColor: Color {
         guard let assessment = dashboard.assessment, let plan = dashboard.plan else { return .secondary }
-        if plan.nextSession == .recovery || assessment.physiologicalAlert?.severity == .recover {
-            return EterTheme.negative
-        }
-        if assessment.score < 62 || assessment.physiologicalAlert?.severity == .caution || plan.isDeload {
-            return EterTheme.warning
-        }
-        return EterTheme.positive
+        return DecisionAppearance.color(assessment: assessment, plan: plan)
     }
 
     @ViewBuilder private var todayDecisionHero: some View {
