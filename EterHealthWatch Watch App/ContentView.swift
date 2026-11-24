@@ -77,9 +77,9 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     readinessRing
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(workout.readinessState.uppercased())
+                        Text((hasCurrentSummary ? (workout.recommendedActivity == "recovery" ? "Recuperar" : workout.readinessState) : "Sin resumen de hoy").uppercased())
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(readinessColor)
-                        Text(workout.recommendation)
+                        Text(hasCurrentSummary ? workout.recommendation : "Abre Éter en el iPhone")
                             .font(.headline).lineLimit(2).minimumScaleFactor(0.75)
                     }
                     Spacer(minLength: 0)
@@ -87,7 +87,7 @@ struct ContentView: View {
                 .padding(10)
                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 15))
 
-                Text(workout.recommendationReason)
+                Text(hasCurrentSummary ? workout.recommendationReason : "Sin una actualización de hoy no se presenta el plan anterior como una decisión actual.")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -104,10 +104,12 @@ struct ContentView: View {
                 // would start and log a mislabeled traditionalStrengthTraining
                 // HealthKit session for a bike ride. Only a real "strength"
                 // session gets the active button now.
-                if workout.recommendedActivity == "running" || workout.recommendedActivity == "cardio" {
+                if !hasCurrentSummary {
+                    passiveRecommendation("Pendiente de sincronizar", icon: "arrow.triangle.2.circlepath")
+                } else if workout.recommendedActivity == "running" || workout.recommendedActivity == "cardio" {
                     passiveRecommendation("Regístrala con Entreno de Apple", icon: "applewatch")
                 } else if workout.recommendedActivity == "recovery" {
-                    passiveRecommendation("Hoy toca asimilar, no registrar otra sesión", icon: "bed.double.fill")
+                    passiveRecommendation("Hoy toca recuperar", icon: "bed.double.fill")
                 } else {
                     Button { Task { await workout.startRecommendation() } } label: {
                         Label(startLabel, systemImage: activityIcon).frame(maxWidth: .infinity)
@@ -147,23 +149,32 @@ struct ContentView: View {
     private var readinessRing: some View {
         ZStack {
             Circle().stroke(Color.white.opacity(0.12), lineWidth: 6)
-            Circle().trim(from: 0, to: Double(workout.readiness ?? 0) / 100)
+            Circle().trim(from: 0, to: Double(hasCurrentSummary ? (workout.readiness ?? 0) : 0) / 100)
                 .stroke(readinessColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            Text(workout.readiness.map(String.init) ?? "—").font(.title3.bold()).monospacedDigit()
+            Text(hasCurrentSummary ? (workout.readiness.map(String.init) ?? "—") : "—").font(.title3.bold()).monospacedDigit()
         }
         .frame(width: 57, height: 57)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Disponibilidad")
-        .accessibilityValue(workout.readiness.map { "\($0) de 100" } ?? "Pendiente de sincronización")
+        .accessibilityLabel("Preparación para entrenar")
+        .accessibilityValue(hasCurrentSummary ? (workout.readiness.map { "\($0) de 100" } ?? "Pendiente de sincronización") : "Pendiente de sincronización")
     }
 
     private var readinessColor: Color {
-        guard let score = workout.readiness else { return .gray }
-        return score >= 70 ? .green : score >= 45 ? .orange : .red
+        guard hasCurrentSummary, let score = workout.readiness else { return .gray }
+        if workout.recommendedActivity == "recovery" { return .red }
+        // The existing payload does not contain alert severity or isDeload.
+        // Do not pretend to mirror every DecisionAppearance override or grow
+        // the synchronization contract just to reproduce a color.
+        return score >= 62 ? .green : .orange
     }
 
-    private var syncColor: Color { workout.summaryUpdatedAt == nil ? .orange : .green }
+    private var hasCurrentSummary: Bool {
+        guard let date = workout.summaryUpdatedAt, date <= Date() else { return false }
+        return Calendar.current.isDateInToday(date) && workout.readiness != nil
+    }
+
+    private var syncColor: Color { hasCurrentSummary ? .green : .orange }
     private var activityIcon: String { workout.recommendedActivity == "recovery" ? "figure.cooldown" : "dumbbell.fill" }
     private var startLabel: String { "Empezar fuerza" }
 

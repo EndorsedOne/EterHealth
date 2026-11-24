@@ -1719,9 +1719,12 @@ struct ContentView: View {
         // HYROX/race-day defaulting to "strength", and "Brick bici-carrera"
         // being misread as running because it contains "carrera").
         let activity = TrainingPlanEngine.watchActivity(for: plan.nextSession)
-        watchMetrics.updateTwinSummary(readiness: assessment.score, state: assessment.state,
-                                       recommendation: assessment.recommendation,
-                                       reason: assessment.explanation, activity: activity,
+        // Presentation-only alignment. Existing summary keys carry the exact
+        // daily plan; never add workout commands/series for a home-screen hero.
+        watchMetrics.updateTwinSummary(readiness: assessment.score,
+                                       state: plan.nextSession == .recovery ? "Recuperar" : assessment.state,
+                                       recommendation: plan.nextSession.rawValue,
+                                       reason: plan.rationale, activity: activity,
                                        confidence: assessment.baselineConfidence,
                                        maximumHeartRate: goals.profile.maximumHeartRate,
                                        hrv: health.snapshot.hrv,
